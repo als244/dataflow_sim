@@ -2,7 +2,7 @@
 server returns the event log + sub-op breakdown.
 
 Run with:
-    uvicorn server.main:app --reload --port 8000
+    uvicorn dataflow_app.server.main:app --reload --port 8000
 """
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 from dataflow_sim.policy.sliding_window import apply_sliding_window_policy
 from dataflow_sim.policy.belady_reactive import apply_belady_reactive_policy
 from dataflow_sim.policy.roundtrip_planner import apply_roundtrip_planner_policy
-from dataflow_sim.policy.race_best import apply_race_best_policy
 from dataflow_sim.policy.max_reduce import apply_max_reduce_policy
 from dataflow_sim.policy.min_grow import apply_min_grow_policy
 from dataflow_sim.policy.pressurefit import apply_pressurefit_policy
@@ -34,7 +33,6 @@ Policy = Literal[
     "sliding_window",
     "belady_reactive",
     "roundtrip_planner",
-    "race_best",
     "max_reduce",
     "min_grow",
     "pressurefit",
@@ -218,8 +216,6 @@ def simulate(params: SimulationParams) -> dict:
             chain = apply_belady_reactive_policy(bare, device_capacity=cap_bytes)
         elif params.policy == "roundtrip_planner":
             chain = apply_roundtrip_planner_policy(bare, device_capacity=cap_bytes)
-        elif params.policy == "race_best":
-            chain = apply_race_best_policy(bare, device_capacity=cap_bytes)
         elif params.policy == "max_reduce":
             bare_capped = replace(bare, device_capacity=cap_bytes) if cap_bytes is not None else bare
             chain = apply_max_reduce_policy(bare_capped)
@@ -236,4 +232,9 @@ def simulate(params: SimulationParams) -> dict:
         raise HTTPException(status_code=400, detail=str(e))
 
     summary = _compute_summary(log, breakdown, spec.n_layers, params.seqlen * params.num_seqs)
-    return {"log": asdict(log), "breakdown": breakdown, "summary": summary}
+    return {
+        "log": asdict(log),
+        "breakdown": breakdown,
+        "summary": summary,
+        "chain": asdict(chain),
+    }

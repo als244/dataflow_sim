@@ -1,10 +1,9 @@
 """Hand-crafted sliding-window weight/grad-buffer policy for training chains.
 
 Given a bare training chain (from `build_bare_training_chain`), annotate it
-with the sliding-window trigger pattern documented in
-`core/workloads/training.py` (pre-Step-1 docstring) and reproduced in
-RESEARCH.md §1. Workload-specific: keys off the `f_i`, `b_i`, `W_i`, `dW_i`,
-`A_i` id conventions of the training builder.
+with the sliding-window trigger pattern (see
+`docs/policy/other_policies/sliding-window.md`). Workload-specific: keys off
+the `f_i`, `b_i`, `W_i`, `dW_i`, `A_i` id conventions of the training builder.
 
 Pattern (per layer index i, w = window_size, L inferred from the chain):
 

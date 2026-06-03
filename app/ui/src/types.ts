@@ -1,4 +1,4 @@
-// Mirrors core/schema.py. Keep field names in sync.
+// Mirrors simulator/src/dataflow_sim/schema.py. Keep field names in sync.
 
 export type Location = "host" | "device";
 export type ObjectType = "weight" | "activation" | "gradient" | "optimizer" | "other";

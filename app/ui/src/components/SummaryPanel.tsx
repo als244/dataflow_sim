@@ -56,6 +56,9 @@ export function SummaryPanel({ summary }: Props) {
   if (!summary) return null;
   return (
     <div className="panel summary-panel">
+      <div className="panel-header">
+        <h3>Summary</h3>
+      </div>
       <div className="summary-stats">
         <Stat label="overall time" value={fmtTime(summary.makespan_us)} />
         <Stat label="tok/sec" value={fmtToks(summary.tokens_per_second)} />

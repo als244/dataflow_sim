@@ -1,4 +1,4 @@
-export type Policy = "sliding_window" | "belady_reactive" | "roundtrip_planner" | "race_best" | "max_reduce" | "min_grow" | "pressurefit";
+export type Policy = "sliding_window" | "belady_reactive" | "roundtrip_planner" | "max_reduce" | "min_grow" | "pressurefit";
 
 export interface HardwareParams {
   preset: string;
@@ -77,14 +77,13 @@ export const DEFAULT_PARAMS: SimulationParams = {
   device_capacity_gb: null,
 };
 
-const POLICY_OPTIONS: { value: Policy; label: string; hint: string }[] = [
+export const POLICY_OPTIONS: { value: Policy; label: string; hint: string }[] = [
   { value: "pressurefit", label: "PressureFit", hint: "pressure-fit interval planning with bounded candidate specs and deadline-aware H2D scheduling" },
-  { value: "sliding_window", label: "Sliding window", hint: "hand-crafted fixed-width window over W/dW/A; tune `weight window`" },
-  { value: "belady_reactive", label: "Reactive Belady", hint: "shadow-simulator walk; evicts farthest-next-use when capacity binds" },
-  { value: "roundtrip_planner", label: "Round-trip planner", hint: "constructively enumerates (offload, prefetch) round-trips and packs them onto streams" },
-  { value: "race_best", label: "Race best", hint: "runs reactive + round-trip planners, returns the lower-makespan plan" },
   { value: "max_reduce", label: "Max-reduce", hint: "analytic top-down: start at MAX residency, split most-overloaded boundary until cap fits" },
   { value: "min_grow", label: "Min-grow", hint: "MIN-seeded over-shrink + beam search using the simulator as cost oracle" },
+  { value: "belady_reactive", label: "Reactive Belady", hint: "shadow-simulator walk; evicts farthest-next-use when capacity binds" },
+  { value: "roundtrip_planner", label: "Round-trip planner", hint: "constructively enumerates (offload, prefetch) round-trips and packs them onto streams" },
+  { value: "sliding_window", label: "Sliding window", hint: "hand-crafted fixed-width window over W/dW/A; tune `weight window`" },
 ];
 
 const HW_FIELDS: { key: keyof Omit<HardwareParams, "preset">; label: string; step?: number; min?: number }[] = [
@@ -114,12 +113,14 @@ interface Props {
   params: SimulationParams;
   setParams: (p: SimulationParams) => void;
   onSubmit: () => void;
+  onReset: () => void;
+  locked: boolean;
   status: "idle" | "loading" | "ok" | "error";
   errorMsg: string | null;
   presets: Presets | null;
 }
 
-export function InputPanel({ params, setParams, onSubmit, status, errorMsg, presets }: Props) {
+export function InputPanel({ params, setParams, onSubmit, onReset, locked, status, errorMsg, presets }: Props) {
   // Hardware preset change -> overwrite numeric fields
   function onHardwarePreset(preset: string) {
     if (preset === "custom") {
@@ -170,16 +171,19 @@ export function InputPanel({ params, setParams, onSubmit, status, errorMsg, pres
         <h3>inputs</h3>
         <span className={`tag status-${status}`}>{statusLabel}</span>
         <div className="header-buttons">
-          <button className="reset-btn" onClick={() => setParams(DEFAULT_PARAMS)} title="reset to defaults">
-            reset
-          </button>
-          <button className="submit-btn" onClick={onSubmit} disabled={status === "loading"}>
-            submit
-          </button>
+          {locked ? (
+            <button className="reset-btn" onClick={onReset} title="clear results and unlock the form">
+              reset
+            </button>
+          ) : (
+            <button className="submit-btn" onClick={onSubmit} disabled={status === "loading"}>
+              submit
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="form-sections">
+      <fieldset className="form-sections" disabled={locked}>
         {/* Hardware */}
         <section className="form-section">
           <header className="form-section-header">
@@ -317,7 +321,7 @@ export function InputPanel({ params, setParams, onSubmit, status, errorMsg, pres
               </label>
             )}
             <label className="form-field">
-              <span className="form-field-label">device cap (GB)</span>
+              <span className="form-field-label">GPU mem budget (GB)</span>
               <input
                 type="number" min={0.1} step={1}
                 placeholder="unlimited"
@@ -336,7 +340,7 @@ export function InputPanel({ params, setParams, onSubmit, status, errorMsg, pres
           </div>
           <div className="form-section-hint dim">{activePolicyHint}</div>
         </section>
-      </div>
+      </fieldset>
       {errorMsg && <div className="input-error">{errorMsg}</div>}
     </div>
   );

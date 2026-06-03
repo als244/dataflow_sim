@@ -87,11 +87,11 @@ The common pipeline phases have these meanings:
    object sizes, producers, uses, mutators, initial host/device sets, and each
    next task's device output reservation.
 
-2. **Build reusable seeds and rankings.** Choose finite-cap initial residency,
+2. **Build reusable seeds and protection sets.** Choose finite-cap initial residency,
    then build the base seed: one continuous interval per object from its
-   anchors. Also build any auxiliary seeds or rankings used by the portfolio,
-   such as a colder initial-residency seed, the max-initial ranking pass, and
-   the late-first-use ranking.
+   anchors. Also build any auxiliary seeds or resource-derived protection sets
+   used by the portfolio, such as a colder initial-residency seed and the
+   initial-protection set.
 
 3. **Generate candidate specs.** The current portfolio contains:
 
@@ -99,8 +99,8 @@ The common pipeline phases have these meanings:
      interval-entry H2D schedules;
    - one slack-reserve candidate spec using the base seed;
    - one cold-admission candidate spec using a colder initial-residency seed;
-   - protected-initial candidate specs from a max-initial ranking pass;
-   - protected-initial candidate specs from a late-first-use ranking.
+   - initial-protection candidate specs chosen from H2D deadline demand and
+     H2D-work frontiers.
 
    The appendix enumerates every candidate family and its purpose.
 
@@ -207,20 +207,11 @@ build_candidate_specs(chain, facts, base_intervals):
     specs += cold_admission_seed(device_capacity / 2) with:
         h2d_schedule = packed_fifo
 
-    max_initial_order = rank_by_max_initial_reduction(facts)
-    for prefix in current_prefix_samples(max_initial_order):
+    for protected in select_initial_protection_sets(facts):
         specs += all_host_seed with:
-            protected_initial = prefix
+            protected_initial = protected
             extend_h2d = true
             h2d_schedule in [packed_fifo, latest_safe, interval_entry]
-
-    for read_only in [true, false]:
-        late_order = rank_by_late_first_use(facts, read_only)
-        prefix = current_medium_prefix_sample(late_order)
-        specs += all_host_seed with:
-            protected_initial = prefix
-            extend_h2d = true
-            h2d_schedule = latest_safe
 
     return specs
 ```
@@ -240,7 +231,7 @@ verify_candidate_plan(spec):
         annotated = emit_triggers(intervals, spec.h2d_schedule)
 
         try:
-            log = simulator_run(annotated)
+            log = simulator_run(annotated, snapshots=False)
             return (makespan(log), annotated)
 
         if simulator error can be translated to physical pressure:
@@ -253,7 +244,7 @@ verify_candidate_plan(spec):
             raise error
 
     annotated = emit_triggers(intervals, spec.h2d_schedule)
-    log = simulator_run(annotated)
+    log = simulator_run(annotated, snapshots=False)
     return (makespan(log), annotated)
 ```
 
@@ -379,7 +370,7 @@ initial_host(o)   = true if o starts on host
 initial_choice(o) = true if this candidate places host-source o on device at -1
 ```
 
-The base, cold-admission, and protected-initial candidate families differ mainly
+The base, cold-admission, and initial-protection candidate families differ mainly
 in this `initial_choice` predicate. Protected-initial candidates still use a
 seed interval set; `protected_initial` only constrains which boundary-`-1`
 pieces pressure reduction may remove from that seed.
@@ -611,8 +602,7 @@ verification, and physical repair loop.
 | Base | normal finite-cap initial residency | none | none | packed FIFO, latest-safe, interval-entry | Try the natural interval plan with different H2D trigger placement. |
 | Slack reserve | base seed | `max(next_task_device_outputs)` at every boundary | none | packed FIFO | Leave output/FIFO headroom earlier than strict static pressure requires. |
 | Cold admission | initial residency selected with half-cap admission budget | none | none | packed FIFO | Try one colder starting point without searching over initial subsets. |
-| Max-initial protected | every used host-source object initially resident | none | prefixes from max-initial ranking pass | packed FIFO, latest-safe, interval-entry | Preserve early-deadline host-source objects that pressure reduction would otherwise drop. |
-| Late-first-use protected | every used host-source object initially resident | none | late-first-use prefix | latest-safe | Preserve some late first-use objects to reduce later H2D bursts. |
+| Initial protection | every used host-source object initially resident | none | deadline-demand and H2D-work frontier sets | packed FIFO for the first set and smallest byte-scale frontiers; latest-safe and interval-entry for all sets | Preserve selected boundary-`-1` residency when H2D demand or source-object timing suggests that dropping it may create FIFO stalls. |
 
 These families are stitched together only at the candidate-selection level. They
 do not use separate correctness rules: all of them pass through the same
@@ -701,64 +691,129 @@ every newly covered boundary still satisfies the strict capacity check.
 This changes only interval start positions. It does not change which objects
 exist, which objects have host sources, or which intervals are split.
 
-### Max-Initial Protected Candidate Plans
+### Initial-Protection Candidate Plans
 
-Max-initial protected plans handle cases where pressure reduction's cheapest
-local choice is to drop a host-source object that later becomes critical on the
-H2D FIFO. The policy constructs these candidate plans by:
+Initial-protection plans handle cases where pressure reduction's cheapest local
+choice is to drop boundary-`-1` residency for host-source objects, but the
+resulting H2D jobs may create FIFO stalls. The policy does not choose a fixed
+number of objects. It builds a small set of candidate protected sets from object
+sizes, transfer bandwidth, compute slack, reduced interval entries, first-use
+positions, mutation metadata, and initial capacity.
 
-1. building a temporary max-initial seed with every used host-source object
-   initially resident;
-2. running pressure reduction on that temporary seed;
-3. collecting host-source objects that lost initial residency;
-4. sorting them by this exact key:
+The construction is:
+
+1. Build a temporary all-host-source seed with every used host-source object
+   initially resident.
+2. Run pressure reduction on that seed.
+3. For each host-source object whose boundary-`-1` interval was cut, build an
+   initial-protection job for its first use:
 
    ```text
-   (
-       first_consumer_task_index,
-       -object_size,
-       object_id,
-   )
+   first_use       = first task that consumes o
+   [a, b]          = reduced interval containing first_use - 1
+   release_time    = task_end(max(0, a - 1))
+   deadline        = ideal_start(first_use)
+   h2d_runtime     = ceil(size(o) / h2d_bandwidth)
+   residency_cost  = size(o) * max(1, deadline)
    ```
 
-5. protecting fixed prefixes of that ranking in new candidate plans;
-6. running pressure reduction, H2D lead-time extension, trigger emission, and
-   simulator verification.
+   `release_time` is the earliest time implied by the reduced interval entry:
+   if the object is not protected initially, an H2D transfer cannot safely begin
+   before that entry without increasing modeled residency pressure.
 
-The current implementation samples prefix sizes `4`, `8`, and `16`. This is a
-bounded approximation, not a semantic claim that "four objects" means the same
-thing across all chains. It works as a small/medium/large sample for the current
-portfolio, but a more principled replacement would use a cumulative budget, such
-as protected bytes, protected H2D runtime, or protected H2D runtime normalized by
-nearby compute slack. That would be more invariant if object sizes, bandwidths,
-or task granularity change.
+4. Compute the bytes available for optional initial protection:
 
-### Late-First-Use Protected Candidate Plans
+   ```text
+   protection_headroom =
+       device_capacity
+     - initial_device_bytes
+     - mandatory_task0_host_input_bytes
+     - task0_device_outputs
+   ```
 
-Late-first-use protected plans use the same all-host-source seed as
-max-initial protected plans, but use a different ordering. The policy constructs
-two orders:
+5. Build the **deadline-deficit set**. Schedule unprotected protection jobs on a
+   single H2D FIFO in deadline order,
+   respecting each job's `release_time`:
 
-- read-only host-source objects only;
-- all host-source objects.
+   ```text
+   start = max(h2d_cursor, release_time)
+   end   = start + h2d_runtime
+   miss  = max(0, end - deadline)
+   ```
 
-Read-only means the object never appears in `Task.mutates_inputs`. For each
-order, objects are sorted by this exact key:
+6. While any job misses its deadline and protection headroom remains, take the
+   earliest missed deadline and choose one unprotected job with:
 
-```text
-(
-    -first_consumer_task_index,
-    -object_size,
-    object_id,
-)
-```
+   ```text
+   job.deadline <= earliest_missed_deadline
+   job.size     <= remaining_protection_headroom
+   ```
 
-The policy protects the first `8` objects from each order, then reduces, extends
-H2D lead time, emits latest-safe H2D triggers, and verifies. These two plans are
-bounded alternatives for late FIFO bursts; they are not a search over arbitrary
-protected sets. This `8`-object prefix is the same kind of bounded sample as the
-max-initial prefixes; a cumulative protected-work budget would be the cleaner
-generalization.
+   The chosen job is the one with the smallest:
+
+   ```text
+   residency_cost / h2d_runtime
+   ```
+
+   with ties broken by larger `h2d_runtime`, earlier deadline, smaller size,
+   then object id. Add that object to `protected_initial`, subtract its size
+   from remaining headroom, and recompute H2D misses. The resulting set is one
+   candidate protected set.
+
+7. Build **H2D-work frontier sets**. A frontier set is a prefix of an ordered
+   source-job list whose cumulative protected H2D runtime reaches a
+   resource-derived scale point while still fitting `protection_headroom`.
+
+   PressureFit currently uses three source-job orderings:
+
+   - cut-demand order: jobs from step 3 sorted by earlier deadline, earlier
+     first use, larger size, then object id;
+   - clean tail order: host-source objects with no mutating task, sorted by
+     later first use, larger size, then object id;
+   - all-source tail order: all used host-source objects, sorted by later first
+     use, larger size, then object id.
+
+   For each ordering, define:
+
+   ```text
+   first_group = maximal prefix whose group_key equals group_key(first job)
+   first_work  = sum(h2d_runtime(job) for job in first_group)
+   total_work  = sum(h2d_runtime(job) for job in ordered jobs)
+   horizon     = ceil(sqrt(first_work * total_work))
+   ```
+
+   The group key is `deadline` for cut-demand order and `first_use` for tail
+   orders.
+
+   The policy records the first urgency group and the immediately following
+   urgency group. If the first group contains a single job, it also records
+   prefixes at successive doubled H2D-work targets:
+
+   ```text
+   first_work, 2 * first_work, 4 * first_work, ...
+   ```
+
+   and stops after recording the first prefix whose cumulative H2D work reaches
+   `horizon`. This is a logarithmic transfer-work frontier. The scale comes from
+   transfer time and the ordered job list, not from a fixed number of objects.
+
+8. For each nonempty deduplicated protected set, run candidate specs with the
+   all-host-source seed, that `protected_initial` set, and H2D lead-time
+   extension. The first protected set also tries packed FIFO H2D scheduling.
+   Packed FIFO is also tried for any frontier whose protected bytes fit within
+   the largest single used host-source object:
+
+   ```text
+   sum(size(o) for o in protected_initial)
+   <= max(size(o) for used host-source object o)
+   ```
+
+   This keeps the packed-FIFO frontier bounded by a byte scale from the chain
+   itself. All protected sets try latest-safe and interval-entry scheduling.
+
+This is still bounded, but the bound comes from resources rather than object
+count: protection prefixes stop at capacity or at a transfer-work horizon
+derived from `first_work` and `total_work`.
 
 ### Physical Repair
 

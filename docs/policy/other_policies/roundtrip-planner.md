@@ -1,6 +1,6 @@
 # roundtrip_planner
 
-Constructively enumerates offload/prefetch round-trips over the oracle reference stream and packs them onto D2H/H2D timelines before the simulator runs. For each object, gaps between consecutive uses that fit `tau_d2h + tau_h2d` become candidate round-trips; the planner ranks them by `size × gap_length`, then greedily commits only those that actually relieve a predicted capacity overflow. Mandatory first-use prefetches for host-only objects are packed in a second pass. Implemented in `simulator/src/dataflow_sim/policy/roundtrip_planner.py`. Also composed inside the `race_best` meta-policy, which races multiple planners and returns the lowest-makespan plan.
+Constructively enumerates offload/prefetch round-trips over the oracle reference stream and packs them onto D2H/H2D timelines before the simulator runs. For each object, gaps between consecutive uses that fit `tau_d2h + tau_h2d` become candidate round-trips; the planner ranks them by `size × gap_length`, then greedily commits only those that actually relieve a predicted capacity overflow. Mandatory first-use prefetches for host-only objects are packed in a second pass. Implemented in `simulator/src/dataflow_sim/policy/roundtrip_planner.py`.
 
 ## Mechanism
 
@@ -11,17 +11,17 @@ Constructively enumerates offload/prefetch round-trips over the oracle reference
 5. **Packing** (`_pack_roundtrips`, two passes):
    - **Pass 1 (round-trips)** — for each candidate in priority order, find the latest valid `(k_off, k_pre)` with free D2H/H2D stream slots. **Skip unless** some boundary in `[k_off+1, k_pre]` has `overflow_at(k) = bps[k] + first_use_demand_at(k) + next_outputs[k] − cap > 0`. This demand-driven filter is what prevents inflating makespan at loose caps.
    - **Pass 2 (first-use prefetches)** — walk back from `first_use_task_idx − 1`, place at the latest k that satisfies stream feasibility, arrival deadline, and cap budget across `[k, last_use]`. Fallback to latest stream-feasible k if nothing fits.
-6. **Structural releases** — append last-use releases for every device-resident object, mirroring V2's GC.
+6. **Structural releases** — append last-use releases for every device-resident object, mirroring `belady_reactive`'s GC.
 7. **Verification** — chain runs through `_verify_and_refine` (Phase 5 trigger-shift safety net).
 
 ## When it wins
 
-- **Moderate caps with long forward→backward gaps**: round-trips fit into natural idle intervals, freeing capacity-bytes-time that V2's reactive eviction can't reclaim. Validated wins: L=5 cap=600 (−10 ticks), L=10 cap=800 (−14 ticks).
-- **Loose caps**: demand-driven filter commits zero round-trips; resulting plan matches V2 minus V2's unnecessary trailing offloads. Ties V2 everywhere it doesn't win.
+- **Moderate caps with long forward→backward gaps**: round-trips fit into natural idle intervals, freeing capacity-bytes-time that `belady_reactive`'s eviction can't reclaim. Validated wins: L=5 cap=600 (−10 ticks), L=10 cap=800 (−14 ticks).
+- **Loose caps**: demand-driven filter commits zero round-trips; resulting plan matches `belady_reactive` minus its unnecessary trailing offloads. Ties `belady_reactive` everywhere it doesn't win.
 
 ## Limitations
 
-- **Greedy at tight caps**: per-candidate fit-or-skip can miss feasible plans that reactive eviction finds. NP-hard in general (multi-resource, capacity-constrained, FIFO stream contention). Mitigated by `race_best` composition — at tight caps the reactive planner's plan wins the race.
+- **Greedy at tight caps**: per-candidate fit-or-skip can miss feasible plans that reactive eviction finds. NP-hard in general (multi-resource, capacity-constrained, FIFO stream contention). At tight caps prefer `belady_reactive` or `pressurefit` instead.
 - **Fixed recompute level** `k=0`; no joint compute/transfer tradeoff.
 - **Oracle-dependent**: needs the full reference stream; no online variant.
 - **Pass order is load-bearing**: first-use-before-round-trips inflates bps and bunches prefetches into bad slots.

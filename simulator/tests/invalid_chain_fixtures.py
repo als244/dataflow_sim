@@ -40,7 +40,7 @@ def make_invalid_id_resolution_release_not_in_inputs() -> TaskChain:
     Note: per docs/policy/principles.md §1, a task may only release ids it
     consumed as inputs. The current validator relaxes this to "release any
     statically-known id" (matching the runtime's contract; the principle-
-    strict check is a future tightening tracked under V4 known issues). This
+    strict check is a future tightening an open design question). This
     fixture therefore exercises the relaxed check: releasing a truly unknown
     id should still fail.
 
@@ -486,9 +486,9 @@ def make_invalid_release_mutation_release_not_in_inputs() -> TaskChain:
     as input.' This is the strictest reading.
 
     CURRENT VALIDATOR: the principle-strict check is RELAXED — the auto
-    policies (V2/V3/V4) emit GC-style releases on tasks that didn't consume
+    policies (belady_reactive/roundtrip_planner/max_reduce) emit GC-style releases on tasks that didn't consume
     the object (the runtime accepts this; tightening would require a policy
-    refactor tracked under V4 known issues). So this fixture currently
+    refactor an open design question). So this fixture currently
     represents a chain the validator accepts. EXPECTED_ERROR_KEYWORDS value
     is None to pin that behavior; flip to 'input' once the policies are
     fixed and the validator re-tightens.

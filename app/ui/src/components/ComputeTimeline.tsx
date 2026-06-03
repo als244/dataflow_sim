@@ -34,7 +34,7 @@ function displayLabel(iv: TaskInterval): string {
   return iv.task_id;
 }
 
-const BAR_HEIGHT = 28;
+const BAR_HEIGHT = 60;
 const LANE_GAP = 6;
 const AXIS_GAP = 8;
 const LABEL_GUTTER = 64;
@@ -195,8 +195,8 @@ export function ComputeTimeline({
   return (
     <div className="panel timeline-panel">
       <div className="timeline-header">
-        <span className="timeline-label">inbound · compute · outbound</span>
-        <span className="timeline-hint dim">drag on bars to zoom in</span>
+        <h3>Compute &amp; Communication Timelines</h3>
+        <span className="timeline-label dim">inbound · compute · outbound</span>
         <div className="timeline-zoom">
           <button
             className="zoom-btn"

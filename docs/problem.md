@@ -1,6 +1,6 @@
 # The simulator scheduling problem — formal note
 
-Policy-agnostic problem statement for the dataflow_sim. Any auto-policy (V2, V3, V4, the upcoming V5) is a candidate algorithm for the optimization problem defined here. This note exists so the V5 design doc can refer to "the problem" instead of redefining it, and so we have a shared vocabulary for what "optimal" would mean and why it is hard.
+Policy-agnostic problem statement for the dataflow_sim. Any auto-policy (`belady_reactive`, `roundtrip_planner`, `max_reduce`, `min_grow`, `pressurefit`, ...) is a candidate algorithm for the optimization problem defined here. This note exists so per-policy design docs can refer to "the problem" instead of redefining it, and so we have a shared vocabulary for what "optimal" would mean and why it is hard.
 
 ---
 
@@ -41,7 +41,7 @@ Each object has a known `size_bytes`, a known set of producing/consuming tasks, 
 - **Device memory pool**: hard cap (bytes); the sum of resident-or-in-transit object bytes must not exceed the cap at any continuous-time instant.
 
 ### Lifecycle semantics (one nuance that bites)
-An object is "in the pool" from the moment its **h2d starts** (not finishes) until the moment its **release or d2h finishes** (not starts). The pool is debited by an in-flight outbound transit until the d2h completes — this is the "d2h tail" issue listed in [v4_auto_policy_known_issues.md](../../../../.claude/projects/-home-shein-Documents-grad-school-research-dataflow-sim/memory/v4_auto_policy_known_issues.md) #3.
+An object is "in the pool" from the moment its **h2d starts** (not finishes) until the moment its **release or d2h finishes** (not starts). The pool is debited by an in-flight outbound transit until the d2h completes — this "d2h tail" is one of the main contention sources policies must reason about.
 
 ---
 
@@ -95,7 +95,7 @@ For a transformer training chain this is on the order of a few hundred binary de
 The natural intuition — "we know all sizes, runtimes, dependencies ahead of time, so we should be able to plan optimally" — is misleading. Perfect information removes online uncertainty, but doesn't remove the structural combinatorics. Three reasons:
 
 ### 4.1 Self-referential timing
-The cost of a decision depends on the schedule, and the schedule depends on the decisions. Concretely: "should I evict object `o` at boundary `k`?" depends on "how busy will the h2d FIFO be when I need to reload `o`?", which depends on "what else did I evict?". V4 breaks this loop by using a static heuristic (residency intervals modeled at task-boundary granularity, transit time ignored) — that's exactly why issues #3 and #4 in the known-issues memo exist.
+The cost of a decision depends on the schedule, and the schedule depends on the decisions. Concretely: "should I evict object `o` at boundary `k`?" depends on "how busy will the h2d FIFO be when I need to reload `o`?", which depends on "what else did I evict?". `max_reduce` breaks this loop by using a static heuristic (residency intervals modeled at task-boundary granularity, transit time ignored) — which is also why it can mispredict in regimes with heavy stream contention.
 
 ### 4.2 Continuous-time pool constraint
 The cap is enforced at every continuous-time instant, not just at task boundaries. A schedule that looks fine at every `task.start` can still violate the cap *during* a task because of in-flight transit (the d2h tail). The simulator's drain loop catches this and stalls, but a planner that ignores it predicts a wrong makespan.
@@ -230,7 +230,7 @@ NP-hardness tells you worst-case exponential. It does **not** tell you what real
 
 1. **Implement and scale.** Write the formulation (7.1.2 or 7.1.3). Solve on `L=2, M=1, cap=large` (~10 tasks, ~10 objects) → seconds, near-trivial. Scale up `L` and tighten `cap`; fit the wall-clock curve. If it's polynomial in practice (e.g., `~L³` for CP-SAT, which empirically happens for well-structured scheduling problems), L=32 is reachable. If it's exponential (`2^L`), it stops around `L=10`. **Until we run it, we don't know which.**
 2. **Compare against analogous published benchmarks.** Checkmate (recompute MILP, ~100-node graphs, ~minutes–hours depending on memory budget tightness) is the closest reference, but solves a **strictly easier** problem: no bandwidth model, no parallel streams, no continuous-time cap. Our problem is harder per-node, so Checkmate's runtimes are a **lower bound** on what to expect, not a prediction.
-3. **Solve a relaxation as a lower bound.** The LP relaxation of 7.1.2 (drop integrality) gives a polynomial-time lower bound on the makespan and a *fractional* schedule. If the LP optimum is close to V4/V5's makespan, we have evidence we're near optimal without needing to solve the IP. This is the **cheapest signal** about how much room remains and worth doing regardless of whether we attempt a full exact solver.
+3. **Solve a relaxation as a lower bound.** The LP relaxation of 7.1.2 (drop integrality) gives a polynomial-time lower bound on the makespan and a *fractional* schedule. If the LP optimum is close to the auto policies' makespan, we have evidence we're near optimal without needing to solve the IP. This is the **cheapest signal** about how much room remains and worth doing regardless of whether we attempt a full exact solver.
 
 ### 7.3 Practical recommendation
 
@@ -246,7 +246,7 @@ NP-hardness tells you worst-case exponential. It does **not** tell you what real
 
 Note: `M` (num_seqs) and `seqlen` **don't change task count** — they scale object sizes and per-task runtimes, which affects cap-tightness and per-transfer durations. The oracle should sweep `M` and `seqlen` at each `L` row above, since a config that solves quickly with loose cap may explode with tight cap at the same `L`.
 
-Use it to (a) **validate V5's plan against ground-truth optimum** on small configs, (b) **quantify the gap** between V5 and optimum (within X% on cases we can solve → likely near-optimal on cases we can't), (c) **debug regressions** — if V5 loses to V4 on some config and the oracle confirms V4 is near-optimal, we know V5 has a real bug rather than the problem being hard.
+Use it to (a) **validate a policy's plan against ground-truth optimum** on small configs, (b) **quantify the gap** between any policy and optimum (within X% on cases we can solve → likely near-optimal on cases we can't), (c) **debug regressions** — if one policy loses to another on some config and the oracle confirms the better policy is near-optimal, we know the loser has a real bug rather than the problem being hard.
 
 This is also how Checkmate validates its solver: solve small instances optimally, compare heuristic to oracle, extrapolate confidence.
 
@@ -266,9 +266,9 @@ These observations don't yield "the optimum" but they do justify a **two-level a
 
 ---
 
-## 9. What "optimal" means for V5, then
+## 9. What "optimal" means here
 
-Three precise notions of optimality, from strongest to weakest, that V5 could target:
+Three precise notions of optimality, from strongest to weakest, that a search-based policy could target:
 
 ### 9.1 Optimal-by-MILP
 Solve the full integer program. **Not pursued** for production; useful only as an offline verification oracle for small benchmark configs.
@@ -278,26 +278,26 @@ Solve the full integer program. **Not pursued** for production; useful only as a
 - For a single stream with hard deadlines: **EDF (earliest-deadline-first) is provably optimal** (Liu & Layland, 1973; for our case: one stream as a single-machine real-time problem).
 - For two streams with shared cap: combined heuristics, but the search space is small (`|H|! × |D|!`) at our scale and pruneable.
 
-This is the regime V4's Phase 3 operates in (h2d only). Extending to d2h and adding the contention-aware guards from the known-issues memo would close most of the gap.
+This is the regime `max_reduce`'s trigger-placement phase operates in (h2d only). Extending to d2h and adding contention-aware guards would close most of the gap.
 
 ### 9.3 Optimal-by-search-over-plans
 **Tractable with the right structure.** Enumerate or beam-search over residency plans; for each, derive the optimal-given-residency schedule (9.2); pick the lowest-makespan plan via simulator replay.
 
-If the search space is structured (e.g., "for each W_i, decide: pre-place or not; for each A_i, decide: keep across forward or offload"), beam search over ~O(L) decisions with simulator scoring is feasible in seconds.
+If the search space is structured (e.g., "for each W_i, decide: pre-place or not; for each A_i, decide: keep across forward or offload"), beam search over ~O(L) decisions with simulator scoring is feasible in seconds. `min_grow` is the policy in this family.
 
-V5's design space is essentially: **how to organize 9.3** so that the search converges to (or proves it has converged to) something within a small known gap of 9.1.
+A search-based policy's design space is essentially: **how to organize 9.3** so that the search converges to (or proves it has converged to) something within a small known gap of 9.1.
 
 ---
 
-## 10. Implications for V5 design
+## 10. Design implications for any search-based policy
 
-The reader of the V5 design doc should expect these three principles to drive its structure:
+A reader of any per-policy design doc should expect these three principles to drive its structure:
 
-1. **Separate "what's resident" (plan) from "when transfers fire" (schedule).** The plan is a discrete combinatorial object; the schedule is a deterministic derivative. Conflating them (as V4 does in its Phase 1 reduce) prevents either from being reasoned about cleanly.
+1. **Separate "what's resident" (plan) from "when transfers fire" (schedule).** The plan is a discrete combinatorial object; the schedule is a deterministic derivative. Conflating them (as some early attempts did in their reduce phase) prevents either from being reasoned about cleanly.
 2. **Use the simulator as the cost oracle, not a heuristic key.** Every plan-scoring decision should ultimately be backed by simulator replay rather than a static rank function. The static rank can be a tiebreaker / candidate generator, not the final word.
 3. **Model the cap in continuous time, including transit.** Any plan that only checks the cap at task boundaries will systematically under-predict pool pressure and produce stall-prone schedules.
 
-The V5 design doc will lay out the specific algorithm (search structure, plan representation, cost function) that operationalizes these principles.
+Each per-policy design doc lays out the specific algorithm (search structure, plan representation, cost function) that operationalizes these principles.
 
 ---
 

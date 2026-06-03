@@ -44,7 +44,7 @@ const BAND_FILL: Record<BandKey, { color: string; opacity: number }> = {
   other:            { color: TYPE_COLORS.other,      opacity: 0.55 },
   inbound:          { color: H2D_COLOR,              opacity: 0.65 },
   outbound:         { color: D2H_COLOR,              opacity: 0.65 },
-  pending_outbound: { color: D2H_COLOR,              opacity: 0.20 },
+  pending_outbound: { color: "#e8a93b",              opacity: 0.45 },  // slightly transparent gold
 };
 
 const BAND_LABEL: Record<BandKey, string> = {
@@ -268,7 +268,6 @@ export function MemoryTimelinePanel({ log, deviceCapacityGb, currentT }: Props) 
           peak {fmtBytesGb(peakBytes)}
           {capBytes ? ` · cap ${fmtBytesGb(capBytes)}` : ""}
         </span>
-        <span className="timeline-hint dim">drag on plot to zoom in</span>
         <div className="timeline-zoom">
           <button className="zoom-btn" onClick={() => bumpZoom(1 / 1.5)} disabled={zoom <= MIN_ZOOM + 1e-3} title="zoom out">−</button>
           <span className="zoom-label">{fmtZoom(zoom)}</span>

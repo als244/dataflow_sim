@@ -4,7 +4,6 @@ from dataflow_sim.policy.belady_reactive import apply_belady_reactive_policy
 from dataflow_sim.policy.max_reduce import apply_max_reduce_policy
 from dataflow_sim.policy.min_grow import apply_min_grow_policy
 from dataflow_sim.policy.pressurefit import apply_pressurefit_policy
-from dataflow_sim.policy.race_best import apply_race_best_policy
 from dataflow_sim.policy.roundtrip_planner import apply_roundtrip_planner_policy
 from dataflow_sim.policy.sliding_window import apply_sliding_window_policy
 from dataflow_sim.schema import TaskChain
@@ -13,7 +12,6 @@ __all__ = [
     "apply_sliding_window_policy",
     "apply_belady_reactive_policy",
     "apply_roundtrip_planner_policy",
-    "apply_race_best_policy",
     "apply_max_reduce_policy",
     "apply_min_grow_policy",
     "apply_pressurefit_policy",
@@ -48,10 +46,6 @@ def get_all_policies() -> list[tuple[str, PolicyFn]]:
         (
             "roundtrip_planner",
             lambda b: apply_roundtrip_planner_policy(b, device_capacity=b.device_capacity),
-        ),
-        (
-            "race_best",
-            lambda b: apply_race_best_policy(b, device_capacity=b.device_capacity),
         ),
         ("max_reduce", apply_max_reduce_policy),
         ("min_grow", apply_min_grow_policy),

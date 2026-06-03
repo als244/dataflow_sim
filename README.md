@@ -44,3 +44,4 @@ pytest app/tests
 - [docs/workload-recipe.md](docs/workload-recipe.md) — how to model your own workload via the simulator API
 - [docs/transformer-recipe.md](docs/transformer-recipe.md) — how the example app maps transformer training onto the simulator
 - [docs/policy/README.md](docs/policy/README.md) — the six built-in scheduling policies and which to use
+- [docs/policy/pressurefit.md](docs/policy/pressurefit.md) — ***PressureFit***: An automatic policy that determines initial object placement and annotates task chains with release, offload, and prefetch triggers.

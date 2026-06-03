@@ -81,7 +81,7 @@ function Section({ title, rows, total_us }: { title: string; rows: SubOpTimingRo
       <table className="breakdown-table">
         <thead>
           <tr>
-            <th>sub-op</th>
+            <th>op</th>
             <th>kind</th>
             <th className="num">flops</th>
             <th className="num">eff. flops</th>
@@ -138,7 +138,7 @@ export function SubOpBreakdownPanel({ breakdown }: Props) {
     return (
       <div className="panel breakdown-panel">
         <div className="panel-header">
-          <h3>sub-op breakdown</h3>
+          <h3>Op Breakdown</h3>
         </div>
         <p className="dim">no breakdown — submit to see live timings.</p>
       </div>
@@ -147,7 +147,7 @@ export function SubOpBreakdownPanel({ breakdown }: Props) {
   return (
     <div className="panel breakdown-panel">
       <div className="panel-header">
-        <h3>sub-op breakdown (one representative layer)</h3>
+        <h3>Op Breakdown (one representative layer)</h3>
         <span className="dim">
           fwd {breakdown.totals_us.layer_fwd.toLocaleString()} µs
           {" · "}

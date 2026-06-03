@@ -5,9 +5,8 @@ Provides minimal bare-chain builders so policy tests don't pull from
 circular dependency for simulator-side tests).
 
 The `build_bare_training_chain` function is a local copy of the
-training-chain builder used by V2/V3/V5 (formerly belady_reactive /
-race_best / min_grow) tests. It mirrors the workload-side helper without
-importing it.
+training-chain builder used by belady_reactive / min_grow tests. It
+mirrors the workload-side helper without importing it.
 """
 from __future__ import annotations
 

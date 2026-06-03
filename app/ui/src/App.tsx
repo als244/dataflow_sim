@@ -6,13 +6,16 @@ import { EventControls } from "./components/EventControls";
 import {
   InputPanel,
   DEFAULT_PARAMS,
+  POLICY_OPTIONS,
   type SimulationParams,
   type Presets,
   type Policy,
 } from "./components/InputPanel";
+import { ComparePoliciesPanel } from "./components/ComparePoliciesPanel";
 import { SubOpBreakdownPanel, type Breakdown } from "./components/SubOpBreakdownPanel";
 import { SummaryPanel, type Summary } from "./components/SummaryPanel";
 import { MemoryTimelinePanel } from "./components/MemoryTimelinePanel";
+import { AnnotatedPlanPanel, type AnnotatedChain } from "./components/AnnotatedPlanPanel";
 import type { EventLog } from "./types";
 import "./App.css";
 
@@ -22,6 +25,7 @@ interface SimulateResponse {
   log: EventLog;
   breakdown: Breakdown;
   summary: Summary;
+  chain: AnnotatedChain;
 }
 
 // Flat URL-param encoding for nested params.
@@ -72,25 +76,16 @@ function initialParams(): SimulationParams {
   }
   const policy = url.get("policy");
   if (policy !== null) {
-    const POLICY_ALIASES: Record<string, Policy> = {
-      sliding: "sliding_window",
-      auto: "belady_reactive",
-      auto_proactive: "race_best",
-      auto_v4: "max_reduce",
-      auto_v5: "min_grow",
-    };
     const VALID_POLICIES: Policy[] = [
       "sliding_window",
       "belady_reactive",
       "roundtrip_planner",
-      "race_best",
       "max_reduce",
       "min_grow",
       "pressurefit",
     ];
-    const resolved = POLICY_ALIASES[policy] ?? policy;
-    if ((VALID_POLICIES as string[]).includes(resolved)) {
-      out.policy = resolved as Policy;
+    if ((VALID_POLICIES as string[]).includes(policy)) {
+      out.policy = policy as Policy;
     }
   }
   const ws = url.get("window_size");
@@ -155,6 +150,7 @@ export default function App() {
   const [log, setLog] = useState<EventLog | null>(null);
   const [breakdown, setBreakdown] = useState<Breakdown | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [chain, setChain] = useState<AnnotatedChain | null>(null);
   const [presets, setPresets] = useState<Presets | null>(null);
   const [status, setStatus] = useState<Status>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -195,6 +191,7 @@ export default function App() {
       setLog(resp.log);
       setBreakdown(resp.breakdown);
       setSummary(resp.summary);
+      setChain(resp.chain);
       setIndex(0);
       setStatus("ok");
     } catch (e) {
@@ -246,6 +243,17 @@ export default function App() {
         params={params}
         setParams={setParams}
         onSubmit={handleSubmit}
+        onReset={() => {
+          setLog(null);
+          setBreakdown(null);
+          setSummary(null);
+          setChain(null);
+          setIndex(0);
+          setPlaying(false);
+          setStatus("idle");
+          setErrorMsg(null);
+        }}
+        locked={log !== null}
         status={status}
         errorMsg={errorMsg}
         presets={presets}
@@ -254,7 +262,14 @@ export default function App() {
       {log && current ? (
         <>
           <SummaryPanel summary={summary} />
-          <SubOpBreakdownPanel breakdown={breakdown} />
+
+          <details className="panel collapsible-panel">
+            <summary className="collapsible-summary">Compute Block Breakdown</summary>
+            <div className="collapsible-content">
+              <SubOpBreakdownPanel breakdown={breakdown} />
+            </div>
+          </details>
+
           <MemoryTimelinePanel
             log={log}
             deviceCapacityGb={params.device_capacity_gb}
@@ -278,27 +293,42 @@ export default function App() {
             setPlaying={setPlaying}
           />
 
-          <div className="two-col">
-            <MemoryPanel
-              title="host memory"
-              memory={current.snapshot.memory.filter((m) => m.location === "host")}
-              highlightedIds={new Set()}
-              selectedObjId={selectedObjId}
-              onSelectObj={setSelectedObjId}
-            />
-            <MemoryPanel
-              title="device memory"
-              memory={current.snapshot.memory.filter((m) => m.location === "device")}
-              highlightedIds={new Set()}
-              selectedObjId={selectedObjId}
-              onSelectObj={setSelectedObjId}
-            />
-          </div>
-          <ReferenceStream
-            references={current.snapshot.reference_stream}
-            memory={current.snapshot.memory}
-            selectedObjId={selectedObjId}
-          />
+          <details className="panel collapsible-panel">
+            <summary className="collapsible-summary">Memory Contents &amp; Reference Stream</summary>
+            <div className="collapsible-content">
+              <div className="three-col">
+                <div className="scroll-subpanel">
+                  <MemoryPanel
+                    title="host memory"
+                    memory={current.snapshot.memory.filter((m) => m.location === "host")}
+                    highlightedIds={new Set()}
+                    selectedObjId={selectedObjId}
+                    onSelectObj={setSelectedObjId}
+                  />
+                </div>
+                <div className="scroll-subpanel">
+                  <MemoryPanel
+                    title="device memory"
+                    memory={current.snapshot.memory.filter((m) => m.location === "device")}
+                    highlightedIds={new Set()}
+                    selectedObjId={selectedObjId}
+                    onSelectObj={setSelectedObjId}
+                  />
+                </div>
+                <div className="scroll-subpanel">
+                  <ReferenceStream
+                    references={current.snapshot.reference_stream}
+                    memory={current.snapshot.memory}
+                    selectedObjId={selectedObjId}
+                  />
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <AnnotatedPlanPanel chain={chain} />
+
+          <ComparePoliciesPanel params={params} policies={POLICY_OPTIONS} />
         </>
       ) : (
         <div className="panel empty-panel">

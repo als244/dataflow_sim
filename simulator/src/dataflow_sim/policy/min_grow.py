@@ -1,6 +1,6 @@
-"""V5 auto-policy: MAX→shrink with simulator-as-oracle.
+"""min_grow auto-policy: MAX→shrink with simulator-as-oracle.
 
-See AUTOV5.md for the design doc. Two-phase pipeline:
+See docs/policy/other_policies/min-grow.md for the design doc. Two-phase pipeline:
 
   Phase A — Plan search: start at MAX (every object resident from its
             earliest legal boundary to its last use), then iteratively
@@ -16,11 +16,11 @@ For unlimited cap, MAX is immediately optimal (zero search). For tight
 cap, beam search shrinks until cap-feasible; once feasible, prefers lowest
 makespan.
 
-The ONLY infeasibility V5 raises is when even the MIN plan (forced
+The ONLY infeasibility min_grow raises is when even the MIN plan (forced
 residency at use) exceeds device_capacity at some boundary — the chain
 literally cannot run.
 
-Boundary convention (matching V4): boundary k = snapshot AFTER task k's
+Boundary convention (matching the dataflow_sim simulator convention): boundary k = snapshot AFTER task k's
 triggers fire. Boundary -1 = initial state. Plan intervals are HALF-OPEN
 [a, b) — object in pool at boundaries a, a+1, ..., b-1; gone at b.
 """
@@ -37,7 +37,7 @@ from dataflow_sim.simulator import run as simulator_run
 
 
 # ============================================================================
-# Plan data model (AUTOV5.md §4)
+# Plan data model (docs/policy/other_policies/min-grow.md §4)
 # ============================================================================
 
 @dataclass(frozen=True)
@@ -159,7 +159,7 @@ def _min_plan(facts: _Facts) -> Plan:
 
 
 # ============================================================================
-# MAX plan — V5's starting point
+# MAX plan — min_grow's starting point
 # ============================================================================
 
 def _max_plan(facts: _Facts) -> Plan:
@@ -393,7 +393,7 @@ def _forced_boundaries_in(oid: str, iv: Interval, facts: _Facts) -> list[int]:
     # Device-init: initial state IS a forced boundary if iv covers -1.
     # (No, actually if device_init, boundary -1 has the object regardless
     # of plan; but if we shrink to NOT include -1, we'd need an offload
-    # at task 0 and re-prefetch later. That's allowed for V5 search.)
+    # at task 0 and re-prefetch later. That's allowed for min_grow search.)
     # For simplicity treat -1 as forced for device-init iff first input use:
     if oid in facts.device_init_ids and iv.a <= -1 < iv.b:
         uses = facts.uses_by_obj.get(oid, ())
@@ -647,7 +647,7 @@ def _smart_prefetch_task(
 # ============================================================================
 
 def _greedy_shrink_to_static_cap(plan: Plan, facts: _Facts) -> Plan:
-    """Legacy MAX→shrink path. Kept for reference but no longer V5's default
+    """Legacy MAX→shrink path. Kept for reference but no longer min_grow's default
     pre-pass — see _lead_time_grow_from_min."""
     if facts.cap is None:
         return plan
@@ -715,7 +715,7 @@ def _lead_time_grow_from_min(facts: _Facts) -> Plan:
     CAN'T hide behind compute (W_0 first — no lead time; W_1 next, etc.).
     Objects with massive lead time (dW_i, used at b_i in backward) come
     LAST in priority and typically aren't pre-placed at all — matching
-    V2's empirically-optimal pattern.
+    belady_reactive's empirically-optimal pattern.
 
     For each candidate, try (1) full MAX-style extension (interval to
     last-use boundary), then (2) first-interval-only pre-placement.
@@ -925,16 +925,11 @@ def _score_with_peak(
     """
     try:
         annotated = _derive_schedule(plan, bare, facts)
-        log = simulator_run(annotated)
+        log = simulator_run(annotated, snapshots=False)
     except Exception:
         return None
     makespan = max(iv.end for iv in log.task_intervals)
-    peak = 0
-    for ev in log.events:
-        dev = sum(m.size for m in ev.snapshot.memory if m.location == "device")
-        if dev > peak:
-            peak = dev
-    return makespan, peak
+    return makespan, log.peak_device_bytes
 
 
 def _v5_plan_search(
@@ -995,7 +990,7 @@ def _v5_plan_search(
     # Start from MIN, add pre-placements in lead-time-ascending order
     # (objects whose re-prefetch CAN'T hide behind compute go first).
     # dWs naturally get LAST priority (huge lead time = re-prefetch hides
-    # behind backward compute). Matches V2's empirical pattern.
+    # behind backward compute). Matches belady_reactive's empirical pattern.
     # If MAX fits, lead_time_grow returns MAX (unlimited cap case).
     # =====================================================================
     if cap is not None and _static_peak(max_plan, facts) > cap:
@@ -1187,7 +1182,7 @@ def apply_min_grow_policy(
     k_sim: int = 15,
     time_budget_s: float = 3.0,
 ) -> TaskChain:
-    """V5 auto policy: MAX→shrink with simulator-as-oracle.
+    """min_grow auto policy: MAX→shrink with simulator-as-oracle.
 
     Raises ValueError("infeasible: ...") iff the MIN-plan footprint exceeds
     device_capacity at some boundary (chain literally cannot run). Otherwise

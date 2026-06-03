@@ -5,9 +5,8 @@ inputs/outputs/runtime, all model state on host, **no** triggers. The bare
 chain is not directly runnable — it requires a policy (e.g. sliding-window or
 auto) to add trigger annotations and initial-device-pool entries.
 
-`build_training_chain` is a backward-compatible wrapper that applies the
-sliding-window policy by default, matching the API/behaviour shipped before
-the Step-1 refactor in AUTOPOLICY.md.
+`build_training_chain` is a convenience wrapper that applies the
+sliding-window policy by default.
 
 Task graph (per layer index i, 0 <= i < L):
 
@@ -184,9 +183,9 @@ def build_transformer_bare_chain(spec, hw, cfg) -> "tuple[TaskChain, dict]":
     breakdown payload (sub-op timings for one representative layer + head).
 
     Args:
-        spec: `core.workloads.transformer.TransformerSpec`
-        hw:   `core.workloads.transformer.HardwareEnv`
-        cfg:  `core.workloads.transformer.TrainingConfig`
+        spec: `dataflow_app.workloads.transformer.TransformerSpec`
+        hw:   `dataflow_app.workloads.transformer.HardwareEnv`
+        cfg:  `dataflow_app.workloads.transformer.TrainingConfig`
     """
     # Local import to avoid hard dependency at module load.
     from dataflow_app.workloads.transformer import (

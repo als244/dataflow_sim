@@ -1,6 +1,6 @@
-"""Auto-policy V4 — clean general formulation.
+"""max_reduce — clean general formulation auto policy.
 
-See AUTOV4.md for the design doc. Three phases:
+See docs/policy/other_policies/max-reduce.md for the design doc. Three phases:
   1. Residency  — decide which boundaries each object is on device. Pure
                   memory accounting; no streams, no times.
   2. Triggers   — derive initial-placement + per-task triggers from the
@@ -373,10 +373,10 @@ def _reduce_to_fit_cap(
 
     # Phase 1 pool tracking accounts for the prefetch left-edge (h2d-start)
     # but NOT for d2h transit on the right edge. Modeling d2h tails would
-    # make V4 declare configs infeasible whenever the d2h queue can't fully
+    # make max_reduce declare configs infeasible whenever the d2h queue can't fully
     # drain by an arbitrary boundary — but the simulator's drain loop will
     # stall compute to wait for d2h naturally, which is the right physical
-    # behavior. V4 instead emits a logically-correct plan; any tail-induced
+    # behavior. max_reduce instead emits a logically-correct plan; any tail-induced
     # pressure manifests as small inter-task gaps in the simulator's timeline.
     pool = _pool_size_per_boundary(bare, residency, sizes)
     eff_ends: dict[tuple[str, int], int] = {}  # unused but kept for API
@@ -609,7 +609,7 @@ def _emit_triggers(
                 # Trigger fires at end of task (a - 1).
                 if a < 0:
                     raise ValueError(
-                        f"V4 bug: prefetched interval starts at boundary {a} "
+                        f"max_reduce bug: prefetched interval starts at boundary {a} "
                         f"for {oid!r}; can't prefetch before chain begins"
                     )
                 annotations[a - 1]["prefetch"].append(oid)
@@ -641,7 +641,7 @@ def _emit_triggers(
                 # lose their writeback — flag it.
                 if obj_mutators and is_last and has_host_source:
                     raise ValueError(
-                        f"V4 bug: mutated host-initial {oid!r} has its last "
+                        f"max_reduce bug: mutated host-initial {oid!r} has its last "
                         f"residency interval ending at boundary {b} (post-chain) "
                         f"— no place to fire the writeback offload"
                     )
@@ -649,7 +649,7 @@ def _emit_triggers(
 
             # Decide trigger type. "dirty" = a mutation in this interval
             # OR carried-over dirt from a prior interval that wasn't flushed.
-            # In V4's plan, every non-last interval ends in either release
+            # In max_reduce's plan, every non-last interval ends in either release
             # (clean) or offload (preserves bytes), so dirt never carries
             # across intervals — we only need to check THIS interval.
             mutated_in_interval = any(m in obj_mutators for m in uses_in)
@@ -838,7 +838,7 @@ def _schedule_prefetches_h2d(
 
 
 def apply_max_reduce_policy(bare: TaskChain) -> TaskChain:
-    """V4 auto policy. See AUTOV4.md for the full spec.
+    """max_reduce auto policy. See docs/policy/other_policies/max-reduce.md for the full spec.
 
     Raises ValueError("infeasible: ...") if no memory schedule can fit the
     chain at the configured `device_capacity`. Otherwise returns an annotated

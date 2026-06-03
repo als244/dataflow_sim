@@ -3,7 +3,7 @@
 into the UI. Also dumps the generated chain JSON to examples/training_L{L}.json.
 
 Usage:
-    python scripts/run_training.py [L=3] [--bw-h2d N] [--bw-d2h N]
+    python app/scripts/run_training.py [L=3] [--bw-h2d N] [--bw-d2h N]
 
 By default both bandwidths are 8 (bytes/time-unit), which keeps the L=3 demo
 stall-free. Lowering --bw-h2d (e.g. to 1) is the easy way to show compute stalls

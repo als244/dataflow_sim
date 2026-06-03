@@ -1,4 +1,4 @@
-"""V2 reactive Belady auto-policy.
+"""belady_reactive reactive Belady auto-policy.
 
 Drives a `ShadowSimulator` that mirrors the simulator's state machine. As the
 planner walks forward through the bare chain, the shadow tracks pool state,
@@ -165,7 +165,7 @@ def _smart_initial_placement(
     return placement
 
 
-# ---------- Phase 2 V2 — shadow-driven forward walk ----------
+# ---------- Phase 2 belady_reactive — shadow-driven forward walk ----------
 
 def _belady_pass_v2(
     bare: TaskChain,
@@ -178,7 +178,7 @@ def _belady_pass_v2(
     way. Returns the shadow with all decisions recorded; caller materializes
     via `shadow.to_annotated_chain()`.
 
-    Key V2 invariant: evictions are issued for *capacity at the actual task
+    Key belady_reactive invariant: evictions are issued for *capacity at the actual task
     start time*, which may be later than `ideal_t` if scheduled offloads need
     time to complete. We compute the earliest feasible task start as a
     function of:
@@ -595,7 +595,7 @@ def apply_belady_reactive_policy(
     device_capacity: int | None = None,
     refinement_iters: int = 20,
 ) -> TaskChain:
-    """V2 reactive Belady auto-policy entry point.
+    """belady_reactive reactive Belady auto-policy entry point.
 
     Pipeline:
       1. Compute structural views (ideal starts, sizes, uses).

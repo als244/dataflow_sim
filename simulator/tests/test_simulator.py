@@ -42,6 +42,29 @@ def test_single_task_emits_start_then_end():
     assert log.task_intervals[0].end == 4
 
 
+def test_snapshot_free_run_keeps_intervals_without_events():
+    chain = TaskChain(
+        initial_memory=[
+            Object(id="x", size=1, location="device"),
+            Object(id="w", size=10, location="host"),
+        ],
+        tasks=[
+            _task("t0", ["x"], runtime=4, prefetches=["w"]),
+            _task("t1", ["w"], runtime=3),
+        ],
+        bandwidth_h2d=5,
+    )
+
+    full = run(chain)
+    simple = run(chain, snapshots=False)
+
+    assert simple.events == []
+    assert simple.peak_device_bytes == full.peak_device_bytes
+    assert [(iv.task_id, iv.start, iv.end, iv.track) for iv in simple.task_intervals] == [
+        (iv.task_id, iv.start, iv.end, iv.track) for iv in full.task_intervals
+    ]
+
+
 def test_output_reserved_at_start_visible_at_end():
     chain = _chain(
         [{"id": "in", "size": 1}],

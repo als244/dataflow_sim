@@ -1,6 +1,6 @@
-"""Tests for the V2 auto-policy.
+"""Tests for the belady_reactive auto-policy.
 
-V2 working envelope (per AUTOPOLICY.md):
+Working envelope:
   L=3: device_capacity >= 500 or None
   L=5: device_capacity >= 500 or None
   L=10: device_capacity >= 500 or None
@@ -17,7 +17,6 @@ from dataflow_sim.policy.roundtrip_planner import _initial_placement
 from dataflow_sim.policy.belady_reactive import (
     apply_belady_reactive_policy as apply_auto_policy,
 )
-from dataflow_sim.policy.race_best import apply_race_best_policy
 from dataflow_sim.policy.sliding_window import apply_sliding_window_policy
 from dataflow_sim.simulator import run
 from conftest import build_bare_training_chain
@@ -84,7 +83,7 @@ def test_auto_policy_L3_works_at_loose_caps(cap):
 
 @pytest.mark.parametrize("cap", [None, 1200, 1000, 800, 600, 500])
 def test_auto_policy_L5_works_at_v2_envelope(cap):
-    """V2 extends L=5 down to cap=500."""
+    """belady_reactive extends L=5 down to cap=500."""
     bare = build_bare_training_chain(L=5)
     annotated = apply_auto_policy(bare, device_capacity=cap)
     log = run(annotated)
@@ -94,7 +93,7 @@ def test_auto_policy_L5_works_at_v2_envelope(cap):
 
 @pytest.mark.parametrize("cap", [None, 1500, 1000, 800, 600, 500])
 def test_auto_policy_L10_works_at_v2_envelope(cap):
-    """V2 extends L=10 down to cap=500 (was unlimited-only in V1)."""
+    """belady_reactive extends L=10 down to cap=500 (was unlimited-only in the early prototype)."""
     bare = build_bare_training_chain(L=10)
     annotated = apply_auto_policy(bare, device_capacity=cap)
     log = run(annotated)
@@ -114,37 +113,8 @@ def test_phase5_recovers_l10_cap600():
     assert makespan < 400
 
 
-# ---------- V3 (proactive) ----------
-
-@pytest.mark.parametrize("cap", [None, 1000, 800])
-def test_v3_proactive_matches_v2_at_loose_caps(cap):
-    """V3 should produce a feasible plan for the loose-cap envelope where it
-    has working coverage (None / 1000 / 800 for L=3)."""
-    bare = build_bare_training_chain(L=3)
-    annotated = apply_race_best_policy(bare, device_capacity=cap)
-    log = run(annotated)
-    compute_ids = {iv.task_id for iv in log.task_intervals if iv.track == "compute"}
-    assert "b_0" in compute_ids
-
-
-@pytest.mark.parametrize("L,cap", [
-    (3, None), (3, 800), (3, 500),
-    (5, None), (5, 800), (5, 500),
-    (10, None), (10, 800), (10, 500),
-])
-def test_v3_envelope_at_least_v2(L, cap):
-    """V3 must always be at least as good as V2 — fallback path guarantees
-    that V3 succeeds iff V2 would, and produces a makespan ≤ V2's."""
-    bare = build_bare_training_chain(L=L)
-    v2 = apply_auto_policy(bare, device_capacity=cap)
-    v3 = apply_race_best_policy(bare, device_capacity=cap)
-    v2_ms = max(iv.end for iv in run(v2).task_intervals)
-    v3_ms = max(iv.end for iv in run(v3).task_intervals)
-    assert v3_ms <= v2_ms, f"V3 ms={v3_ms} worse than V2 ms={v2_ms} at L={L} cap={cap}"
-
-
 def test_v3_enumerates_roundtrips_for_l3():
-    """V3's gap enumeration should find candidate round-trips for forward
+    """roundtrip_planner's gap enumeration should find candidate round-trips for forward
     weights (W_0..W_2) since they have large gaps between f_i and r_i/b_i."""
     from dataflow_sim.policy._common import (
         _compute_ideal_starts, _object_sizes, _object_uses_by_task_idx,
@@ -242,7 +212,7 @@ def test_v2_releases_w_instead_of_offloading_when_host_copy_exists():
     """W_i is host-initial and never mutated (workload contract). When the
     planner needs to free its device bytes between fwd-use and bwd-use, it
     should RELEASE (instant, no d2h cost) — NOT offload — because the host
-    copy is byte-identical. Pre-fix V2 always offloaded weights with a
+    copy is byte-identical. Pre-fix belady_reactive always offloaded weights with a
     future use, wasting d2h bandwidth on a write-back to identical data."""
     bare = build_bare_training_chain(L=5)
     annotated = apply_auto_policy(bare, device_capacity=600)
@@ -253,7 +223,7 @@ def test_v2_releases_w_instead_of_offloading_when_host_copy_exists():
             offloaded_objs.add(trig.obj_id)
     # No W_i should be offloaded — releases handle them.
     w_offloads = {o for o in offloaded_objs if o.startswith("W_")}
-    assert not w_offloads, f"V2 wastefully offloaded weights with host copies: {sorted(w_offloads)}"
+    assert not w_offloads, f"belady_reactive wastefully offloaded weights with host copies: {sorted(w_offloads)}"
 
 
 def test_smart_initial_placement_defers_to_leave_room_for_outputs():
@@ -333,30 +303,26 @@ def test_auto_writes_back_all_gradients_to_host():
     auto policy must emit a write-back offload for each one at its
     last-use task (mirroring the sliding-window policy's behavior)."""
     bare = build_bare_training_chain(L=5)
-    for label, policy_fn in (("V2", apply_auto_policy), ("V3", apply_race_best_policy)):
-        annotated = policy_fn(bare, device_capacity=None)
-        log = run(annotated)
-        final = log.events[-1].snapshot
-        grads = {o.id for o in bare.initial_memory
-                 if o.location == "host" and o.type == "gradient"}
-        for g in grads:
-            host_entry = next(
-                (m for m in final.memory
-                 if m.id == g and m.location == "host"),
-                None,
-            )
-            assert host_entry is not None, (
-                f"{label}: gradient {g!r} not on host at end"
-            )
-            assert host_entry.state == "live", (
-                f"{label}: {g!r} state={host_entry.state}, want 'live'"
-            )
+    annotated = apply_auto_policy(bare, device_capacity=None)
+    log = run(annotated)
+    final = log.events[-1].snapshot
+    grads = {o.id for o in bare.initial_memory
+             if o.location == "host" and o.type == "gradient"}
+    for g in grads:
+        host_entry = next(
+            (m for m in final.memory if m.id == g and m.location == "host"),
+            None,
+        )
+        assert host_entry is not None, f"gradient {g!r} not on host at end"
+        assert host_entry.state == "live", (
+            f"{g!r} state={host_entry.state}, want 'live'"
+        )
 
 
 def test_activation_offload_fires_eagerly_at_production():
-    """When V2 decides an activation (no host source) must be offloaded,
+    """When belady_reactive decides an activation (no host source) must be offloaded,
     it should pick the EARLIEST safe boundary (right after production) so
-    the d2h fires while the stream would otherwise be idle. Previously V2
+    the d2h fires while the stream would otherwise be idle. Previously belady_reactive
     used 'latest boundary that still meets deadline', which delayed A_0's
     offload by tens of ms even though d2h was sitting idle the whole time."""
     # Tight cap that forces activation offloads.
@@ -391,19 +357,6 @@ def test_activation_offload_fires_eagerly_at_production():
         f"{f_0.end}); expected < {fwd_runtime} (one task) since d2h is "
         f"idle and earliest-safe boundary should be picked"
     )
-
-
-def test_v3_round_trip_releases_host_initial_objects():
-    """V3's round-trip planner should pick RELEASE (not offload) for
-    host-initial weights — the host copy is byte-identical and untouched."""
-    bare = build_bare_training_chain(L=5)
-    annotated = apply_race_best_policy(bare, device_capacity=600)
-    offloaded_objs = set()
-    for task in annotated.tasks:
-        for trig in task.offload_after:
-            offloaded_objs.add(trig.obj_id)
-    w_offloads = {o for o in offloaded_objs if o.startswith("W_")}
-    assert not w_offloads, f"V3 wastefully offloaded weights with host copies: {sorted(w_offloads)}"
 
 
 def test_auto_at_least_as_fast_as_sliding_window_at_unlimited_cap():

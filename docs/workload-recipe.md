@@ -133,7 +133,6 @@ interesting case is when it doesn't — then you need a policy.
 | `max_reduce`                    | Eagerly offload as soon as inputs are consumed.                                        |
 | `sliding_window`                | Fixed-size sliding window over the reference stream.                                   |
 | `roundtrip_planner`             | Plans full offload+prefetch round-trips against a shadow simulation.                   |
-| `race_best`                     | Runs several policies in parallel and picks the fastest valid annotation.              |
 | `pressurefit`                  | Fast pressure-fit interval planning with deadline-aware H2D scheduling.|
 
 Each is `apply_<name>_policy(bare, **kwargs) -> TaskChain`. See
@@ -147,10 +146,10 @@ from dataflow_sim.simulator import run
 events = run(annotated_chain)   # -> EventLog
 ```
 
-`run()` does a two-pass simulation: the first pass discovers each task's
-*actual* scheduled start time (accounting for transfer stalls); the second
-re-emits snapshots with reference-stream timestamps based on those actual
-starts. The return value is an `EventLog` with:
+`run()` normally does a two-pass simulation: the first pass discovers each
+task's *actual* scheduled start time (accounting for transfer stalls); the
+second re-emits snapshots with reference-stream timestamps based on those
+actual starts. The return value is an `EventLog` with:
 
 - `task_intervals: list[TaskInterval]` — one per compute task and one per
   fired transfer, with `track` in `{"compute", "h2d", "d2h"}`. This is
@@ -158,6 +157,18 @@ starts. The return value is an `EventLog` with:
 - `events: list[Event]` — every state transition, each carrying a
   `Snapshot` of the memory pool, the active task, and the remaining
   reference stream.
+- `peak_device_bytes: int` — maximum device-pool bytes observed during
+  simulation.
+
+For policy scoring or sweeps that only need makespan/peak and runtime
+validation, use:
+
+```python
+score_log = run(annotated_chain, snapshots=False)
+```
+
+This returns the same `task_intervals` and `peak_device_bytes`, but leaves
+`events` empty and skips snapshot/reference-stream construction.
 
 Key `Event.kind` values:
 

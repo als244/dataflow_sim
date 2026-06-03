@@ -1,4 +1,4 @@
-"""ShadowSimulator: state-machine mirror of `core/simulator.py` used by the
+"""ShadowSimulator: state-machine mirror of `simulator/src/dataflow_sim/simulator.py` used by the
 auto-policy to make timing-aware planning decisions.
 
 Mirrors the simulator's state semantics:

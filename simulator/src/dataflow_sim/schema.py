@@ -204,6 +204,7 @@ class TaskInterval:
 class EventLog:
     task_intervals: list[TaskInterval]
     events: list[Event]
+    peak_device_bytes: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

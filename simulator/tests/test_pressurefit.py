@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from dataflow_sim.policy._common import _compute_ideal_starts, _object_sizes, _object_uses_by_task_idx
 from dataflow_sim.policy.pressurefit import (
+    _InitialProtectionJob,
     _build_facts,
     _extend_h2d_lead_time,
+    _initial_protection_headroom,
+    _initial_protection_jobs_from_probe,
+    _initial_protection_sets,
     _initial_residency,
-    _late_first_use_candidates,
     _pressure_initial_placement,
-    _protected_warm_start_candidates_from_probe,
     _reduce_to_fit,
+    _select_initial_protection_set,
     apply_pressurefit_policy,
 )
 from dataflow_sim.schema import Object, OutputAlloc, Task, TaskChain
@@ -16,7 +19,7 @@ from dataflow_sim.simulator import run
 from conftest import build_bare_training_chain
 
 
-def _warm_choice_chain() -> TaskChain:
+def _initial_choice_chain() -> TaskChain:
     return TaskChain(
         initial_memory=[
             Object(id="early", size=10, location="host", type="weight"),
@@ -33,8 +36,8 @@ def _warm_choice_chain() -> TaskChain:
     )
 
 
-def test_pressure_initial_placement_skips_hidden_late_first_use():
-    bare = _warm_choice_chain()
+def test_pressure_initial_placement_skips_hidden_future_use():
+    bare = _initial_choice_chain()
     ideal = _compute_ideal_starts(bare)
     sizes = _object_sizes(bare)
     uses_by_task = _object_uses_by_task_idx(bare, ideal)
@@ -48,7 +51,7 @@ def test_pressure_initial_placement_skips_hidden_late_first_use():
 
 
 def test_pressurefit_prefetches_late_object_instead_of_preplacing():
-    bare = _warm_choice_chain()
+    bare = _initial_choice_chain()
     annotated = apply_pressurefit_policy(bare)
     run(annotated)
 
@@ -170,7 +173,7 @@ def test_pressurefit_extends_prefetch_intervals_under_strict_cap():
     assert intervals["y"] == [(1, 3)]
 
 
-def test_pressurefit_warm_probe_and_protection_are_generic():
+def test_pressurefit_initial_protection_uses_deadline_demand():
     bare = TaskChain(
         initial_memory=[
             Object(id="x", size=20, location="host", type="other"),
@@ -189,9 +192,22 @@ def test_pressurefit_warm_probe_and_protection_are_generic():
     )
     facts = _build_facts(bare)
 
-    assert _protected_warm_start_candidates_from_probe(
-        facts, bare.device_capacity,
-    ) == ["z"]
+    assert _initial_protection_headroom(facts, bare.device_capacity) == 40
+    jobs = _initial_protection_jobs_from_probe(
+        facts, bare.device_capacity, bare.bandwidth_h2d,
+    )
+    assert [(job.oid, job.release_t, job.deadline, job.tau) for job in jobs] == [
+        ("z", 20, 30, 20),
+    ]
+    protection_sets = _initial_protection_sets(
+        facts, bare.device_capacity, bare.bandwidth_h2d,
+    )
+    assert {"z"} in protection_sets
+    headroom = _initial_protection_headroom(facts, bare.device_capacity)
+    assert all(
+        sum(facts.sizes[oid] for oid in protected) <= headroom
+        for protected in protection_sets
+    )
 
     intervals = _initial_residency(facts, initial_device={"x", "y", "z"})
     _reduce_to_fit(
@@ -202,37 +218,27 @@ def test_pressurefit_warm_probe_and_protection_are_generic():
     assert intervals["y"] == [(1, 1)]
 
 
-def test_pressurefit_late_first_use_candidates_are_schema_driven():
-    bare = TaskChain(
-        initial_memory=[
-            Object(id="early_clean", size=10, location="host", type="other"),
-            Object(id="late_clean", size=20, location="host", type="other"),
-            Object(id="late_mutated", size=30, location="host", type="other"),
-        ],
-        tasks=[
-            Task(id="t0", inputs=["early_clean"], outputs=[], runtime=1),
-            Task(id="t1", inputs=[], outputs=[], runtime=1),
-            Task(
-                id="t2",
-                inputs=["late_mutated"],
-                outputs=[],
-                runtime=1,
-                mutates_inputs=["late_mutated"],
-            ),
-            Task(id="t3", inputs=["late_clean"], outputs=[], runtime=1),
-        ],
-        device_capacity=64,
-        bandwidth_h2d=10,
-        bandwidth_d2h=10,
-    )
-    facts = _build_facts(bare)
+def test_pressurefit_initial_protection_selection_uses_capacity_and_h2d_work():
+    jobs = [
+        _InitialProtectionJob(
+            oid="large",
+            release_t=10,
+            deadline=40,
+            tau=30,
+            first_use=4,
+            size=30,
+            residency_cost=1200,
+        ),
+        _InitialProtectionJob(
+            oid="small",
+            release_t=10,
+            deadline=40,
+            tau=5,
+            first_use=4,
+            size=5,
+            residency_cost=200,
+        ),
+    ]
 
-    assert _late_first_use_candidates(facts, read_only=True) == [
-        "late_clean",
-        "early_clean",
-    ]
-    assert _late_first_use_candidates(facts, read_only=False) == [
-        "late_clean",
-        "late_mutated",
-        "early_clean",
-    ]
+    assert _select_initial_protection_set(jobs, headroom=5) == {"small"}
+    assert _select_initial_protection_set(jobs, headroom=30) == {"large"}

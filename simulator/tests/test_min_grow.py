@@ -1,4 +1,4 @@
-"""Tests for the min_grow policy (formerly auto_v5; MAX→shrink). See dataflow_sim/policy/min_grow.py."""
+"""Tests for the min_grow policy (MAX→shrink). See dataflow_sim/policy/min_grow.py."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -305,13 +305,13 @@ def test_infeasible_raises_with_forced_footprint_exceeding_cap():
 # ============================================================================
 
 def test_end_to_end_unlimited_cap_returns_max_immediately():
-    """Unlimited cap → MAX is optimal; V5 returns it directly without search."""
+    """Unlimited cap → MAX is optimal; min_grow returns it directly without search."""
     bare = build_bare_training_chain(L=3, bandwidth_h2d=8, bandwidth_d2h=8)
     ann = apply_min_grow_policy(bare, time_budget_s=5.0)
     log = simulator_run(ann)
     ms = max(iv.end for iv in log.task_intervals)
-    # Optimal for L=3 unlimited (matches V2/V4/sliding)
-    assert ms == 100, f"expected 100 (matches V2/V4/sliding), got {ms}"
+    # Optimal for L=3 unlimited (matches belady_reactive/max_reduce/sliding)
+    assert ms == 100, f"expected 100 (matches belady_reactive/max_reduce/sliding), got {ms}"
 
 
 def test_end_to_end_returns_runnable_chain():
@@ -358,12 +358,12 @@ def test_smart_prefetch_avoids_zero_runtime_task():
         device_capacity=None,  # no cap → MAX is optimal (pre-place W) — different test
         bandwidth_h2d=10, bandwidth_d2h=10,
     )
-    # With cap=None V5 returns MAX (pre-place W); not a useful test of trigger placement.
+    # With cap=None min_grow returns MAX (pre-place W); not a useful test of trigger placement.
     # Set cap to force shrink.
     bare = replace(bare, device_capacity=110)  # 100 (W) + 10 (o0 reservation) = 110
     ann = apply_min_grow_policy(bare, time_budget_s=2.0)
     # With cap=110, MAX (pre-place W at -1) puts pool at 100 + 10 (next-output) = 110. OK.
-    # So V5 should still pre-place W. Let me just check the chain runs.
+    # So min_grow should still pre-place W. Let me just check the chain runs.
     log = simulator_run(ann)
     assert log.task_intervals
 

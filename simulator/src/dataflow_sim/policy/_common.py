@@ -1,4 +1,4 @@
-"""Shared helpers for the auto-policy planners (V2 reactive Belady and V3
+"""Shared helpers for the auto-policy planners (belady_reactive reactive Belady and roundtrip_planner
 proactive round-trip planner).
 
 Contains:

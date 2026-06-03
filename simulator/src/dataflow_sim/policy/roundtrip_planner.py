@@ -1,4 +1,4 @@
-"""V3 proactive round-trip planner auto-policy.
+"""roundtrip_planner proactive round-trip planner auto-policy.
 
 Constructive planner that explicitly enumerates and packs offload+prefetch
 round-trips for objects whose use-to-use (or production-to-first-use) gap is
@@ -7,7 +7,7 @@ host-resident inputs are mandatory and packed second; round-trips are
 optional optimizations packed in a demand-driven pass that only commits
 trips that actually reduce capacity pressure at some boundary.
 
-Unlike the V2 reactive planner this never simulates a shadow forward — it
+Unlike the belady_reactive reactive planner this never simulates a shadow forward — it
 operates entirely on per-boundary byte-pool projections (`bps[k]`) and two
 stream-slot timelines.
 """
@@ -33,7 +33,7 @@ from dataflow_sim.policy._common import (
 )
 
 
-# ---------- legacy greedy initial placement (used by V3 driver) ----------
+# ---------- legacy greedy initial placement (used by roundtrip_planner driver) ----------
 
 def _initial_placement(
     bare: TaskChain,
@@ -47,7 +47,7 @@ def _initial_placement(
     fill remaining capacity by `first_use` ascending.
     Returns the set of object ids to ADD to the device pool (not the union).
 
-    V3 explicitly schedules offload+prefetch round-trips for activations whose
+    roundtrip_planner explicitly schedules offload+prefetch round-trips for activations whose
     first-use is far from their production, so leaving room for activations in
     init is the planner's job, not init's. A conservative init means fewer
     forced first-use prefetches crowding the h2d stream.
@@ -116,7 +116,7 @@ def _initial_placement(
     return placement
 
 
-# ---------- V3 — proactive round-trip planning ----------
+# ---------- roundtrip_planner — proactive round-trip planning ----------
 
 @dataclass
 class _RoundTrip:
@@ -160,7 +160,7 @@ def _enumerate_roundtrips(
       (a) **production -> first-use** for task outputs (e.g. activations
           produced by f_i and not consumed until r_i much later). This is
           typically the LARGEST gap an object has — failing to enumerate
-          it forces the planner to fall back on V2's reactive eviction,
+          it forces the planner to fall back on belady_reactive's reactive eviction,
           which fires offloads only when memory pressure binds (~tens of
           ms late on a 32-layer config), wasting the early forward window
           when d2h would otherwise be idle.
@@ -299,7 +299,7 @@ def _try_v3_pack(
     uses_by_task: dict[str, list[_UseEvent]],
     cap: int | None,
 ) -> tuple[dict[int, dict[TriggerKind, list[str]]], bool]:
-    """Build a complete V3 plan with this initial placement; return
+    """Build a complete roundtrip_planner plan with this initial placement; return
     (annotations, all_first_uses_fit_within_cap)."""
     candidates = _enumerate_roundtrips(bare, sizes, uses_by_task, ideal_starts)
     candidates = _rank_roundtrips(candidates, bare)
@@ -438,7 +438,7 @@ def _pack_roundtrips(
         for rt in candidates:
             # Only commit if it would reduce overflow at some boundary in its
             # coverage range [k_off+1, k_pre]. Without overflow, skip — keeps
-            # V3's plan minimal at loose caps so makespan matches V2.
+            # roundtrip_planner's plan minimal at loose caps so makespan matches belady_reactive.
             k_off = rt.prev_use_task_idx
             offload_fire_t = task_end[k_off]
             k_pre = -1
@@ -520,7 +520,7 @@ def _pack_roundtrips(
         if chosen_k is None:
             all_first_use_fit = False
             # Fall back: pick latest stream-feasible boundary even if it
-            # overflows bps. Caller (V3 driver) can drop initial-pool items
+            # overflows bps. Caller (roundtrip_planner driver) can drop initial-pool items
             # to retry.
             for k in range(fp.first_use_task_idx - 1, -1, -1):
                 fire_t = task_end[k]
@@ -598,7 +598,7 @@ def _v3_pass(
     ideal_starts: dict[str, int],
     uses: dict[str, list[int]],
 ) -> tuple[dict[int, dict[TriggerKind, list[str]]], set[str]]:
-    """V3 forward pass: use the (slack-aware) initial placement passed in,
+    """roundtrip_planner forward pass: use the (slack-aware) initial placement passed in,
     enumerate + rank + pack round-trips, then place mandatory first-use
     prefetches against the post-round-trip bps.
 
@@ -652,13 +652,13 @@ def apply_roundtrip_planner_policy(
     device_capacity: int | None = None,
     refinement_iters: int = 20,
 ) -> TaskChain:
-    """V3 proactive round-trip planner entry point.
+    """roundtrip_planner proactive round-trip planner entry point.
 
     Pipeline:
       1. Compute structural views (ideal starts, sizes, uses).
       2. Conservative initial placement (`_initial_placement` — leaves slack
          for the round-trip pass to manage activations).
-      3. V3 forward pass (`_v3_pass`): enumerate + rank + pack round-trips,
+      3. roundtrip_planner forward pass (`_v3_pass`): enumerate + rank + pack round-trips,
          then schedule mandatory first-use prefetches, then add structural
          GC releases.
       4. Assemble annotations into a `TaskChain`.

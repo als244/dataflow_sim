@@ -114,14 +114,24 @@ def _snapshot(
     )
 
 
-def run(chain: TaskChain, *, validate: bool = True) -> EventLog:
+def run(
+    chain: TaskChain,
+    *,
+    validate: bool = True,
+    snapshots: bool = True,
+) -> EventLog:
     """Execute the task chain and return a full event log with per-event snapshots.
 
-    Two-pass implementation: the first pass discovers the *actual* scheduled
-    start time of each compute task (accounting for stalls); the second pass
-    re-runs the simulation using those actual starts as the basis for every
-    snapshot's reference-stream `next_t` values, so the panels show realistic
-    next-use timestamps even when transfer stalls shift the schedule.
+    By default this uses a two-pass implementation: the first pass discovers the
+    *actual* scheduled start time of each compute task (accounting for stalls);
+    the second pass re-runs the simulation using those actual starts as the
+    basis for every snapshot's reference-stream `next_t` values, so the panels
+    show realistic next-use timestamps even when transfer stalls shift the
+    schedule.
+
+    Set ``snapshots=False`` for policy scoring: the simulator still validates
+    runtime behavior and returns task/transfer intervals, but skips event
+    snapshots and reference streams.
 
     Set ``validate=False`` to skip the static prepass — useful for tests that
     deliberately exercise runtime error paths or for benchmarking the inner
@@ -129,16 +139,21 @@ def run(chain: TaskChain, *, validate: bool = True) -> EventLog:
     """
     if validate:
         validate_chain(chain)
-    first = _run_impl(chain, task_starts_override=None)
+    if not snapshots:
+        return _run_impl(chain, task_starts_override=None, snapshots=False)
+
+    first = _run_impl(chain, task_starts_override=None, snapshots=False)
     actual_starts = {
         iv.task_id: iv.start for iv in first.task_intervals if iv.track == "compute"
     }
-    return _run_impl(chain, task_starts_override=actual_starts)
+    return _run_impl(chain, task_starts_override=actual_starts, snapshots=True)
 
 
 def _run_impl(
     chain: TaskChain,
     task_starts_override: dict[str, int] | None,
+    *,
+    snapshots: bool,
 ) -> EventLog:
     pool: dict[PoolKey, _PoolEntry] = {}
     events: list[Event] = []
@@ -167,12 +182,13 @@ def _run_impl(
         pool[key] = _PoolEntry(size=obj.size, state="live", location=obj.location, type=obj.type)
         initial_alloc[obj.location] += obj.size
     _check_initial_capacity(chain, initial_alloc)
+    peak_device_bytes = initial_alloc["device"]
 
-    # Reference-stream timestamps: use actual starts if provided, else cumsum.
+    # Reference-stream timestamps are only needed for UI-grade snapshots.
     ref_starts = (
         task_starts_override if task_starts_override is not None
         else _precompute_task_starts(chain)
-    )
+    ) if snapshots else {}
     tasks = list(chain.tasks)
 
     # ---------- helpers (closures over pool, in_flight, queue, events, intervals) ----------
@@ -216,6 +232,10 @@ def _run_impl(
         active: ActiveTask | None = None,
         **kwargs,
     ) -> None:
+        nonlocal peak_device_bytes
+        peak_device_bytes = max(peak_device_bytes, _location_total(pool, "device"))
+        if not snapshots:
+            return
         events.append(
             Event(
                 t=t,
@@ -715,7 +735,11 @@ def _run_impl(
             f"deferred prefetches: {stuck_deferred}"
         )
 
-    return EventLog(task_intervals=intervals, events=events)
+    return EventLog(
+        task_intervals=intervals,
+        events=events,
+        peak_device_bytes=peak_device_bytes,
+    )
 
 
 def _check_initial_capacity(chain: TaskChain, alloc: dict[str, int]) -> None:

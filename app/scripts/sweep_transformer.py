@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 """Transformer policy sweep — llama3_8B across seqlen x num_seqs x cap.
 
-Compares V2 (apply_auto_policy), V4 (apply_auto_v4_policy), V5
-(apply_auto_v5_policy), and sliding-window on a grid of real transformer
-configs. Prints a markdown table with V5 vs best-of-prior comparison.
+Compares belady_reactive, max_reduce, min_grow, pressurefit, and
+sliding_window on a grid of real transformer configs. Prints a markdown
+table with min_grow vs best-of-prior comparison.
 
 Usage:
-    python scripts/sweep_transformer.py [--model llama3_8B] [--budget 15]
+    python app/scripts/sweep_transformer.py [--model llama3_8B] [--budget 15]
 """
 from __future__ import annotations
 
@@ -97,7 +97,7 @@ def sweep(model: str, budget: float):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="llama3_8B")
-    p.add_argument("--budget", type=float, default=15.0, help="V5 search time budget per config (s)")
+    p.add_argument("--budget", type=float, default=15.0, help="min_grow search time budget per config (s)")
     args = p.parse_args()
     sweep(args.model, args.budget)
 

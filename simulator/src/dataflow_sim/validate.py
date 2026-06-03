@@ -122,7 +122,7 @@ def validate_id_resolution(chain: TaskChain) -> None:
         # policies emit GC-style releases of objects this task didn't consume,
         # which the runtime accepts. We mirror the runtime contract here and
         # leave the principle-strict check (release-by-non-consumer) as a
-        # future tightening tracked under V4 known issues.
+        # future tightening an open design question.
         for rid in task.releases_after:
             if rid not in known and rid not in own_outputs:
                 raise ValidationError(

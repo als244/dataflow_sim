@@ -8,25 +8,27 @@ This doc covers the **simulator surface** (run, validate, schema). For policies 
 
 ## `dataflow_sim.simulator`
 
-### `run(chain: TaskChain, *, validate: bool = True) -> EventLog`
+### `run(chain: TaskChain, *, validate: bool = True, snapshots: bool = True) -> EventLog`
 
 Execute a fully-annotated `TaskChain` and return a complete event log.
 
 **Arguments**
 - `chain` (`TaskChain`) — annotated chain (all `releases_after` / `offload_after` / `prefetch_after` triggers populated; a policy normally builds this from a bare chain). Must have `device_capacity`, `host_capacity`, `bandwidth_h2d`, `bandwidth_d2h` set (or `None` for unbounded).
 - `validate` (`bool`, keyword-only, default `True`) — if `True`, run [`validate_chain(chain)`](#validate_chainchain-taskchain---none) as a static prepass before stepping. Set `False` to bypass (useful when deliberately exercising runtime error paths or for raw-speed benchmarks).
+- `snapshots` (`bool`, keyword-only, default `True`) — if `True`, return the full UI-grade event timeline with per-event snapshots and reference streams. If `False`, run a lightweight scoring simulation: runtime behavior is still validated and `task_intervals` / `peak_device_bytes` are populated, but `events` is empty and no snapshots/reference streams are materialized.
 
 **Returns**
 - `EventLog` — see [schema](#dataflow_simschema).
   - `EventLog.task_intervals` — start/end times for every compute task and every transfer (each gets its own `TaskInterval` with `track` ∈ {`compute`, `h2d`, `d2h`}).
-  - `EventLog.events` — full timeline (`task_start`, `task_end`, `release`, `transfer_enqueue`, `transfer_start`, `transfer_end`, `transfer_deferred`), each with a `Snapshot` of pool state at that moment.
+  - `EventLog.events` — when `snapshots=True`, full timeline (`task_start`, `task_end`, `release`, `transfer_enqueue`, `transfer_start`, `transfer_end`, `transfer_deferred`), each with a `Snapshot` of pool state at that moment. Empty when `snapshots=False`.
+  - `EventLog.peak_device_bytes` — maximum device-pool bytes observed during the run. Available in both full and snapshot-free modes.
 
 **Raises**
 - `ValidationError` — if `validate=True` and the chain fails any static rule.
 - `ValueError` / `RuntimeError` — runtime contract violations the validator can't catch (transit bytes exceeding cap, deadlock, etc.). See [docs/policy/principles.md](../docs/policy/principles.md) §1.
 
 **Mechanics (brief)**
-Two-pass: pass 1 discovers actual stalled start times; pass 2 re-snapshots `reference_stream.next_t` from those actual starts so the UI sees realistic next-use timestamps. Makespan = `max(iv.end for iv in task_intervals)`.
+With `snapshots=True`, the simulator runs two passes: pass 1 discovers actual stalled start times; pass 2 re-snapshots `reference_stream.next_t` from those actual starts so the UI sees realistic next-use timestamps. With `snapshots=False`, it runs one pass and skips event/snapshot construction. Makespan = `max(iv.end for iv in task_intervals)`.
 
 **Example**
 ```python
@@ -36,6 +38,11 @@ from dataflow_sim.policy.belady_reactive import apply_belady_reactive_policy
 annotated = apply_belady_reactive_policy(bare_chain)
 log = run(annotated)
 makespan = max(iv.end for iv in log.task_intervals)
+
+# Faster scoring path for policies or sweeps that do not need event snapshots.
+score_log = run(annotated, snapshots=False)
+score = max(iv.end for iv in score_log.task_intervals)
+peak = score_log.peak_device_bytes
 ```
 
 ---
@@ -130,7 +137,8 @@ Per-task trigger that enqueues a transfer when the task ends.
 | Field | Type | Description |
 |---|---|---|
 | `task_intervals` | `list[TaskInterval]` | Start/end per compute task and per transfer. `iv.track` ∈ {`compute`, `h2d`, `d2h`}. |
-| `events` | `list[Event]` | Full timeline of events; each carries a `Snapshot` of pool state. |
+| `events` | `list[Event]` | Full timeline of events when `run(..., snapshots=True)`; empty when `snapshots=False`. Each event carries a `Snapshot` of pool state. |
+| `peak_device_bytes` | `int` | Maximum device-pool bytes observed during simulation. Populated even when `snapshots=False`. |
 
 Methods: `to_dict()` for JSON-safe export; `dump(path)` writes formatted JSON.
 
@@ -167,7 +175,6 @@ Canonical list of every selectable policy. Each entry is `(name, fn)`:
 | `sliding_window` | hand-crafted | Fixed-width window over weights / gradients / activations |
 | `belady_reactive` | auto | Shadow-simulator + farthest-next-use eviction |
 | `roundtrip_planner` | auto | Constructive offload/prefetch round-trip packing |
-| `race_best` | auto | Runs belady + roundtrip, keeps lower makespan |
 | `max_reduce` | auto | Analytic top-down: start at MAX residency, evict under cap pressure |
 | `min_grow` | auto | MIN-seeded over-shrink + beam search using the simulator as cost oracle |
 | `pressurefit` | auto | Pressure-fit interval planning with bounded candidate specs |

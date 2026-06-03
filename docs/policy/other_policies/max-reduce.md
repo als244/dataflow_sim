@@ -1,26 +1,26 @@
-> **Policy:** `max_reduce` (was: V4) — implementation in `simulator/src/dataflow_sim/policy/max_reduce.py`. This is the LIVE design doc.
+# max_reduce — clean general formulation
 
-# Auto-policy V4 — clean general formulation
+Implementation: [`simulator/src/dataflow_sim/policy/max_reduce.py`](../../../simulator/src/dataflow_sim/policy/max_reduce.py).
 
-V1/V2/V3 grew organically and accumulated subtle interactions that broke at edge cases. V4 is a re-derivation from first principles. This document defines the inputs, assumptions, outputs, invariants, and algorithm precisely enough that someone reading it can predict what the planner will do on any input.
+`max_reduce` is a from-first-principles auto policy that decouples *what* is resident from *when* transfers fire. This document defines the inputs, assumptions, outputs, invariants, and algorithm precisely enough that a reader can predict what the planner will do on any input.
 
-## Why prior versions failed
+## Motivation: why earlier reactive/constructive approaches fall short
 
-A common failure mode runs across V1/V2/V3:
+A common failure mode shows up across the earlier reactive (`belady_reactive`) and constructive (`roundtrip_planner`) policies:
 
-* **V2** reasons about state at simulation time via a "shadow simulator", choosing each eviction reactively. The reactive choice is **greedy-late** — it picks the latest boundary where an offload still completes by the deadline — which is correct for makespan but wastes the d2h stream while compute is doing other things. When the cascade-eviction loop inside `_ensure_prefetch_v2` can't free enough at any prefetch boundary, it *throws* during plan construction (not just at simulation time); a caller comparing V2's makespan to V3's never gets to see V2's failure as "v2_ms = None" because the exception escaped.
-* **V3** does up-front constructive packing of "round-trip" candidates onto the streams. It only enumerated `(use_i → use_{i+1})` gaps, so it missed the longest gap of all — between an activation's **production** and its **first use** — which forced V2's reactive eviction to handle activations badly. Its first-use prefetch fallback can also place a prefetch at an earlier boundary if it can't fit at the latest, cascading the over-commit forward until the chain becomes infeasible.
-* The shadow simulator's `predict_schedule` (and the real simulator's, as it turned out) treats the FIFO transfer queue as un-blocked — assumes each queued transfer starts as soon as the previous ends. In reality a queued h2d head can be **blocked on device capacity** until a d2h completes and frees bytes. Both planners and the real simulator used this optimistic prediction and produced plans that the simulator later couldn't execute.
+* **`belady_reactive`** reasons about state at simulation time via a "shadow simulator", choosing each eviction reactively. The reactive choice is **greedy-late** — it picks the latest boundary where an offload still completes by the deadline — which is correct for makespan but wastes the d2h stream while compute is doing other things. When the cascade-eviction loop inside `_ensure_prefetch_v2` can't free enough at any prefetch boundary, it *throws* during plan construction (not just at simulation time); a caller comparing belady's makespan to a constructive planner's never gets to see belady's failure as a clean `None` because the exception escapes.
+* **`roundtrip_planner`** does up-front constructive packing of "round-trip" candidates onto the streams. It only enumerates `(use_i → use_{i+1})` gaps, so it misses the longest gap of all — between an activation's **production** and its **first use** — which forces a paired reactive policy to handle activations badly. Its first-use prefetch fallback can also place a prefetch at an earlier boundary if it can't fit at the latest, cascading the over-commit forward until the chain becomes infeasible.
+* The shadow simulator's `predict_schedule` (and the real simulator's) treats the FIFO transfer queue as un-blocked — assumes each queued transfer starts as soon as the previous ends. In reality a queued h2d head can be **blocked on device capacity** until a d2h completes and frees bytes. Both planners and the real simulator used this optimistic prediction and produced plans that the simulator later couldn't execute.
 
-**Root cause across all three:** the planners blend three concerns — *when* an object should be on device, *how* triggers achieve that, and *whether* the streams can actually deliver it — and resolve them together, in slightly inconsistent ways, leading to combinations where the planner's notion of "feasible" doesn't match the simulator's. Each fix shifted the inconsistency rather than removing it.
+**Root cause across both prior approaches:** the planners blend three concerns — *when* an object should be on device, *how* triggers achieve that, and *whether* the streams can actually deliver it — and resolve them together, in slightly inconsistent ways, leading to combinations where the planner's notion of "feasible" doesn't match the simulator's. `max_reduce` factors these into three sequential phases.
 
 ## Approach
 
-V4 decouples the three concerns into three sequential phases:
+max_reduce decouples the three concerns into three sequential phases:
 
 1. **Residency** (memory). Decide *when* each object is on device. Care only about boundary capacity. No streams, no times-in-microseconds.
 2. **Triggers** (mechanism). Derive the precise releases/offloads/prefetches/pre-placement that realize the residency. Local rewrite of the residency layout, no scheduling.
-3. **Streams** (timing). The real simulator is the timing arbiter. The simulator hard-enforces the cap invariant; if V4's plan would over-commit at any moment, the simulator raises.
+3. **Streams** (timing). The real simulator is the timing arbiter. The simulator hard-enforces the cap invariant; if max_reduce's plan would over-commit at any moment, the simulator raises.
 
 Each phase has well-defined inputs, outputs, and invariants. No cross-phase fallbacks; if a phase can't satisfy its invariant, the planner raises.
 
@@ -41,7 +41,7 @@ A `TaskChain` with:
 ## Assumptions
 
 * **Static, known chain.** All task runtimes, sizes, and dependencies are known up front. No data-dependent control flow.
-* **Read-only-by-default + explicit mutation.** A task does NOT modify the byte contents of its inputs *unless* the input id appears in `mutates_inputs`. Mutation is the generalization of the prior "gradient writeback" convention: any input listed in `mutates_inputs` will have its device-resident bytes updated by the task, so a subsequent release would discard the update. In the transformer training chain, `b_i.mutates_inputs = [dW_i]` and `head.mutates_inputs = [dW_head]` — but V4 doesn't know about the names "dW" or "gradient"; it just acts on whatever `mutates_inputs` declares.
+* **Read-only-by-default + explicit mutation.** A task does NOT modify the byte contents of its inputs *unless* the input id appears in `mutates_inputs`. Mutation is the generalization of the prior "gradient writeback" convention: any input listed in `mutates_inputs` will have its device-resident bytes updated by the task, so a subsequent release would discard the update. In the transformer training chain, `b_i.mutates_inputs = [dW_i]` and `head.mutates_inputs = [dW_head]` — but max_reduce doesn't know about the names "dW" or "gradient"; it just acts on whatever `mutates_inputs` declares.
 * **Outputs introduce fresh ids.** No task's `outputs` reuses an existing object's id. So every object has a single producer (either initial-memory or one task).
 * **One d2h FIFO + one h2d FIFO.** Transfers on the same direction serialize; the two directions run in parallel.
 * **Boundary semantics.** Boundary `k` is the snapshot *after* task `k`'s end-of-task triggers fire (releases, offloads, prefetches enqueued). Boundary `-1` is the simulator's initial state (just `initial_memory` plus any pre-placed objects).
@@ -50,12 +50,12 @@ A `TaskChain` with:
 
 An annotated `TaskChain` with:
 
-* `initial_memory` extended with device-residency copies of host objects that V4 chose to pre-place.
-* Each `Task` carries `releases_after`, `offload_after`, `prefetch_after` lists realizing V4's plan.
+* `initial_memory` extended with device-residency copies of host objects that max_reduce chose to pre-place.
+* Each `Task` carries `releases_after`, `offload_after`, `prefetch_after` lists realizing max_reduce's plan.
 
 ## Invariants the output must satisfy
 
-1. **Capacity.** At every boundary `k`, the device pool size plus the size of next-task device-located outputs is ≤ `device_capacity`. (V4 reasons about this in *logical* residency; the simulator enforces the physical version with its hard `pool > cap` assertion.)
+1. **Capacity.** At every boundary `k`, the device pool size plus the size of next-task device-located outputs is ≤ `device_capacity`. (max_reduce reasons about this in *logical* residency; the simulator enforces the physical version with its hard `pool > cap` assertion.)
 2. **Input liveness.** For every task `t_k`, every input is live on device at boundary `k-1`.
 3. **Output room.** At boundary `k-1`, the device has room for `t_k`'s device-located outputs.
 4. **Trigger validity.** Every `release` and `offload` references an object live on device at that boundary; every `prefetch` references an object with a live host source.
@@ -74,7 +74,7 @@ For each object `o`:
 * `uses(o)`: sorted list of task indices that consume `o` as input.
 * `host_source(o)`: `True` iff `o` is in `initial_memory` with `location == "host"`.
 * `is_mutated(o)`: `True` iff any task `t` in the chain has `o ∈ t.mutates_inputs`.
-* `appears_at(o)`: boundary at which `o` first becomes available on the device side without any planner action — `-1` for device-initial, `producer(o)` for task outputs, "via prefetch only" for host-initial (V4 decides whether to pre-place via Phase 1's reduction).
+* `appears_at(o)`: boundary at which `o` first becomes available on the device side without any planner action — `-1` for device-initial, `producer(o)` for task outputs, "via prefetch only" for host-initial (max_reduce decides whether to pre-place via Phase 1's reduction).
 
 ### Mandatory boundaries
 
@@ -125,11 +125,11 @@ Termination: each iteration strictly increases the number of distinct residency 
 
 ### Effective residency for pool tracking
 
-When computing `pool[k]`, V4 accounts for one piece of simulator-side timing:
+When computing `pool[k]`, max_reduce accounts for one piece of simulator-side timing:
 
-* **Prefetch arrival on the left edge.** For any interval `[a, b]` whose start `a` is NOT `-1` AND not the producer boundary, the simulator creates the device entry the moment the h2d trigger fires (= end of task `a - 1`) and the entry persists through h2d completion. So the obj actually occupies device bytes from boundary `a - 1` onward, not just from boundary `a`. V4 extends each prefetched interval's *effective* start by one boundary leftward when computing pool size.
+* **Prefetch arrival on the left edge.** For any interval `[a, b]` whose start `a` is NOT `-1` AND not the producer boundary, the simulator creates the device entry the moment the h2d trigger fires (= end of task `a - 1`) and the entry persists through h2d completion. So the obj actually occupies device bytes from boundary `a - 1` onward, not just from boundary `a`. max_reduce extends each prefetched interval's *effective* start by one boundary leftward when computing pool size.
 
-V4 deliberately does NOT model d2h transit time in Phase 1 — the simulator's drain loop stalls compute when a queued d2h is still occupying bytes, which preserves correctness without making Phase 1 simulate the streams.
+max_reduce deliberately does NOT model d2h transit time in Phase 1 — the simulator's drain loop stalls compute when a queued d2h is still occupying bytes, which preserves correctness without making Phase 1 simulate the streams.
 
 ## Phase 2 — Triggers
 
@@ -152,7 +152,7 @@ For each object `o` with residency intervals `[a_1, b_1] < [a_2, b_2] < … < [a
 * `production_in = { producer(o) }` if `producer(o)` is in `[a, b]`, else `{}`
 * `fire_task = max(use_tasks_in ∪ production_in)`
 
-If `fire_task` is the production task (no use in interval), the trigger fires on the SAME task that produces the object — step-7 marks the output live, then step-9 (offload) immediately queues the d2h. This is the key fix in V4 for the activation-offload-too-late bug: an activation produced by `f_i` with no immediate use should have its offload fire at `f_i`'s end, not at `f_{i+1}`'s end.
+If `fire_task` is the production task (no use in interval), the trigger fires on the SAME task that produces the object — step-7 marks the output live, then step-9 (offload) immediately queues the d2h. This is the key fix in max_reduce for the activation-offload-too-late bug: an activation produced by `f_i` with no immediate use should have its offload fire at `f_i`'s end, not at `f_{i+1}`'s end.
 
 If `fire_task >= n` (= the obj naturally outlives the chain), no trigger is needed.
 
@@ -174,7 +174,7 @@ The Phase 2 invariant **mutation preservation** falls out of cases A/B: any inte
 
 ## Phase 3 — EDF prefetch scheduling on the h2d FIFO
 
-Naively, V4 emits each prefetch trigger one task before its consumer (`task[a-1]`). That's correct when the h2d stream is idle — but when several prefetches share the FIFO, the queued transfers complete *after* their consumers' start times, and the simulator stalls compute waiting for the h2d. Sliding-window avoids this by pre-firing dW prefetches several tasks early; V4 needs the same idea, generalized.
+Naively, max_reduce emits each prefetch trigger one task before its consumer (`task[a-1]`). That's correct when the h2d stream is idle — but when several prefetches share the FIFO, the queued transfers complete *after* their consumers' start times, and the simulator stalls compute waiting for the h2d. Sliding-window avoids this by pre-firing dW prefetches several tasks early; max_reduce needs the same idea, generalized.
 
 **Principle:** when transfers share a FIFO stream and each has a known deadline, **issue them in deadline order as early as the DAG and memory cap allow** — not as late as memory permits. The FIFO orders delivery; the planner's job is to push enough work in early enough that the queue is never empty when a deadline arrives.
 
@@ -191,29 +191,29 @@ Naively, V4 emits each prefetch trigger one task before its consumer (`task[a-1]
 
 Extending an interval left = extra residency on device = more pool pressure during the extension. Phase 3 respects the cap (via the same pool model as Phase 1), so a tight cap may bound how much lead time a prefetch gets. Untight caps allow extensions up to the EDF target.
 
-The simulator remains the timing arbiter — if V4's plan is logically feasible but the streams can't drain fast enough, the simulator extends makespan via compute stalls. The simulator hard-enforces the cap invariant; over-commits raise `task X deadlocked: device pool > cap, no offloads in flight`.
+The simulator remains the timing arbiter — if max_reduce's plan is logically feasible but the streams can't drain fast enough, the simulator extends makespan via compute stalls. The simulator hard-enforces the cap invariant; over-commits raise `task X deadlocked: device pool > cap, no offloads in flight`.
 
 ## Termination & complexity
 
 * Phase 1: at most `O(Σ|uses|)` iterations, each `O(n × #objects)` for the overflow scan and victim selection. For a transformer training chain (`n = 3L+1`, `#objects = O(L)`), this is `O(L³)` — tractable for `L < 200`.
 * Phase 2: `O(Σ|intervals|) = O(n × #objects)`.
 
-## What V4 does NOT do
+## What max_reduce does NOT do
 
 * No stream-aware co-scheduling (which prefetches overlap which offloads). The planner emits triggers; the simulator's FIFOs decide order.
 * No bandwidth-aware initial placement decisions — Phase 1 reduces purely on memory.
 * No automatic re-prioritization of victims based on stream pressure.
 
-These keep V4 simple and predictable. Layered optimizations (a "Phase 4" stream-feedback loop) are future work, not part of the base.
+These keep max_reduce simple and predictable. Layered optimizations (a "Phase 4" stream-feedback loop) are future work, not part of the base.
 
 ## Comparison to prior versions
 
-| Aspect | V2 | V3 | V4 |
+| Aspect | belady_reactive | roundtrip_planner | max_reduce |
 |---|---|---|---|
 | Decision style | reactive at sim time | constructive up-front | constructive up-front |
 | Eviction trigger | when pool[k] binds during shadow walk | overflow at any covered boundary in `bps` | overflow at any boundary in `pool` (with prefetch-arrival left edge) |
 | Activation offload timing | reactive eviction, greedy-late | round-trip pack of consecutive-use gaps | residency reduction makes activations production-only intervals → offload trigger fires AT the production task |
 | Production→first-use gap | implicit via reactive eviction | enumerated as a special candidate | implicit — production boundary is `appears_at`, eviction can split anywhere |
-| Cross-phase fallback | V3 → V2 in `apply_auto_policy` | falls through to V2 if V3 fails | none — each phase succeeds or raises with a precise reason |
+| Cross-phase fallback | roundtrip_planner → belady_reactive in `apply_auto_policy` | falls through to belady_reactive if roundtrip_planner fails | none — each phase succeeds or raises with a precise reason |
 | Writeback handling | added as post-pass keyed on `type=="gradient"` | added as post-pass keyed on `type=="gradient"` | first-class via `Task.mutates_inputs` — no name-matching, fully general |
 | Lines of code | ~700 | ~700 | ~280 |

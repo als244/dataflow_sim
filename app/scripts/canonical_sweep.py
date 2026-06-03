@@ -2,8 +2,8 @@
 and every policy registered via `get_all_policies()`.
 
 Run:
-    cd app && python scripts/canonical_sweep.py            # default: full sweep
-    python scripts/canonical_sweep.py --quick              # tiny smoke subset
+    python app/scripts/canonical_sweep.py            # default: full sweep
+    python app/scripts/canonical_sweep.py --quick              # tiny smoke subset
 
 Output: CSV at /tmp/canonical_sweep.csv (one row per config, one column per
 policy with the makespan in microseconds).

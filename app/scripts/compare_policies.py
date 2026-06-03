@@ -2,9 +2,9 @@
 """Head-to-head comparison of auto-policy vs. sliding-window baseline.
 
 Usage:
-    python scripts/compare_policies.py [--L 3] [--cap 800] [--window 2]
+    python app/scripts/compare_policies.py [--L 3] [--cap 800] [--window 2]
                                        [--bw-h2d 8] [--bw-d2h 8]
-    python scripts/compare_policies.py --sweep
+    python app/scripts/compare_policies.py --sweep
 
 The single-config mode runs both policies on one parameter combination and
 prints a side-by-side metrics table. `--sweep` runs a grid and produces a

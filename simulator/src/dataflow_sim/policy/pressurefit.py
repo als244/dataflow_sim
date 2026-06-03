@@ -52,6 +52,17 @@ class _PrefetchJob:
     first_use: int
 
 
+@dataclass(frozen=True)
+class _InitialProtectionJob:
+    oid: str
+    release_t: int
+    deadline: int
+    tau: int
+    first_use: int
+    size: int
+    residency_cost: int
+
+
 def _build_facts(chain: TaskChain) -> _Facts:
     sizes = _object_sizes(chain)
     n = len(chain.tasks)
@@ -623,61 +634,319 @@ def _extend_h2d_lead_time(
             next_start_t = facts.task_end[current_a - 1]
 
 
-def _protected_warm_start_candidates_from_probe(
+def _initial_protection_headroom(facts: _Facts, cap: int | None) -> int:
+    if cap is None or facts.n == 0:
+        return 0
+    initial_device_bytes = sum(facts.sizes[oid] for oid in facts.device_ids)
+    mandatory_host_inputs = {
+        oid for oid in facts.host_ids
+        if facts.uses.get(oid) and facts.uses[oid][0] == 0
+    }
+    mandatory_host_bytes = sum(facts.sizes[oid] for oid in mandatory_host_inputs)
+    return cap - initial_device_bytes - mandatory_host_bytes - facts.next_outputs[0]
+
+
+def _pressure_probe_intervals(
     facts: _Facts,
     cap: int | None,
-) -> list[str]:
-    """Rank host-source objects whose warm residency is cut by pressure.
-
-    The probe starts every used host-source object resident, then lets the same
-    reducer make it feasible. Objects that lose initial residency in this probe
-    are exactly the objects the planner would normally turn into H2D prefetches.
-    Protecting a prefix of this list asks whether keeping early-deadline H2Ds
-    initially resident and finding pressure relief elsewhere is faster.
-    """
+) -> dict[str, list[tuple[int, int]]]:
     if cap is None:
-        return []
+        return {}
     all_host = {oid for oid in facts.host_ids if facts.uses.get(oid)}
     if not all_host:
-        return []
+        return {}
 
     probe = _initial_residency(facts, all_host)
     try:
         _reduce_to_fit(facts, probe, cap)
     except ValueError:
+        return {}
+    return probe
+
+
+def _initial_protection_jobs_from_probe(
+    facts: _Facts,
+    cap: int | None,
+    bw_h2d: int | None,
+) -> list[_InitialProtectionJob]:
+    """Build H2D jobs created when initial host residency is cut by pressure."""
+    if cap is None or bw_h2d is None or bw_h2d <= 0 or facts.n == 0:
         return []
 
-    candidates: list[tuple[int, int, str]] = []
-    for oid, ivs in probe.items():
-        if oid not in facts.host_ids or not facts.uses.get(oid):
-            continue
-        if any(a == -1 for a, _b in ivs):
-            continue
-        candidates.append((facts.uses[oid][0], -facts.sizes[oid], oid))
+    probe = _pressure_probe_intervals(facts, cap)
+    if not probe:
+        return []
 
-    return [oid for _first, _neg_size, oid in sorted(candidates)]
-
-
-def _late_first_use_candidates(
-    facts: _Facts,
-    *,
-    read_only: bool,
-) -> list[str]:
-    """Rank host-source objects whose first use is late in the chain.
-
-    This produces a bounded complement to the warm-probe order. The warm-probe
-    order favors earliest deadlines; this order asks whether preserving a
-    medium prefix of late first-use objects avoids a later H2D FIFO burst.
-    """
-    candidates: list[tuple[int, int, str]] = []
-    for oid in facts.host_ids:
+    jobs: list[_InitialProtectionJob] = []
+    for oid in sorted(facts.host_ids):
         uses = facts.uses.get(oid)
         if not uses:
             continue
-        if read_only and facts.mutators.get(oid):
+        first_use = uses[0]
+        if first_use == 0:
             continue
-        candidates.append((-uses[0], -facts.sizes[oid], oid))
-    return [oid for _neg_first, _neg_size, oid in sorted(candidates)]
+        ivs = sorted(probe.get(oid, []))
+        if any(a == -1 for a, _b in ivs):
+            continue
+
+        first_anchor = first_use - 1
+        containing = next(
+            ((a, b) for a, b in ivs if a <= first_anchor <= b),
+            None,
+        )
+        if containing is None:
+            continue
+
+        a, _b = containing
+        fire_task = max(0, min(facts.n - 1, a - 1))
+        release_t = facts.task_end[fire_task]
+        deadline = facts.task_start[first_use]
+        tau = max(1, math.ceil(facts.sizes[oid] / bw_h2d))
+        residency_span = max(1, deadline)
+        jobs.append(_InitialProtectionJob(
+            oid=oid,
+            release_t=release_t,
+            deadline=deadline,
+            tau=tau,
+            first_use=first_use,
+            size=facts.sizes[oid],
+            residency_cost=facts.sizes[oid] * residency_span,
+        ))
+    return jobs
+
+
+def _source_initial_protection_jobs(
+    facts: _Facts,
+    bw_h2d: int | None,
+    *,
+    clean_only: bool,
+) -> list[_InitialProtectionJob]:
+    """Build source-object jobs for initial-protection frontier candidates."""
+    if bw_h2d is None or bw_h2d <= 0 or facts.n == 0:
+        return []
+
+    jobs: list[_InitialProtectionJob] = []
+    for oid in sorted(facts.host_ids):
+        uses = facts.uses.get(oid)
+        if not uses:
+            continue
+        if clean_only and facts.mutators.get(oid):
+            continue
+        first_use = uses[0]
+        deadline = facts.task_start[first_use]
+        tau = max(1, math.ceil(facts.sizes[oid] / bw_h2d))
+        jobs.append(_InitialProtectionJob(
+            oid=oid,
+            release_t=0,
+            deadline=deadline,
+            tau=tau,
+            first_use=first_use,
+            size=facts.sizes[oid],
+            residency_cost=facts.sizes[oid] * max(1, deadline),
+        ))
+    return jobs
+
+
+def _h2d_deadline_misses(
+    jobs: list[_InitialProtectionJob],
+    protected: set[str],
+) -> list[tuple[int, _InitialProtectionJob]]:
+    cursor = 0
+    misses: list[tuple[int, _InitialProtectionJob]] = []
+    for job in sorted(jobs, key=lambda j: (j.deadline, j.release_t, j.oid)):
+        if job.oid in protected:
+            continue
+        start = max(cursor, job.release_t)
+        end = start + job.tau
+        miss = max(0, end - job.deadline)
+        if miss:
+            misses.append((miss, job))
+        cursor = end
+    return misses
+
+
+def _select_initial_protection_set(
+    jobs: list[_InitialProtectionJob],
+    headroom: int,
+) -> set[str]:
+    """Protect enough initial residency to remove predicted H2D deadline misses."""
+    if headroom <= 0:
+        return set()
+
+    protected: set[str] = set()
+    remaining = headroom
+    for _ in range(len(jobs)):
+        misses = _h2d_deadline_misses(jobs, protected)
+        if not misses:
+            break
+
+        _miss, first_missed = min(
+            misses,
+            key=lambda item: (item[1].deadline, -item[0], item[1].oid),
+        )
+        eligible = [
+            job for job in jobs
+            if (
+                job.oid not in protected
+                and job.deadline <= first_missed.deadline
+                and job.size <= remaining
+            )
+        ]
+        if not eligible:
+            break
+
+        chosen = min(
+            eligible,
+            key=lambda job: (
+                job.residency_cost / max(1, job.tau),
+                -job.tau,
+                job.deadline,
+                job.size,
+                job.oid,
+            ),
+        )
+        protected.add(chosen.oid)
+        remaining -= chosen.size
+
+    return protected
+
+
+def _initial_protection_prefix_sets(
+    jobs: list[_InitialProtectionJob],
+    headroom: int,
+    *,
+    group_key,
+) -> list[set[str]]:
+    """Return prefix sets at H2D-work frontier points.
+
+    The frontier is measured in transfer time, not object count. It starts with
+    the first urgency group in the supplied order, then records prefixes when
+    cumulative protected H2D work reaches successive powers of that first
+    group's work. The first following urgency group is also recorded so the
+    portfolio can test the immediate neighbor of the first congestion point.
+    """
+    if not jobs or headroom <= 0:
+        return []
+
+    first_key = group_key(jobs[0])
+    first_group_work = 0
+    first_group_count = 0
+    for job in jobs:
+        if group_key(job) != first_key:
+            break
+        first_group_work += max(1, job.tau)
+        first_group_count += 1
+    next_work_target = max(1, first_group_work)
+    expand_work_frontier = first_group_count == 1
+    total_work = sum(max(1, job.tau) for job in jobs)
+    work_horizon = max(
+        next_work_target,
+        math.ceil(math.sqrt(next_work_target * max(1, total_work))),
+    )
+
+    protected: set[str] = set()
+    protected_bytes = 0
+    protected_work = 0
+    out: list[set[str]] = []
+    recorded: set[frozenset[str]] = set()
+    groups_seen = 0
+    prev_key = None
+
+    def record() -> None:
+        if not protected:
+            return
+        frozen = frozenset(protected)
+        if frozen in recorded:
+            return
+        recorded.add(frozen)
+        out.append(set(protected))
+
+    for i, job in enumerate(jobs):
+        key = group_key(job)
+        if key != prev_key:
+            groups_seen += 1
+            prev_key = key
+
+        if protected_bytes + job.size > headroom:
+            break
+
+        protected.add(job.oid)
+        protected_bytes += job.size
+        protected_work += max(1, job.tau)
+
+        next_key = group_key(jobs[i + 1]) if i + 1 < len(jobs) else None
+        group_finished = next_key != key
+        if group_finished and groups_seen <= 2:
+            record()
+
+        if not expand_work_frontier:
+            continue
+
+        while (
+            next_work_target <= work_horizon
+            and protected_work >= next_work_target
+        ):
+            record()
+            next_work_target *= 2
+        if protected_work >= work_horizon:
+            record()
+            break
+
+    return out
+
+
+def _initial_protection_sets(
+    facts: _Facts,
+    cap: int | None,
+    bw_h2d: int | None,
+) -> list[set[str]]:
+    jobs = _initial_protection_jobs_from_probe(facts, cap, bw_h2d)
+    headroom = _initial_protection_headroom(facts, cap)
+    out: list[set[str]] = []
+    seen: set[frozenset[str]] = set()
+
+    def add_many(sets: list[set[str]]) -> None:
+        for protected in sets:
+            frozen = frozenset(protected)
+            if not frozen or frozen in seen:
+                continue
+            seen.add(frozen)
+            out.append(protected)
+
+    selected = _select_initial_protection_set(jobs, headroom)
+    add_many([selected])
+
+    deadline_jobs = sorted(
+        jobs,
+        key=lambda job: (job.deadline, job.first_use, -job.size, job.oid),
+    )
+    add_many(_initial_protection_prefix_sets(
+        deadline_jobs,
+        headroom,
+        group_key=lambda job: job.deadline,
+    ))
+
+    clean_tail_jobs = sorted(
+        _source_initial_protection_jobs(facts, bw_h2d, clean_only=True),
+        key=lambda job: (-job.first_use, -job.size, job.oid),
+    )
+    add_many(_initial_protection_prefix_sets(
+        clean_tail_jobs,
+        headroom,
+        group_key=lambda job: job.first_use,
+    ))
+
+    tail_jobs = sorted(
+        _source_initial_protection_jobs(facts, bw_h2d, clean_only=False),
+        key=lambda job: (-job.first_use, -job.size, job.oid),
+    )
+    add_many(_initial_protection_prefix_sets(
+        tail_jobs,
+        headroom,
+        group_key=lambda job: job.first_use,
+    ))
+
+    return out
 
 
 def _assign_prefetch_jobs(
@@ -885,8 +1154,8 @@ def apply_pressurefit_policy(
         if protected_initial is None:
             protected_initial = set()
         if protected_initial:
-            warm_initial = {oid for oid in facts.host_ids if facts.uses.get(oid)}
-            intervals = _initial_residency(facts, warm_initial)
+            all_initial_host = {oid for oid in facts.host_ids if facts.uses.get(oid)}
+            intervals = _initial_residency(facts, all_initial_host)
         elif interval_seed is not None:
             intervals = {oid: list(ivs) for oid, ivs in interval_seed.items()}
         else:
@@ -909,7 +1178,7 @@ def apply_pressurefit_policy(
                 respect_interval_start=respect_interval_start,
             )
             try:
-                log = simulator_run(annotated)
+                log = simulator_run(annotated, snapshots=False)
                 return max(iv.end for iv in log.task_intervals), annotated
             except ValueError as e:
                 physical = _physical_pressure_from_error(str(e), facts, bare)
@@ -936,7 +1205,7 @@ def apply_pressurefit_policy(
             pack_h2d=pack_h2d,
             respect_interval_start=respect_interval_start,
         )
-        log = simulator_run(annotated)
+        log = simulator_run(annotated, snapshots=False)
         return max(iv.end for iv in log.task_intervals), annotated
 
     results: list[tuple[int, TaskChain]] = []
@@ -984,22 +1253,29 @@ def apply_pressurefit_policy(
                 if first_error is None:
                     first_error = e
 
-    protected_warm_start_candidates = _protected_warm_start_candidates_from_probe(
-        facts, bare.device_capacity,
+    seen_protected_sets: set[frozenset[str]] = set()
+    max_source_object_size = max(
+        (facts.sizes[oid] for oid in facts.host_ids if facts.uses.get(oid)),
+        default=0,
     )
-    for k in (4, 8, 16):
-        protected = set(protected_warm_start_candidates[:k])
-        if len(protected) < k:
+    for protected_idx, protected in enumerate(_initial_protection_sets(
+        facts, bare.device_capacity, bare.bandwidth_h2d,
+    )):
+        frozen = frozenset(protected)
+        if not frozen or frozen in seen_protected_sets:
             continue
-        try:
-            results.append(verify_candidate_plan(
-                pack_h2d=True,
-                extend_h2d=True,
-                protected_initial=protected,
-            ))
-        except Exception as e:
-            if first_error is None:
-                first_error = e
+        seen_protected_sets.add(frozen)
+        protected_bytes = sum(facts.sizes[oid] for oid in protected)
+        if protected_idx == 0 or protected_bytes <= max_source_object_size:
+            try:
+                results.append(verify_candidate_plan(
+                    pack_h2d=True,
+                    extend_h2d=True,
+                    protected_initial=protected,
+                ))
+            except Exception as e:
+                if first_error is None:
+                    first_error = e
         try:
             results.append(verify_candidate_plan(
                 pack_h2d=False,
@@ -1014,20 +1290,6 @@ def apply_pressurefit_policy(
                 pack_h2d=False,
                 extend_h2d=True,
                 respect_interval_start=True,
-                protected_initial=protected,
-            ))
-        except Exception as e:
-            if first_error is None:
-                first_error = e
-
-    for read_only in (True, False):
-        protected = set(_late_first_use_candidates(facts, read_only=read_only)[:8])
-        if len(protected) < 8:
-            continue
-        try:
-            results.append(verify_candidate_plan(
-                pack_h2d=False,
-                extend_h2d=True,
                 protected_initial=protected,
             ))
         except Exception as e:
