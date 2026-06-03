@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg
+.venv/
+.env
+.env.*
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# UI build
+app/ui/dist/
+app/ui/node_modules/
+ui/dist/
+ui/node_modules/
+
+# Claude local state
+.claude/
+claude.lock
+claude_*.lock
+
+# Internal docs (raw / archived; live docs are committed)
+docs/internal/
+
+# Logs / sweep outputs
+*.log
+/tmp/v5_*.csv

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dataflow_sim_app"
+version = "0.1.0"
+description = "Transformer-training webapp + workload library built on dataflow_sim."
+requires-python = ">=3.10"
+dependencies = [
+  "dataflow_sim",
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "pydantic>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "httpx>=0.27"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dataflow_app"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/dataflow_app/model_dims.json" = "dataflow_app/model_dims.json"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
