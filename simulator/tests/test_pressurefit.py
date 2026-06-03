@@ -74,7 +74,7 @@ def test_pressurefit_runs_training_chain_at_moderate_cap():
     assert "b_0" in compute_ids
 
 
-def test_pressurefit_preserves_generic_mutation_writeback():
+def test_pressurefit_can_release_disposable_mutation_after_final_use():
     bare = TaskChain(
         initial_memory=[
             Object(id="buf", size=10, location="host", type="other"),
@@ -88,6 +88,34 @@ def test_pressurefit_preserves_generic_mutation_writeback():
                 mutates_inputs=["buf"],
             ),
         ],
+        device_capacity=32,
+        bandwidth_h2d=10,
+        bandwidth_d2h=10,
+    )
+
+    annotated = apply_pressurefit_policy(bare)
+
+    assert annotated.tasks[0].mutates_inputs == ["buf"]
+    assert "buf" in annotated.tasks[0].releases_after
+    assert not any(trig.obj_id == "buf" for trig in annotated.tasks[0].offload_after)
+    run(annotated)
+
+
+def test_pressurefit_preserves_final_host_mutation_writeback():
+    bare = TaskChain(
+        initial_memory=[
+            Object(id="buf", size=10, location="host", type="other"),
+        ],
+        tasks=[
+            Task(
+                id="mut",
+                inputs=["buf"],
+                outputs=[OutputAlloc(id="out", size=1, location="device")],
+                runtime=1,
+                mutates_inputs=["buf"],
+            ),
+        ],
+        final_locations={"buf": "host"},
         device_capacity=32,
         bandwidth_h2d=10,
         bandwidth_d2h=10,
@@ -139,6 +167,52 @@ def test_pressurefit_uses_timing_relief_when_static_boundary_is_impossible():
         for trig in task.prefetch_after
     )
     run(annotated)
+
+
+def test_pressurefit_can_delay_prefetch_to_preserve_next_task_capacity():
+    bare = TaskChain(
+        initial_memory=[
+            Object(id="input_0", size=10, location="device", type="activation"),
+            Object(id="input_1", size=30, location="host", type="activation"),
+            Object(id="W", size=10, location="host", type="weight"),
+            Object(id="dW", size=10, location="host", type="gradient"),
+        ],
+        tasks=[
+            Task(
+                id="f_0_0",
+                inputs=["input_0", "W"],
+                outputs=[OutputAlloc(id="A_0_0", size=70, location="device")],
+                runtime=1,
+            ),
+            Task(id="r_0_0", inputs=["A_0_0", "W"], outputs=[], runtime=0),
+            Task(
+                id="b_0_0",
+                inputs=["A_0_0", "W", "dW"],
+                outputs=[OutputAlloc(id="dy_0_0", size=10, location="device")],
+                runtime=100,
+                mutates_inputs=["dW"],
+            ),
+            Task(
+                id="f_0_1",
+                inputs=["input_1", "W"],
+                outputs=[OutputAlloc(id="A_0_1", size=1, location="device")],
+                runtime=1,
+            ),
+        ],
+        device_capacity=120,
+        bandwidth_h2d=1,
+        bandwidth_d2h=10,
+    )
+
+    annotated = apply_pressurefit_policy(bare)
+    run(annotated)
+
+    prefetch_by_task = {
+        task.id: [trig.obj_id for trig in task.prefetch_after]
+        for task in annotated.tasks
+    }
+    assert "input_1" not in prefetch_by_task["r_0_0"]
+    assert "input_1" in prefetch_by_task["b_0_0"]
 
 
 def test_pressurefit_extends_prefetch_intervals_under_strict_cap():

@@ -37,6 +37,7 @@ class _Facts:
     mutators: dict[str, set[int]]
     host_ids: set[str]
     device_ids: set[str]
+    final_locations: dict[str, str]
     task_start: list[int]
     task_end: list[int]
     next_outputs: list[int]
@@ -102,6 +103,7 @@ def _build_facts(chain: TaskChain) -> _Facts:
         mutators=mutators,
         host_ids={o.id for o in chain.initial_memory if o.location == "host"},
         device_ids={o.id for o in chain.initial_memory if o.location == "device"},
+        final_locations=dict(chain.final_locations),
         task_start=task_start,
         task_end=task_end,
         next_outputs=next_outputs,
@@ -326,6 +328,8 @@ def _reduce_to_fit(
         extra_pressure = [0] * (facts.n + 1)
     if protected_initial is None:
         protected_initial = set()
+    anchors_by_oid = {oid: _anchors(oid, facts) for oid in intervals}
+    pool = _pool_size(facts, intervals)
 
     def static_overflow(pool: list[int], idx: int) -> int:
         return pool[idx] + facts.next_outputs[idx] + extra_pressure[idx] - cap
@@ -347,7 +351,10 @@ def _reduce_to_fit(
             for idx, (a, b) in enumerate(ivs):
                 if not (_effective_a(a, p) <= worst_b <= b):
                     continue
-                anchors = _anchors(oid, facts)
+                anchors = anchors_by_oid.get(oid)
+                if anchors is None:
+                    anchors = _anchors(oid, facts)
+                    anchors_by_oid[oid] = anchors
                 anchors_in = [x for x in anchors if a <= x <= b]
                 if worst_b in anchors:
                     if not allow_boundary_relief:
@@ -398,7 +405,6 @@ def _reduce_to_fit(
                 "infeasible: pressurefit pressure reduction exceeded "
                 f"{max_iterations} split attempts"
             )
-        pool = _pool_size(facts, intervals)
         worst_idx = max(range(len(pool)), key=lambda i: static_overflow(pool, i))
         if static_overflow(pool, worst_idx) <= 0:
             return
@@ -416,8 +422,7 @@ def _reduce_to_fit(
                 f"under device_capacity={cap}"
             )
 
-        candidates.sort(key=lambda c: c[0])
-        _key, oid, idx, left_end, right_start = candidates[0]
+        _key, oid, idx, left_end, right_start = min(candidates, key=lambda c: c[0])
         a, b = intervals[oid][idx]
         pieces: list[tuple[int, int]] = []
         if left_end is not None:
@@ -429,9 +434,44 @@ def _reduce_to_fit(
                 "infeasible: pressurefit pressure reduction selected a "
                 "non-progressing split"
             )
+        _subtract_removed_interval_pressure(facts, pool, oid, (a, b), pieces)
         intervals[oid][idx:idx + 1] = pieces
         if not intervals[oid]:
             del intervals[oid]
+
+
+def _subtract_removed_interval_pressure(
+    facts: _Facts,
+    pool: list[int],
+    oid: str,
+    old: tuple[int, int],
+    new_pieces: list[tuple[int, int]],
+) -> None:
+    """Update a precomputed pool after splitting one interval.
+
+    `_pool_size` counts interval residency on boundary index `boundary + 1`.
+    A split only removes residency from the old interval's gap, so we can
+    subtract those boundaries in place instead of rebuilding the full pool.
+    """
+    p = facts.producer.get(oid, -1)
+    old_a, old_b = old
+    old_start = max(-1, _effective_a(old_a, p))
+    old_end = min(facts.n - 1, old_b)
+    if old_start > old_end:
+        return
+
+    normalized_pieces: list[tuple[int, int]] = []
+    for a, b in new_pieces:
+        start = max(-1, _effective_a(a, p))
+        end = min(facts.n - 1, b)
+        if start <= end:
+            normalized_pieces.append((start, end))
+
+    size = facts.sizes[oid]
+    for boundary in range(old_start, old_end + 1):
+        if any(start <= boundary <= end for start, end in normalized_pieces):
+            continue
+        pool[boundary + 1] -= size
 
 
 def _fire_task_for_interval(oid: str, a: int, b: int, facts: _Facts) -> int | None:
@@ -952,6 +992,8 @@ def _initial_protection_sets(
 def _assign_prefetch_jobs(
     jobs: list[_PrefetchJob],
     facts: _Facts,
+    *,
+    latest_only: bool = False,
 ) -> tuple[list[list[str]], list[dict[str, int]]]:
     prefetches: list[list[str]] = [[] for _ in range(facts.n)]
     prefetch_order: list[dict[str, int]] = [dict() for _ in range(facts.n)]
@@ -961,17 +1003,22 @@ def _assign_prefetch_jobs(
     next_start = math.inf
     assignments: list[tuple[int, _PrefetchJob]] = []
     for job in sorted(jobs, key=lambda j: (j.deadline, j.latest, j.oid), reverse=True):
-        latest_finish = job.deadline if math.isinf(next_start) else min(job.deadline, next_start)
-        desired_start = latest_finish - job.tau
         fire = job.latest
-        for t in range(job.latest, job.earliest - 1, -1):
-            if facts.task_end[t] <= desired_start:
-                fire = t
-                break
-        else:
-            fire = job.earliest
+        if not latest_only:
+            latest_finish = (
+                job.deadline if math.isinf(next_start)
+                else min(job.deadline, next_start)
+            )
+            desired_start = latest_finish - job.tau
+            for t in range(job.latest, job.earliest - 1, -1):
+                if facts.task_end[t] <= desired_start:
+                    fire = t
+                    break
+            else:
+                fire = job.earliest
         assignments.append((fire, job))
-        next_start = max(facts.task_end[fire], desired_start)
+        if not latest_only:
+            next_start = max(facts.task_end[fire], desired_start)
 
     for fire, job in assignments:
         prefetches[fire].append(job.oid)
@@ -986,6 +1033,7 @@ def _emit_chain(
     *,
     pack_h2d: bool = True,
     respect_interval_start: bool = False,
+    latest_h2d: bool = False,
 ) -> TaskChain:
     releases: list[list[str]] = [[] for _ in range(facts.n)]
     offloads: list[list[str]] = [[] for _ in range(facts.n)]
@@ -1025,14 +1073,28 @@ def _emit_chain(
                 continue
             mutated = any(a <= m - 1 <= b for m in facts.mutators.get(oid, set()))
             is_last = idx == len(ivs) - 1
-            if mutated:
+            final_location = facts.final_locations.get(oid)
+            if final_location == "device" and is_last:
+                continue
+            if final_location == "host" and is_last:
+                if mutated or not has_host:
+                    offloads[fire_task].append(oid)
+                else:
+                    releases[fire_task].append(oid)
+            elif mutated and not is_last:
                 offloads[fire_task].append(oid)
+            elif mutated:
+                releases[fire_task].append(oid)
             elif (not is_last) and (oid not in facts.host_ids):
                 offloads[fire_task].append(oid)
             else:
                 releases[fire_task].append(oid)
 
-    prefetches, prefetch_order = _assign_prefetch_jobs(prefetch_jobs, facts)
+    prefetches, prefetch_order = _assign_prefetch_jobs(
+        prefetch_jobs,
+        facts,
+        latest_only=latest_h2d,
+    )
     for i, oids in enumerate(unscheduled_prefetches):
         if oids:
             prefetches[i].extend(oids)
@@ -1147,6 +1209,7 @@ def apply_pressurefit_policy(
         pack_h2d: bool,
         extend_h2d: bool = False,
         respect_interval_start: bool = False,
+        latest_h2d: bool = False,
         protected_initial: set[str] | None = None,
         reserve_pressure: int = 0,
         interval_seed: dict[str, list[tuple[int, int]]] | None = None,
@@ -1176,6 +1239,7 @@ def apply_pressurefit_policy(
                 bare, facts, intervals,
                 pack_h2d=pack_h2d,
                 respect_interval_start=respect_interval_start,
+                latest_h2d=latest_h2d,
             )
             try:
                 log = simulator_run(annotated, snapshots=False)
@@ -1204,6 +1268,7 @@ def apply_pressurefit_policy(
             bare, facts, intervals,
             pack_h2d=pack_h2d,
             respect_interval_start=respect_interval_start,
+            latest_h2d=latest_h2d,
         )
         log = simulator_run(annotated, snapshots=False)
         return max(iv.end for iv in log.task_intervals), annotated
@@ -1217,6 +1282,10 @@ def apply_pressurefit_policy(
             "pack_h2d": False,
             "extend_h2d": True,
             "respect_interval_start": True,
+        },
+        {
+            "pack_h2d": True,
+            "latest_h2d": True,
         },
     )
     for candidate_spec in base_candidate_specs:
@@ -1253,14 +1322,18 @@ def apply_pressurefit_policy(
                 if first_error is None:
                     first_error = e
 
+    protected_sets = _initial_protection_sets(
+        facts, bare.device_capacity, bare.bandwidth_h2d,
+    )
+    if _use_fast_portfolio(facts):
+        protected_sets = []
+
     seen_protected_sets: set[frozenset[str]] = set()
     max_source_object_size = max(
         (facts.sizes[oid] for oid in facts.host_ids if facts.uses.get(oid)),
         default=0,
     )
-    for protected_idx, protected in enumerate(_initial_protection_sets(
-        facts, bare.device_capacity, bare.bandwidth_h2d,
-    )):
+    for protected_idx, protected in enumerate(protected_sets):
         frozen = frozenset(protected)
         if not frozen or frozen in seen_protected_sets:
             continue
@@ -1301,3 +1374,15 @@ def apply_pressurefit_policy(
         raise first_error
     results.sort(key=lambda x: x[0])
     return results[0][1]
+
+
+def _use_fast_portfolio(facts: _Facts) -> bool:
+    """Use a smaller candidate portfolio for very long chains.
+
+    The full portfolio is valuable for short canonical sweeps, where trying a
+    dozen initial-protection frontiers can pick up small wins. Repeated
+    training-step chains multiply the task/object count and make each frontier
+    much more expensive. Keep the full portfolio for small research sweeps and
+    use the bounded portfolio for interactive-scale chains.
+    """
+    return facts.n > 256 or len(facts.sizes) > 512

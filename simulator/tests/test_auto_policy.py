@@ -5,6 +5,8 @@ Working envelope:
   L=5: device_capacity >= 500 or None
   L=10: device_capacity >= 500 or None
 """
+from dataclasses import replace
+
 import pytest
 
 from dataflow_sim.policy._common import (
@@ -177,24 +179,35 @@ def test_auto_policy_L3_zero_stalls_at_unlimited():
         assert cur.start <= prev.end, f"stall: {prev.task_id}→{cur.task_id}"
 
 
-def test_auto_policy_L3_unlimited_emits_only_gradient_writebacks():
-    """At unlimited capacity, the only required offloads are the gradient
-    write-backs at each gradient's last-use task (workload convention:
-    dW_i / dW_head must end on host). No other offloads, no prefetches."""
+def test_auto_policy_L3_unlimited_emits_no_transfers_without_final_locations():
+    """At unlimited capacity and with no terminal placement constraints, the
+    policy should not emit transfers for disposable mutated intermediates."""
     bare = build_bare_training_chain(L=3)
     annotated = apply_auto_policy(bare, device_capacity=None)
     n_pre = sum(len(t.prefetch_after) for t in annotated.tasks)
+    n_off = sum(len(t.offload_after) for t in annotated.tasks)
     assert n_pre == 0
-    # Every host-initial gradient must be offloaded exactly once.
-    grads = {o.id for o in bare.initial_memory
-             if o.location == "host" and o.type == "gradient"}
+    assert n_off == 0
+
+
+def test_auto_policy_L3_unlimited_honors_final_host_locations():
+    """A final-host constraint, not object type, creates required writebacks."""
+    bare0 = build_bare_training_chain(L=3)
+    final_locations = {
+        o.id: "host" for o in bare0.initial_memory
+        if o.location == "host" and o.type == "gradient"
+    }
+    bare = replace(bare0, final_locations=final_locations)
+    annotated = apply_auto_policy(bare, device_capacity=None)
+    n_pre = sum(len(t.prefetch_after) for t in annotated.tasks)
+    assert n_pre == 0
+
     offloaded = [tr.obj_id for t in annotated.tasks for tr in t.offload_after]
     from collections import Counter
     c = Counter(offloaded)
-    for g in grads:
+    for g in final_locations:
         assert c[g] == 1, f"gradient {g} offloaded {c[g]} times (want 1)"
-    # Nothing else is offloaded.
-    extra = set(offloaded) - grads
+    extra = set(offloaded) - set(final_locations)
     assert not extra, f"unexpected offloads at unlimited cap: {sorted(extra)}"
 
 
@@ -297,18 +310,18 @@ def test_smart_initial_placement_at_loose_cap_eliminates_forward_stalls():
         )
 
 
-def test_auto_writes_back_all_gradients_to_host():
-    """Workload convention: every host-resident gradient (dW_*, dW_head)
-    must end up on host with state='live' after the chain runs — the
-    auto policy must emit a write-back offload for each one at its
-    last-use task (mirroring the sliding-window policy's behavior)."""
-    bare = build_bare_training_chain(L=5)
+def test_auto_writes_back_final_host_objects():
+    """Objects listed in final_locations must end on host with live bytes."""
+    bare0 = build_bare_training_chain(L=5)
+    final_locations = {
+        o.id: "host" for o in bare0.initial_memory
+        if o.location == "host" and o.type == "gradient"
+    }
+    bare = replace(bare0, final_locations=final_locations)
     annotated = apply_auto_policy(bare, device_capacity=None)
     log = run(annotated)
     final = log.events[-1].snapshot
-    grads = {o.id for o in bare.initial_memory
-             if o.location == "host" and o.type == "gradient"}
-    for g in grads:
+    for g in final_locations:
         host_entry = next(
             (m for m in final.memory if m.id == g and m.location == "host"),
             None,

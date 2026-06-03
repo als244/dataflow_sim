@@ -513,15 +513,15 @@ def make_invalid_release_mutation_release_not_in_inputs() -> TaskChain:
 
 
 def make_invalid_release_mutation_mutation_never_offloaded() -> TaskChain:
-    """A mutated input that is never offloaded before chain end.
+    """A mutated input with final host placement that is never offloaded.
 
-    Rule: 'A mutated input must be offloaded after its last mutation ...'
+    Rule: if final_locations[obj] == "host", host must receive the latest
+    bytes by chain end.
 
-    W starts device-resident with a clean host backup. t0 mutates W in
-    place, then the chain ends with no offload of W. The host copy is now
-    stale and the chain has lost the mutation forever.
+    W starts device-resident. t0 mutates W in place, then the chain ends with
+    no offload of W. The terminal host placement cannot be satisfied.
 
-    Expected validator error includes: 'offload'.
+    Expected validator error includes: 'host'.
     """
     return TaskChain(
         initial_memory=[
@@ -537,6 +537,7 @@ def make_invalid_release_mutation_mutation_never_offloaded() -> TaskChain:
                 mutates_inputs=["W"],  # BAD: mutated, never offloaded, never released
             ),
         ],
+        final_locations={"W": "host"},
         device_capacity=100,
         host_capacity=100,
         bandwidth_h2d=1,
@@ -622,7 +623,7 @@ EXPECTED_ERROR_KEYWORDS.update(
         "make_invalid_release_mutation_dirty_with_later_use": "dirty",
         "make_invalid_release_mutation_no_host_copy_with_later_use": "host",
         "make_invalid_release_mutation_release_not_in_inputs": None,
-        "make_invalid_release_mutation_mutation_never_offloaded": "offload",
+        "make_invalid_release_mutation_mutation_never_offloaded": "host",
         "make_invalid_release_mutation_release_then_later_reference": "released",
         "make_invalid_release_mutation_release_and_offload_same_object": "both",
     }

@@ -112,6 +112,8 @@
 .timeline-bars-inner {
   position: relative;
   user-select: none;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .timeline-drag-rect {
@@ -148,9 +150,10 @@
 .timeline-bar.cat-fwd     { background: #3b6fb8; border-color: #2a4f8a; }
 .timeline-bar.cat-bwd     { background: #4a8a3e; border-color: #366630; }
 .timeline-bar.cat-head    { background: #b8503b; border-color: #8a3c2a; }
+.timeline-bar.cat-step    { background: #8a5a34; border-color: #624025; }
 .timeline-bar.cat-recomp  { background: #8a4ab8; border-color: #66368a; }
-.timeline-bar.cat-h2d     { background: #1d6f3a; border-color: #135025; }
-.timeline-bar.cat-d2h     { background: #c8259a; border-color: #951a72; }
+.timeline-bar.cat-h2d     { background: #2ee6a6; border-color: #1fb87f; color: #063322; }
+.timeline-bar.cat-d2h     { background: #e36bff; border-color: #b949d4; color: #2d0737; }
 
 .timeline-bar.instant {
   border-width: 2px;
@@ -389,10 +392,10 @@
 
 .tag-live { background: #4a8a3e; color: white; }
 .tag-reserved { background: #777; color: white; }
-.tag-pending-inbound { background: #1a5470; color: #8fc7e2; }
-.tag-inbound { background: #1f78b4; color: white; }
-.tag-pending-outbound { background: #6b3a14; color: #f0b585; }
-.tag-outbound { background: #d4691a; color: white; }
+.tag-pending-inbound { background: #0f684c; color: #a3f7d5; }
+.tag-inbound { background: #2ee6a6; color: #063322; }
+.tag-pending-outbound { background: #6b2677; color: #f2b0ff; }
+.tag-outbound { background: #e36bff; color: #2d0737; }
 .tag-ready { background: #4a8a3e; color: white; }
 .tag-not-ready { background: #555; color: #bbb; }
 
@@ -1008,6 +1011,57 @@ details[open] > .collapsible-summary::before {
 .scroll-subpanel > .panel {
   border: none;
   background: transparent;
+  margin: 0;
+}
+
+/* --- Memory pool category subdropdowns (Params / Activations / Grads / …) --- */
+.mem-cats {
+  display: flex;
+  flex-direction: column;
+}
+.mem-cat {
+  border-top: 1px solid #232f40;
+}
+.mem-cat:first-child {
+  border-top: none;
+}
+.mem-cat-summary {
+  cursor: pointer;
+  padding: 0.32rem 0.55rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #cdd6e3;
+  list-style: none;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.mem-cat-summary::-webkit-details-marker { display: none; }
+.mem-cat-summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 0.75em;
+  color: var(--dim);
+  transition: transform 0.15s ease;
+}
+.mem-cat[open] > .mem-cat-summary::before {
+  transform: rotate(90deg);
+}
+.mem-cat-name {
+  flex: 1;
+}
+.mem-cat-badge {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--dim);
+  background: rgba(40, 55, 80, 0.5);
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+.mem-cat > .data-table {
   margin: 0;
 }
 

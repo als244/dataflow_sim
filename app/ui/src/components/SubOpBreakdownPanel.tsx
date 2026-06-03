@@ -18,10 +18,12 @@ export interface Breakdown {
   fwd: SubOpTimingRow[];
   bwd: SubOpTimingRow[];
   head: SubOpTimingRow[];
+  optimizer: SubOpTimingRow[];
   totals_us: {
     layer_fwd: number;
     layer_bwd: number;
     head: number;
+    optimizer_step: number;
   };
 }
 
@@ -144,6 +146,8 @@ export function SubOpBreakdownPanel({ breakdown }: Props) {
       </div>
     );
   }
+  const optimizerRows = breakdown.optimizer ?? [];
+  const optimizerStepUs = breakdown.totals_us.optimizer_step ?? 0;
   return (
     <div className="panel breakdown-panel">
       <div className="panel-header">
@@ -154,11 +158,20 @@ export function SubOpBreakdownPanel({ breakdown }: Props) {
           bwd {breakdown.totals_us.layer_bwd.toLocaleString()} µs
           {" · "}
           head {breakdown.totals_us.head.toLocaleString()} µs
+          {optimizerStepUs > 0 && (
+            <>
+              {" · "}
+              opt {optimizerStepUs.toLocaleString()} µs
+            </>
+          )}
         </span>
       </div>
       <Section title="forward (per layer)" rows={breakdown.fwd} total_us={breakdown.totals_us.layer_fwd} />
       <Section title="head" rows={breakdown.head} total_us={breakdown.totals_us.head} />
       <Section title="backward (per layer)" rows={breakdown.bwd} total_us={breakdown.totals_us.layer_bwd} />
+      {optimizerRows.length > 0 && (
+        <Section title="optimizer step (per layer)" rows={optimizerRows} total_us={optimizerStepUs} />
+      )}
     </div>
   );
 }

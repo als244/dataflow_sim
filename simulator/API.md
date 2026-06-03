@@ -57,7 +57,7 @@ Catches every statically-computable invariant from [docs/policy/principles.md](.
 
 - **ID resolution** — every `obj_id` in `inputs` / `releases_after` / `offload_after` / `prefetch_after` / `mutates_inputs` resolves to either `initial_memory` or a prior task's output; output ids are fresh; no `(id, location)` collision with existing pool entries.
 - **Trigger validity** — prefetch only on objects statically not-on-device; offload only on objects statically on-device; no duplicate prefetches/offloads on the same anchor; no `prefetch + offload` of the same object on the same task.
-- **Release & mutation** — bare release forbidden if the object has a later use AND is dirty (mutated since last offload) or lacks a host copy; mutated inputs must be offloaded before the chain ends.
+- **Release, mutation, and final placement** — bare release is forbidden if the object has a later use and is dirty (mutated since last offload) or lacks a host copy; objects listed in `final_locations` must end in the requested location with latest bytes.
 - **Capacity** — `initial_memory` device/host sums ≤ cap; forced footprint at every task boundary (inputs + outputs, which must coexist) ≤ `device_capacity`.
 - **Topology** — every input resolves to some producer; no self-cycles; duplicate input ids in the same task forbidden.
 
@@ -88,6 +88,7 @@ The simulator's input. Bare TaskChain (no triggers) → policy → annotated Tas
 |---|---|---|---|
 | `initial_memory` | `list[Object]` | required | Objects present at t=0. `location="host"` = host-init (typical for weights); `location="device"` = pre-placed on device (set by policy). |
 | `tasks` | `list[Task]` | required | Compute tasks in execution order. |
+| `final_locations` | `dict[str, "host" \| "device"]` | `{}` | Optional terminal placement constraints. Omitted objects are disposable after their final use. |
 | `device_capacity` | `int \| None` | `None` | Hard byte cap on device pool. `None` = unlimited. |
 | `host_capacity` | `int \| None` | `None` | Hard byte cap on host pool. `None` = unlimited. |
 | `bandwidth_h2d` | `int \| None` | `None` | Bytes per tick on H2D stream. Required if any prefetch trigger relies on bandwidth-derived runtime. |
@@ -106,7 +107,7 @@ Class methods: `TaskChain.from_dict(d)`, `TaskChain.load(path)` — round-trip w
 | `releases_after` | `list[str]` | `[]` | Object ids the simulator releases (bare drop) at this task's end. Filled by policy. |
 | `offload_after` | `list[TransferTrigger]` | `[]` | D2H transfers enqueued at this task's end. Filled by policy. |
 | `prefetch_after` | `list[TransferTrigger]` | `[]` | H2D transfers enqueued at this task's end. Filled by policy. |
-| `mutates_inputs` | `list[str]` | `[]` | Subset of `inputs` that this task modifies in place (read-modify-write). Mutated inputs must be offloaded (not bare-released) so the host copy reflects the update. |
+| `mutates_inputs` | `list[str]` | `[]` | Subset of `inputs` that this task modifies in place (read-modify-write). Policies must preserve updated bytes for later uses. Terminal host/device requirements are expressed with `TaskChain.final_locations`. |
 
 ### `Object`
 

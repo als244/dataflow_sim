@@ -21,10 +21,12 @@ depending on the prose. Tokens used:
     prefetch-already-on-device     offload-not-on-device
     duplicate-prefetch             duplicate-offload
     conflict-prefetch-and-offload-same-object
+    final-location-unknown-obj     final-location-invalid
+    final-location-not-on-host     final-location-dirty-on-host
+    final-location-not-on-device
     release-of-dirty-with-later-use
     release-no-host-copy-with-later-use
     released-then-referenced
-    mutation-never-offloaded
     release-and-offload-same-object
     initial_memory-overflow
     forced-footprint-exceeds-device_capacity
@@ -155,6 +157,18 @@ def validate_id_resolution(chain: TaskChain) -> None:
         # Commit this task's outputs into the known set for downstream tasks.
         known.update(own_outputs)
 
+    for oid, loc in chain.final_locations.items():
+        if oid not in known:
+            raise ValidationError(
+                f"final-location-unknown-obj: final_locations references {oid!r}, "
+                "which is not in initial_memory and not produced by any task"
+            )
+        if loc not in ("host", "device"):
+            raise ValidationError(
+                f"final-location-invalid: final_locations[{oid!r}]={loc!r} is not "
+                "'host' or 'device'"
+            )
+
 
 def validate_triggers(chain: TaskChain) -> None:
     """Static state-tracking of device/host residency across the chain.
@@ -250,7 +264,6 @@ def validate_releases_mutation(chain: TaskChain) -> None:
     on_device: set[str] = set()
     on_host: set[str] = set()
     dirty: set[str] = set()  # mutated since last offload — host copy is stale
-    mutated_pending_offload: set[str] = set()
     # For each released id: (task_id, was_dirty_at_release, had_host_copy_at_release).
     released_meta: dict[str, tuple[str, bool, bool]] = {}
 
@@ -313,11 +326,9 @@ def validate_releases_mutation(chain: TaskChain) -> None:
         # 2. Mutations dirty the device copy.
         for mid in task.mutates_inputs:
             dirty.add(mid)
-            mutated_pending_offload.add(mid)
         # 3. Offloads clear dirty + add host copy + drop device residency.
         for trig in task.offload_after:
             dirty.discard(trig.obj_id)
-            mutated_pending_offload.discard(trig.obj_id)
             on_host.add(trig.obj_id)
             on_device.discard(trig.obj_id)
         # 4. Prefetches re-add device residency.
@@ -336,16 +347,24 @@ def validate_releases_mutation(chain: TaskChain) -> None:
             )
             on_device.discard(rid)
             dirty.discard(rid)
-            mutated_pending_offload.discard(rid)
 
-    # End-of-chain: any mutated input that was never offloaded loses its
-    # mutation. Surface as authoring error.
-    if mutated_pending_offload:
-        oid = sorted(mutated_pending_offload)[0]
-        raise ValidationError(
-            f"mutation-never-offloaded: object {oid!r} was mutated but never "
-            f"offloaded before the end of the chain — the mutation is lost"
-        )
+    for oid, loc in chain.final_locations.items():
+        if loc == "host":
+            if oid not in on_host:
+                raise ValidationError(
+                    f"final-location-not-on-host: object {oid!r} is required on host "
+                    "at chain end but no host copy is available"
+                )
+            if oid in dirty:
+                raise ValidationError(
+                    f"final-location-dirty-on-host: object {oid!r} is required on "
+                    "host at chain end but its latest device bytes were not offloaded"
+                )
+        elif loc == "device" and oid not in on_device:
+            raise ValidationError(
+                f"final-location-not-on-device: object {oid!r} is required on device "
+                "at chain end but is not device-resident"
+            )
 
 
 def validate_capacity(chain: TaskChain) -> None:

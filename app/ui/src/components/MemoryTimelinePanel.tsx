@@ -33,8 +33,8 @@ const STACK_ORDER: BandKey[] = [
 ];
 
 // Match the timeline's cat-h2d / cat-d2h colors for visual consistency.
-const H2D_COLOR = "#1d6f3a"; // dark green (inbound)
-const D2H_COLOR = "#c8259a"; // dark magenta (outbound)
+const H2D_COLOR = "#2ee6a6"; // Nsight-like HtoD green-mint
+const D2H_COLOR = "#e36bff"; // Nsight-like DtoH magenta
 
 const BAND_FILL: Record<BandKey, { color: string; opacity: number }> = {
   weight:           { color: TYPE_COLORS.weight,     opacity: 0.55 },
@@ -48,14 +48,14 @@ const BAND_FILL: Record<BandKey, { color: string; opacity: number }> = {
 };
 
 const BAND_LABEL: Record<BandKey, string> = {
-  weight: "params",
-  gradient: "gradients",
-  activation: "activations",
-  optimizer: "optimizer",
-  other: "other",
-  inbound: "inbound",
-  outbound: "outbound",
-  pending_outbound: "pending outbound",
+  weight: "Params",
+  gradient: "Grads",
+  activation: "Activations",
+  optimizer: "Optimizer",
+  other: "Other",
+  inbound: "Inbound",
+  outbound: "Outbound",
+  pending_outbound: "Pending Outbound",
 };
 
 function bandKeyForEntry(m: MemoryEntry): BandKey | null {
@@ -160,8 +160,9 @@ export function MemoryTimelinePanel({ log, deviceCapacityGb, currentT }: Props) 
   const [drag, setDrag] = useState<{ startX: number; currentX: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
+  const [viewportWidth, setViewportWidth] = useState(BASE_WIDTH);
 
-  const contentWidth = BASE_WIDTH * zoom;
+  const contentWidth = viewportWidth * zoom;
   const xScale = (t: number) => (t / tMax) * contentWidth;
 
   const capBytes = deviceCapacityGb ? deviceCapacityGb * 1024 ** 3 : null;
@@ -169,6 +170,24 @@ export function MemoryTimelinePanel({ log, deviceCapacityGb, currentT }: Props) 
     ? Math.max(peakBytes, capBytes) * 1.02
     : (peakBytes || 1) * 1.1;
   const yScale = (b: number) => PAD_TOP + PLOT_AREA_H - (b / yMax) * PLOT_AREA_H;
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const updateWidth = () => {
+      setViewportWidth(Math.max(1, Math.floor(el.clientWidth)));
+    };
+    updateWidth();
+    const ResizeObserverCtor =
+      typeof ResizeObserver !== "undefined" ? ResizeObserver : null;
+    if (ResizeObserverCtor) {
+      const ro = new ResizeObserverCtor(updateWidth);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+    window.addEventListener("resize", updateWidth);
+    return () => window.removeEventListener("resize", updateWidth);
+  }, []);
 
   useEffect(() => {
     if (!drag) return;
@@ -190,14 +209,14 @@ export function MemoryTimelinePanel({ log, deviceCapacityGb, currentT }: Props) 
         const pxPerUnit = contentWidth / Math.max(tMax, 1);
         const t1 = x1 / pxPerUnit;
         const t2 = x2 / pxPerUnit;
-        const viewportW = scrollRef.current?.clientWidth ?? BASE_WIDTH;
+        const viewportW = scrollRef.current?.clientWidth ?? viewportWidth;
         const newPxPerUnit = viewportW / Math.max(t2 - t1, 1);
         const newContent = newPxPerUnit * tMax;
-        const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, newContent / BASE_WIDTH));
+        const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, newContent / viewportW));
         setZoom(newZoom);
         requestAnimationFrame(() => {
           if (scrollRef.current) {
-            scrollRef.current.scrollLeft = t1 * (BASE_WIDTH * newZoom) / tMax;
+            scrollRef.current.scrollLeft = t1 * (viewportW * newZoom) / tMax;
           }
         });
         return null;
@@ -209,7 +228,7 @@ export function MemoryTimelinePanel({ log, deviceCapacityGb, currentT }: Props) 
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [drag, contentWidth, tMax]);
+  }, [drag, contentWidth, tMax, viewportWidth]);
 
   function onMouseDownInner(e: React.MouseEvent<HTMLDivElement>) {
     if (e.button !== 0 || !innerRef.current) return;

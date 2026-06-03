@@ -438,6 +438,7 @@ class ShadowSimulator:
             tasks=new_tasks,
             bandwidth_h2d=self.chain.bandwidth_h2d,
             bandwidth_d2h=self.chain.bandwidth_d2h,
+            final_locations=self.chain.final_locations,
             device_capacity=self.chain.device_capacity,
             host_capacity=self.chain.host_capacity,
         )

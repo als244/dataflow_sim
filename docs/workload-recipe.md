@@ -32,7 +32,7 @@ dataclasses defined in `simulator/src/dataflow_sim/schema.py`.
 | `releases_after`  | `list[str]`                | —      | Object ids freed from the device immediately after `task_end`. Must be `live`. |
 | `offload_after`   | `list[TransferTrigger]`    | —      | Per-task D→H transfers enqueued at `task_end`. |
 | `prefetch_after`  | `list[TransferTrigger]`    | —      | Per-task H→D transfers enqueued at `task_end`. |
-| `mutates_inputs`  | `list[str]`                | —      | Subset of `inputs` whose bytes this task modifies in place (gradient accumulation etc.). Mutated inputs MUST be offloaded — a bare release would discard the update. |
+| `mutates_inputs`  | `list[str]`                | —      | Subset of `inputs` whose bytes this task modifies in place. Policies must preserve the updated bytes for any later device use. Whether the final bytes must end on host is controlled by `TaskChain.final_locations`. |
 
 ### `OutputAlloc` — what a task produces
 
@@ -59,6 +59,7 @@ The trigger's direction is implicit from which task list it lives in:
 |-------------------|-----------------------|------------------|-----------|
 | `initial_memory`  | `list[Object]`        | —                | t=0 pool state. |
 | `tasks`           | `list[Task]`          | —                | Executed strictly in order. |
+| `final_locations` | `dict[str, "host" \| "device"]` | —       | Optional terminal placement constraints. Omitted objects are disposable after their final use. |
 | `device_capacity` | `int \| None`         | bytes            | `None` = unlimited. Hard ceiling; over-commits raise. |
 | `host_capacity`   | `int \| None`         | bytes            | Same. |
 | `bandwidth_h2d`   | `int \| None`         | bytes per cycle  | Default runtime for H→D triggers. Required unless every H→D trigger has an explicit `runtime`. |
@@ -93,10 +94,14 @@ the annotations filled in.
    input ids, build `OutputAlloc`s for everything it produces, set a
    `runtime`. Leave `releases_after` / `offload_after` / `prefetch_after`
    empty.
-3. Pick `device_capacity`, `host_capacity`, `bandwidth_h2d`,
+3. If the latest bytes of any object must be present in a particular location
+   after the chain ends, add it to `final_locations`, for example
+   `{"W_0": "host"}`. Leave objects out when they are disposable after their
+   final use.
+4. Pick `device_capacity`, `host_capacity`, `bandwidth_h2d`,
    `bandwidth_d2h`. Use units that are internally consistent — the
    simulator never multiplies by a wall-clock conversion.
-4. Construct the `TaskChain`. That's it — you can already pass it to a
+5. Construct the `TaskChain`. That's it — you can already pass it to a
    policy.
 
 Tiny worked example:
@@ -194,7 +199,12 @@ Key `Event.kind` values:
   cannot help cover task `i`'s own input latency — it's there to cover
   task `i+k`'s.
 - **Outputs can't reuse input ids.** Mutation in place is expressed by
-  listing the id in `mutates_inputs` and offloading it; never as an output.
+  listing the id in `mutates_inputs`; never by reusing an input id as an
+  output id.
+- **Mutation is not a final-placement request.** A mutated object can be
+  released after its final use if no later task needs it and it is not listed
+  in `final_locations`. Add `final_locations[obj_id] = "host"` when the
+  host must receive the latest bytes at chain end.
 - **`device_capacity` over-commit raises.** If, after reserving a task's
   outputs, the device pool would exceed `device_capacity`, `run()` raises
   with a "over-committed device" error. That's a policy bug — your plan

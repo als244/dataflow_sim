@@ -142,13 +142,13 @@ export function AnnotatedPlanPanel({ chain }: Props) {
                       {t.offload_after.length > 0 && (
                         <div className="plan-task-row">
                           <span className="plan-task-key">Offload</span>
-                          <TriggerList items={t.offload_after} color="#d9a2e0" />
+                          <TriggerList items={t.offload_after} color="#e36bff" />
                         </div>
                       )}
                       {t.prefetch_after.length > 0 && (
                         <div className="plan-task-row">
                           <span className="plan-task-key">Prefetch</span>
-                          <TriggerList items={t.prefetch_after} color="#a2e0d9" />
+                          <TriggerList items={t.prefetch_after} color="#2ee6a6" />
                         </div>
                       )}
                     </>

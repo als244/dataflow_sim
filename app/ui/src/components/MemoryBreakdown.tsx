@@ -6,8 +6,16 @@ export const TYPE_COLORS: Record<ObjectType, string> = {
   weight: "#7c3aed",      // violet
   activation: "#0ea5e9",  // sky
   gradient: "#dc2626",    // red
-  optimizer: "#f59e0b",   // amber
+  optimizer: "#8a5a34",   // brown, matching optimizer-step timeline bars
   other: "#6b7280",       // gray
+};
+
+export const TYPE_LABEL: Record<ObjectType, string> = {
+  weight: "Params",
+  activation: "Activations",
+  gradient: "Grads",
+  optimizer: "Optimizer",
+  other: "Other",
 };
 
 interface Props {
@@ -47,7 +55,7 @@ export function MemoryBreakdown({ memory }: Props) {
               width: `${(sums[t] / total) * 100}%`,
               background: TYPE_COLORS[t],
             }}
-            title={`${t}: ${fmtBytes(sums[t])} (${((sums[t] / total) * 100).toFixed(0)}%)`}
+            title={`${TYPE_LABEL[t]}: ${fmtBytes(sums[t])} (${((sums[t] / total) * 100).toFixed(0)}%)`}
           />
         ))}
       </div>
@@ -58,7 +66,7 @@ export function MemoryBreakdown({ memory }: Props) {
               className="breakdown-dot"
               style={{ background: TYPE_COLORS[t] }}
             />
-            {t} <span className="dim">{fmtBytes(sums[t])}</span>
+            {TYPE_LABEL[t]} <span className="dim">{fmtBytes(sums[t])}</span>
           </span>
         ))}
       </div>

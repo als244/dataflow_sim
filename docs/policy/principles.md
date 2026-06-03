@@ -12,7 +12,7 @@ These are invariants. Violating any of them produces a buggy plan: the simulator
 
 - **An object may be released only by a task that names it as input, and only when its device entry is `live`.** WHY: simulator raises if the release key is absent or the entry is mid-transfer.
 - **An object cannot be released if it has another use AND (host lacks a copy OR object is dirty).** WHY: bare-releasing a dirty-only-on-device object silently discards the mutation; a clean re-use requires a host copy to re-prefetch from.
-- **A mutated input must be offloaded after its last mutation, before any bare release of the same object.** WHY: same dirty-loss failure, surfaced at the boundary between mutator and final consumer.
+- **A mutated input must not be bare-released before a later use; if its declared final destination is host, it must be offloaded after the last mutation.** WHY: dirty bytes only need preservation when some future consumer or terminal placement constraint needs them.
 - **Every task input must be `live` on device by task start** — either resident or via a prefetch whose H2D (plus any blocking D2H) completes before the earliest start. WHY: missing-input deadlock raise.
 - **Free device bytes + scheduled-D2H reclaim must cover the task's device-located output footprint at dispatch.** WHY: the simulator reserves output space at task start; insufficient headroom raises.
 - **Host pool + task's host-located outputs must fit `host_capacity` at task start** (no host stall mechanism exists). WHY: host overflow raises immediately.
@@ -30,7 +30,7 @@ These are optimality principles for the two scarce resources the simulator model
 
 ### Memory
 
-- **Release ASAP after last use in chain.** Attach the release to the task associated with the last use; if the object's "final destination" is host and it's dirty, offload instead of release at the same anchor. WHY: every cycle of residency past last use is cap pressure on co-resident peers.
+- **Release ASAP after last use in chain.** Attach the release to the task associated with the last use; if `final_locations[obj] == "host"` and the latest bytes are only on device, offload instead of release at the same anchor. WHY: every cycle of residency past last use is cap pressure on co-resident peers.
 - **If Offloading, do ASAP after the task that produced or last mutated the object.** WHY: earlier anchors find cheaper D2H slack and free the device slot sooner; deferred offloads create cascading pressure.
 - **Forbid double residency.** No need to prefetch an object already live on device and no need to write-back a clean object to host where an existing copy exists. WHY: two copies count twice against cap with zero correctness benefit.
 - **Pin objects with reuse-distance ≈ 1** (e.g., heads, hot weights); never round-trip them. WHY: scheduling cost is pure waste when nearly every task needs them.

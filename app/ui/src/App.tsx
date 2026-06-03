@@ -10,6 +10,7 @@ import {
   type SimulationParams,
   type Presets,
   type Policy,
+  type OptimizerMode,
 } from "./components/InputPanel";
 import { ComparePoliciesPanel } from "./components/ComparePoliciesPanel";
 import { SubOpBreakdownPanel, type Breakdown } from "./components/SubOpBreakdownPanel";
@@ -74,6 +75,25 @@ function initialParams(): SimulationParams {
     const n = Number(mb);
     if (Number.isFinite(n)) out.num_seqs = n;
   }
+  const ga = url.get("grad_accum_rounds");
+  if (ga !== null) {
+    const n = Number(ga);
+    if (Number.isFinite(n)) out.grad_accum_rounds = n;
+  }
+  const steps = url.get("num_steps");
+  if (steps !== null) {
+    const n = Number(steps);
+    if (Number.isFinite(n)) out.num_steps = n;
+  }
+  const optimizer = url.get("optimizer");
+  if (optimizer !== null) {
+    const VALID_OPTIMIZERS: OptimizerMode[] = ["none", "adamw", "muon"];
+    if ((VALID_OPTIMIZERS as string[]).includes(optimizer)) {
+      out.optimizer = optimizer as OptimizerMode;
+    }
+  }
+  const finalHost = url.get("final_model_state_on_host");
+  if (finalHost !== null) out.final_model_state_on_host = finalHost === "true";
   const policy = url.get("policy");
   if (policy !== null) {
     const VALID_POLICIES: Policy[] = [
@@ -111,6 +131,10 @@ function syncUrl(params: SimulationParams): void {
   url.searchParams.set("model_qk_norm", params.model.qk_norm ? "true" : "false");
   url.searchParams.set("seqlen", String(params.seqlen));
   url.searchParams.set("num_seqs", String(params.num_seqs));
+  url.searchParams.set("grad_accum_rounds", String(params.grad_accum_rounds));
+  url.searchParams.set("num_steps", String(params.num_steps));
+  url.searchParams.set("optimizer", params.optimizer);
+  url.searchParams.set("final_model_state_on_host", params.final_model_state_on_host ? "true" : "false");
   url.searchParams.set("policy", params.policy);
   url.searchParams.set("window_size", String(params.window_size));
   url.searchParams.set(

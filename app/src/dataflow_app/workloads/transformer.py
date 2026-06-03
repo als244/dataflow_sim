@@ -14,8 +14,16 @@ bf16 = 2 bytes/element (hardcoded for now).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
+
+from dataflow_app.workloads.optimizers import (
+    OptimizerMatrix,
+    OptimizerMode,
+    adamw_step_bytes as _adamw_step_bytes,
+    muon_step_flops_bytes as _muon_step_flops_bytes,
+    optimizer_state_bytes,
+)
 
 BYTES_PER_ELEMENT = 2  # bf16
 
@@ -52,6 +60,10 @@ class HardwareEnv:
 class TrainingConfig:
     seqlen: int
     num_seqs: int  # sequences per (micro-)batch; total tokens = seqlen * num_seqs
+    grad_accum_rounds: int = 1
+    num_steps: int = 1
+    optimizer: OptimizerMode = "none"
+    final_model_state_on_host: bool = False
 
 
 SubOpKind = Literal["compute", "memory"]
@@ -129,11 +141,37 @@ class SubOpTiming:
 
 # ---------- param / byte helpers ----------
 
+def layer_weight_matrices(spec: TransformerSpec) -> list[OptimizerMatrix]:
+    """Logical matrix inventory for one transformer layer.
+
+    Dense layers have QKV, attention output, shared MLP up, and shared MLP
+    down matrices. MoE layers additionally model the full routed expert bank;
+    optimizer state is allocated for every expert, not only the `top_k` active
+    experts used by a particular token batch.
+    """
+    mats: list[OptimizerMatrix] = []
+
+    def add(name: str, rows: int, cols: int, count: int = 1) -> None:
+        if rows > 0 and cols > 0 and count > 0:
+            mats.append(OptimizerMatrix(name=name, rows=rows, cols=cols, count=count))
+
+    d = spec.d_model
+    hd = spec.head_dim
+    nh, nkv = spec.n_heads, spec.n_kv_heads
+    edim = spec.expert_dim
+
+    add("qkv_proj", d, (nh + 2 * nkv) * hd)
+    add("attn_proj", nh * hd, d)
+    add("shared_mlp_up", d, 2 * edim, spec.num_shared_experts)
+    add("shared_mlp_down", edim, d, spec.num_shared_experts)
+    add("routed_mlp_up", d, 2 * edim, spec.num_routed_experts)
+    add("routed_mlp_down", edim, d, spec.num_routed_experts)
+    return mats
+
+
 def params_per_layer(spec: TransformerSpec) -> int:
     """Total parameter count per transformer layer (full expert bank)."""
-    attn = spec.head_dim * (2 * spec.n_heads + 2 * spec.n_kv_heads)
-    mlp = 3 * spec.expert_dim * (spec.num_shared_experts + spec.num_routed_experts)
-    return spec.d_model * (attn + mlp)
+    return sum(m.rows * m.cols * m.count for m in layer_weight_matrices(spec))
 
 
 def active_params_per_layer(spec: TransformerSpec) -> int:
@@ -174,6 +212,16 @@ def layer_weight_bytes(spec: TransformerSpec) -> int:
 
 def head_weight_bytes(spec: TransformerSpec) -> int:
     return head_params(spec) * BYTES_PER_ELEMENT
+
+
+def optimizer_state_bytes_per_layer(spec: TransformerSpec, optimizer: OptimizerMode) -> int:
+    """Bytes in the per-layer optimizer-state object `O_i`.
+
+    AdamW carries two state tensors (e.g. first and second moments). Muon
+    carries one momentum tensor. Both use the same bf16 element size as the
+    layer weights in this model.
+    """
+    return optimizer_state_bytes(layer_weight_bytes(spec), optimizer)
 
 
 # ---------- conversion utilities ----------
@@ -490,6 +538,34 @@ def head_subops(spec: TransformerSpec, cfg: TrainingConfig) -> list[SubOp]:
     ]
 
 
+def optimizer_step_subops(spec: TransformerSpec, cfg: TrainingConfig) -> list[SubOp]:
+    """Per-layer optimizer step sub-ops.
+
+    The task builder emits one `step_i` task per layer after all gradient
+    accumulation rounds. This returns the timing model for one such task.
+    """
+    if cfg.optimizer == "none":
+        return []
+    if cfg.optimizer == "adamw":
+        return [_mem_subop("adamw_step", _adamw_step_bytes(layer_weight_bytes(spec)))]
+    if cfg.optimizer == "muon":
+        flops, bytes_total = _muon_step_flops_bytes(
+            layer_weight_matrices(spec),
+            bytes_per_element=BYTES_PER_ELEMENT,
+        )
+        return [
+            SubOp(
+                name="muon_step",
+                kind="compute",
+                flops=flops,
+                effective_flops=flops,
+                bytes=bytes_total,
+                eff_name="matmul",
+            )
+        ]
+    raise ValueError(f"unknown optimizer mode: {cfg.optimizer!r}")
+
+
 # ---------- timing ----------
 
 _EFF_LOOKUP = {
@@ -585,6 +661,11 @@ def head_breakdown(spec: TransformerSpec, hw: HardwareEnv,
     return [time_subop(s, hw) for s in head_subops(spec, cfg)]
 
 
+def optimizer_step_breakdown(spec: TransformerSpec, hw: HardwareEnv,
+                             cfg: TrainingConfig) -> list[SubOpTiming]:
+    return [time_subop(s, hw) for s in optimizer_step_subops(spec, cfg)]
+
+
 def layer_fwd_microseconds(spec: TransformerSpec, hw: HardwareEnv,
                            cfg: TrainingConfig) -> int:
     return max(1, sum(t.total_us for t in layer_fwd_breakdown(spec, hw, cfg)))
@@ -598,3 +679,11 @@ def layer_bwd_microseconds(spec: TransformerSpec, hw: HardwareEnv,
 def head_microseconds(spec: TransformerSpec, hw: HardwareEnv,
                       cfg: TrainingConfig) -> int:
     return max(1, sum(t.total_us for t in head_breakdown(spec, hw, cfg)))
+
+
+def optimizer_step_microseconds(spec: TransformerSpec, hw: HardwareEnv,
+                                cfg: TrainingConfig) -> int:
+    timings = optimizer_step_breakdown(spec, hw, cfg)
+    if not timings:
+        return 0
+    return max(1, sum(t.total_us for t in timings))

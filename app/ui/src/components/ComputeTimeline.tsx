@@ -17,7 +17,8 @@ function categoryClass(iv: TaskInterval): string {
   if (t.startsWith("r_")) return "cat-recomp";
   if (t.startsWith("b_")) return "cat-bwd";
   if (t.startsWith("f_")) return "cat-fwd";
-  if (t === "head") return "cat-head";
+  if (t === "head" || t.startsWith("head_")) return "cat-head";
+  if (t.startsWith("step_")) return "cat-step";
   return "";
 }
 
@@ -76,17 +77,38 @@ function fmtTime(us: number, stepUs: number): string {
   return `${v.toFixed(decimals)}${unit}`;
 }
 
-/** Precise tooltip formatter — always µs with full integer precision plus
- * a parenthetical s/ms/µs unit when it helps readability. */
-function fmtTimeExact(us: number): string {
-  const formatted = us.toLocaleString();
-  if (us >= 1_000_000) {
-    return `${(us / 1_000_000).toFixed(6)}s (${formatted} µs)`;
+interface TooltipTimeUnit {
+  scaleUs: number;
+  label: string;
+  decimals: number;
+}
+
+function chooseTooltipTimeUnit(startUs: number, endUs: number): TooltipTimeUnit {
+  const maxUs = Math.max(Math.abs(startUs), Math.abs(endUs));
+  const spanUs = Math.abs(endUs - startUs);
+  if (maxUs >= 1_000_000 && spanUs >= 1_000) {
+    return { scaleUs: 1_000_000, label: "s", decimals: 3 };
   }
-  if (us >= 1_000) {
-    return `${(us / 1_000).toFixed(3)}ms (${formatted} µs)`;
+  if (maxUs >= 1_000) {
+    return { scaleUs: 1_000, label: "ms", decimals: 3 };
   }
-  return `${formatted} µs`;
+  return { scaleUs: 1, label: "µs", decimals: 0 };
+}
+
+function fmtScaledTime(us: number, unit: TooltipTimeUnit): string {
+  const value = us / unit.scaleUs;
+  if (unit.decimals === 0) return Math.round(value).toLocaleString();
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: unit.decimals,
+  });
+}
+
+function fmtTimeRange(startUs: number, endUs: number): string {
+  const unit = chooseTooltipTimeUnit(startUs, endUs);
+  const start = fmtScaledTime(startUs, unit);
+  const end = fmtScaledTime(endUs, unit);
+  return start === end ? `${start} ${unit.label}` : `${start}-${end} ${unit.label}`;
 }
 
 function niceTickStep(durationUs: number, plotWidthPx: number): number {
@@ -122,8 +144,9 @@ export function ComputeTimeline({
   const [drag, setDrag] = useState<{ startX: number; currentX: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
+  const [viewportWidth, setViewportWidth] = useState(BASE_WIDTH);
 
-  const contentWidth = BASE_WIDTH * zoom;
+  const contentWidth = viewportWidth * zoom;
   const pxPerUnit = contentWidth / Math.max(totalDuration, 1);
   const visible = intervals.filter((iv) => iv.end > iv.start);
 
@@ -137,6 +160,28 @@ export function ComputeTimeline({
 
   const tickStep = niceTickStep(totalDuration, contentWidth);
   const tickCount = Math.floor(totalDuration / tickStep) + 1;
+  const cursorX = Math.min(
+    Math.max(0, currentT * pxPerUnit),
+    Math.max(0, contentWidth - 2),
+  );
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const updateWidth = () => {
+      setViewportWidth(Math.max(1, Math.floor(el.clientWidth)));
+    };
+    updateWidth();
+    const ResizeObserverCtor =
+      typeof ResizeObserver !== "undefined" ? ResizeObserver : null;
+    if (ResizeObserverCtor) {
+      const ro = new ResizeObserverCtor(updateWidth);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+    window.addEventListener("resize", updateWidth);
+    return () => window.removeEventListener("resize", updateWidth);
+  }, []);
 
   // ---- drag-to-zoom: select a sub-range with the mouse, zoom to fill viewport. ----
   useEffect(() => {
@@ -158,14 +203,14 @@ export function ComputeTimeline({
         if (x2 - x1 < DRAG_MIN_PX) return null;
         const t1 = x1 / pxPerUnit;
         const t2 = x2 / pxPerUnit;
-        const viewportW = scrollRef.current?.clientWidth ?? BASE_WIDTH;
+        const viewportW = scrollRef.current?.clientWidth ?? viewportWidth;
         const newPxPerUnit = viewportW / Math.max(t2 - t1, 1);
         const newContent = newPxPerUnit * totalDuration;
-        const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, newContent / BASE_WIDTH));
+        const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, newContent / viewportW));
         setZoom(newZoom);
         requestAnimationFrame(() => {
           if (scrollRef.current) {
-            scrollRef.current.scrollLeft = t1 * (BASE_WIDTH * newZoom) / totalDuration;
+            scrollRef.current.scrollLeft = t1 * (viewportW * newZoom) / totalDuration;
           }
         });
         return null;
@@ -177,7 +222,7 @@ export function ComputeTimeline({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [drag, pxPerUnit, contentWidth, totalDuration]);
+  }, [drag, pxPerUnit, contentWidth, totalDuration, viewportWidth]);
 
   function onMouseDownInner(e: React.MouseEvent<HTMLDivElement>) {
     if (e.button !== 0) return;
@@ -252,6 +297,10 @@ export function ComputeTimeline({
             {visible.map((iv) => {
               const isActive = iv.task_id === activeTaskId;
               const isHover = iv.task_id === hoverTaskId;
+              const rawLeft = iv.start * pxPerUnit;
+              const visualWidth = Math.max(2, (iv.end - iv.start) * pxPerUnit);
+              const left = Math.min(rawLeft, Math.max(0, contentWidth - visualWidth));
+              const width = Math.min(visualWidth, Math.max(0, contentWidth - left));
               return (
                 <div
                   key={iv.task_id}
@@ -262,14 +311,14 @@ export function ComputeTimeline({
                     (isHover ? " hover" : "")
                   }
                   style={{
-                    left: iv.start * pxPerUnit,
-                    width: Math.max(2, (iv.end - iv.start) * pxPerUnit),
+                    left,
+                    width,
                     top: laneTop[iv.track],
                     height: BAR_HEIGHT,
                   }}
                   onMouseEnter={() => onHoverTask(iv.task_id)}
                   onMouseLeave={() => onHoverTask(null)}
-                  title={`${displayLabel(iv)} [${fmtTimeExact(iv.start)}, ${fmtTimeExact(iv.end)}]`}
+                  title={`${displayLabel(iv)} [${fmtTimeRange(iv.start, iv.end)}]`}
                 >
                   <span className="bar-label">{displayLabel(iv)}</span>
                 </div>
@@ -277,7 +326,7 @@ export function ComputeTimeline({
             })}
             <div
               className="timeline-cursor"
-              style={{ left: currentT * pxPerUnit, height: lanesHeight }}
+              style={{ left: cursorX, height: lanesHeight }}
             />
             {drag && Math.abs(drag.currentX - drag.startX) >= 1 && (
               <div

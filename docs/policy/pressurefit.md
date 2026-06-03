@@ -84,8 +84,8 @@ The common pipeline phases have these meanings:
 | Physical repair | Simulator feasibility error plus current intervals. | Extra boundary pressure, followed by another reduction/emission attempt. | Adds conservative pressure at specific boundaries. It does not search for a faster plan. |
 
 1. **Build reference facts.** Compute ideal compute-stream start/end times,
-   object sizes, producers, uses, mutators, initial host/device sets, and each
-   next task's device output reservation.
+   object sizes, producers, uses, mutators, initial host/device sets, terminal
+   placement constraints, and each next task's device output reservation.
 
 2. **Build reusable seeds and protection sets.** Choose finite-cap initial residency,
    then build the base seed: one continuous interval per object from its
@@ -95,12 +95,17 @@ The common pipeline phases have these meanings:
 
 3. **Generate candidate specs.** The current portfolio contains:
 
-   - base candidate specs using the base seed with packed FIFO, latest-safe, and
-     interval-entry H2D schedules;
+   - base candidate specs using the base seed with packed FIFO, latest-safe,
+     interval-entry, and latest-trigger H2D schedules;
    - one slack-reserve candidate spec using the base seed;
    - one cold-admission candidate spec using a colder initial-residency seed;
    - initial-protection candidate specs chosen from H2D deadline demand and
      H2D-work frontiers.
+
+   On large interactive chains, the portfolio skips the initial-protection
+   frontier family and keeps the base/slack/cold-admission specs. This is a
+   runtime guard for repeated-step chains, where each frontier candidate is
+   much more expensive.
 
    The appendix enumerates every candidate family and its purpose.
 
@@ -199,6 +204,7 @@ build_candidate_specs(chain, facts, base_intervals):
     specs += base_intervals with h2d_schedule = packed_fifo
     specs += base_intervals with h2d_schedule = latest_safe
     specs += base_intervals with h2d_schedule = interval_entry
+    specs += base_intervals with h2d_schedule = latest_trigger
 
     specs += base_intervals with:
         reserve_pressure = max(next_task_device_outputs)
@@ -207,11 +213,12 @@ build_candidate_specs(chain, facts, base_intervals):
     specs += cold_admission_seed(device_capacity / 2) with:
         h2d_schedule = packed_fifo
 
-    for protected in select_initial_protection_sets(facts):
-        specs += all_host_seed with:
-            protected_initial = protected
-            extend_h2d = true
-            h2d_schedule in [packed_fifo, latest_safe, interval_entry]
+    if chain is small enough for the full portfolio:
+        for protected in select_initial_protection_sets(facts):
+            specs += all_host_seed with:
+                protected_initial = protected
+                extend_h2d = true
+                h2d_schedule in [packed_fifo, latest_safe, interval_entry]
 
     return specs
 ```
@@ -290,7 +297,9 @@ emit_triggers(intervals, h2d_schedule):
         else:
             add H2D prefetch trigger according to h2d_schedule
 
-        if interval exit contains a mutation:
+        if interval exit contains a mutation and object has a later interval:
+            add D2H offload trigger
+        else if final_locations[object] == host and host lacks latest bytes:
             add D2H offload trigger
         else if object has no host source and has a later interval:
             add D2H offload trigger
@@ -591,7 +600,7 @@ Those fields are interpreted as follows:
 | `protected_initial` | set of object ids | Makes a split illegal if that split would remove boundary-`-1` residency for one of these objects. Later non-initial gaps may still be split normally. |
 | `reserve_pressure` | bytes | Added as a baseline to every boundary's pressure check. Physical repair may add more pressure at individual boundaries, but may not go below this baseline. |
 | `extend_h2d` | boolean | If true, run the H2D lead-time extension pass after each pressure-reduction attempt. |
-| `h2d_schedule` | enum | Selects packed FIFO, latest-safe, or interval-entry placement for H2D prefetch triggers. |
+| `h2d_schedule` | enum | Selects packed FIFO, latest-safe, interval-entry, or latest-trigger placement for H2D prefetch triggers. |
 
 Only these fields vary across the portfolio. All candidate specs use the same
 split legality rules, pressure reduction pass, trigger emission, simulator
@@ -599,10 +608,10 @@ verification, and physical repair loop.
 
 | Family | Seed | Extra pressure | Protected initial set | H2D schedule(s) | Purpose |
 |---|---|---|---|---|---|
-| Base | normal finite-cap initial residency | none | none | packed FIFO, latest-safe, interval-entry | Try the natural interval plan with different H2D trigger placement. |
+| Base | normal finite-cap initial residency | none | none | packed FIFO, latest-safe, interval-entry, latest-trigger | Try the natural interval plan with different H2D trigger placement. |
 | Slack reserve | base seed | `max(next_task_device_outputs)` at every boundary | none | packed FIFO | Leave output/FIFO headroom earlier than strict static pressure requires. |
 | Cold admission | initial residency selected with half-cap admission budget | none | none | packed FIFO | Try one colder starting point without searching over initial subsets. |
-| Initial protection | every used host-source object initially resident | none | deadline-demand and H2D-work frontier sets | packed FIFO for the first set and smallest byte-scale frontiers; latest-safe and interval-entry for all sets | Preserve selected boundary-`-1` residency when H2D demand or source-object timing suggests that dropping it may create FIFO stalls. |
+| Initial protection | every used host-source object initially resident | none | deadline-demand and H2D-work frontier sets | packed FIFO for the first set and smallest byte-scale frontiers; latest-safe and interval-entry for all sets | Preserve selected boundary-`-1` residency when H2D demand or source-object timing suggests that dropping it may create FIFO stalls. Skipped by the large-chain fast portfolio. |
 
 These families are stitched together only at the candidate-selection level. They
 do not use separate correctness rules: all of them pass through the same
@@ -634,6 +643,7 @@ is emitted as `prefetch_after` on that task.
 | packed FIFO | Treat all H2D jobs as one FIFO queue. Sort jobs from latest deadline to earliest deadline, then pack them backward so each job finishes before its consumer deadline and before the next later-packed H2D job. If no such trigger exists inside the job window, use `earliest`. | Coordinate multiple H2D transfers that would otherwise pile up near their consumers. This is the default schedule when H2D queue congestion is the main risk. |
 | latest-safe | Schedule each H2D independently. Pick the latest `fire` in `[earliest, latest]` such that `task_end(fire) + h2d_runtime <= deadline`, assuming the H2D FIFO is otherwise idle. If none exists, use `latest`. | Keep objects off device as long as possible. This is useful when memory pressure matters more than H2D FIFO congestion. |
 | interval-entry | Use the latest-safe rule, but first tighten `latest` to `min(first_use - 1, a - 1)`. The trigger is therefore no later than the task immediately before the pressure-fit interval begins. | Respect the timing implied by the pressure-fit interval set, especially after H2D lead-time extension has intentionally moved an interval entry earlier. |
+| latest-trigger | Use `fire = latest` for every H2D job, even when the transfer cannot finish by the consumer's ideal start. The consumer may stall while the transfer completes. | Preserve capacity for the task immediately before the consumer. This is useful when an early H2D destination would fit by itself but would make that predecessor's output reservation impossible. |
 
 All schedules still rely on simulator verification; a schedule that looks valid
 analytically can be rejected or repaired if FIFO timing creates real pressure.

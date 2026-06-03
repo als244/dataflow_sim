@@ -7,7 +7,7 @@ Contains:
   * The trigger-kind alias and `_PendingTrigger` dataclass used by both
     planners' trigger emission.
   * Final-stage utilities used by both planners' entry points: annotation
-    assembly into a `TaskChain`, gradient writeback insertion, simulator
+    assembly into a `TaskChain`, final-placement writeback insertion, simulator
     verification with iterative refinement, and a best-effort makespan probe.
 """
 from __future__ import annotations
@@ -168,58 +168,49 @@ def _apply_annotations(
         tasks=new_tasks,
         bandwidth_h2d=bare.bandwidth_h2d,
         bandwidth_d2h=bare.bandwidth_d2h,
+        final_locations=bare.final_locations,
         device_capacity=device_capacity,
         host_capacity=bare.host_capacity,
     )
 
 
 def _add_gradient_writebacks(chain: TaskChain) -> TaskChain:
-    """Guarantee write-backs for host objects whose device bytes may change.
+    """Guarantee requested final host placements.
 
-    The original training convention keyed this off host-resident objects with
-    ``type == "gradient"``. Keep that behavior for compatibility, but also
-    include any host-resident object explicitly listed in ``mutates_inputs``.
-    The latter is the general simulator contract: mutation, not the object
-    type name, is what makes a bare release unsafe.
-
-    For protected objects, strip planner-emitted releases/offloads anywhere
-    else and re-emit exactly one offload at the last-use task.
+    Historical callers use this helper name, but the behavior is now keyed by
+    the general ``TaskChain.final_locations`` contract. For every object whose
+    final location is ``"host"``, replace the terminal departure at its final
+    use/production anchor with an offload so host receives the latest bytes.
+    Earlier evictions and prefetches are left intact because they may be
+    necessary for capacity; triggers after the terminal anchor are removed.
     """
     protected_objs = {
-        o.id for o in chain.initial_memory
-        if o.location == "host" and o.type == "gradient"
+        oid for oid, loc in chain.final_locations.items() if loc == "host"
     }
-    host_ids = {o.id for o in chain.initial_memory if o.location == "host"}
-    for task in chain.tasks:
-        for oid in task.mutates_inputs:
-            if oid in host_ids:
-                protected_objs.add(oid)
 
     if not protected_objs:
         return chain
-    device_initial_ids = {
-        o.id for o in chain.initial_memory if o.location == "device"
-    }
-    last_use: dict[str, int] = {}
+    last_anchor: dict[str, int] = {}
     for i, task in enumerate(chain.tasks):
+        for out in task.outputs:
+            if out.id in protected_objs:
+                last_anchor[out.id] = i
         for inp in task.inputs:
             if inp in protected_objs:
-                last_use[inp] = i
+                last_anchor[inp] = i
 
     writeback_at: dict[int, list[str]] = defaultdict(list)
-    for obj_id, idx in last_use.items():
+    for obj_id, idx in last_anchor.items():
         writeback_at[idx].append(obj_id)
 
     new_tasks: list[Task] = []
     for i, task in enumerate(chain.tasks):
-        # Strip any planner-emitted release/offload triggers for gradients;
-        # we re-emit the offload exactly once at the last-use boundary.
-        rel = [r for r in task.releases_after if r not in protected_objs]
-        off = [tr for tr in task.offload_after if tr.obj_id not in protected_objs]
-        pre = [
-            tr for tr in task.prefetch_after
-            if not (tr.obj_id in protected_objs and tr.obj_id in device_initial_ids)
-        ]
+        terminal_oids = {
+            oid for oid, anchor in last_anchor.items() if i >= anchor
+        }
+        rel = [r for r in task.releases_after if r not in terminal_oids]
+        off = [tr for tr in task.offload_after if tr.obj_id not in terminal_oids]
+        pre = [tr for tr in task.prefetch_after if tr.obj_id not in terminal_oids]
         if i in writeback_at:
             off = off + [TransferTrigger(obj_id=oid) for oid in writeback_at[i]]
         new_tasks.append(

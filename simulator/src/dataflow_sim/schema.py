@@ -74,6 +74,11 @@ class Task:
 class TaskChain:
     initial_memory: list[Object]
     tasks: list[Task]
+    # Optional terminal placement constraints, keyed by object id.
+    # Example: {"W_0": "host"} means the latest bytes for W_0 must be on
+    # host when the chain finishes. Objects omitted here are disposable after
+    # their final use unless later tasks require them.
+    final_locations: dict[str, Location] = field(default_factory=dict)
     # Optional per-location capacity ceilings. None = unlimited.
     device_capacity: int | None = None
     host_capacity: int | None = None
@@ -116,9 +121,11 @@ class TaskChain:
                     releases_after=list(t.get("releases_after", [])),
                     offload_after=[_trig(x) for x in t.get("offload_after", [])],
                     prefetch_after=[_trig(x) for x in t.get("prefetch_after", [])],
+                    mutates_inputs=list(t.get("mutates_inputs", [])),
                 )
                 for t in d.get("tasks", [])
             ],
+            final_locations=dict(d.get("final_locations", {})),
             device_capacity=d.get("device_capacity"),
             host_capacity=d.get("host_capacity"),
             bandwidth_h2d=d.get("bandwidth_h2d"),

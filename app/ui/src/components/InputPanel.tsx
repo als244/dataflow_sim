@@ -1,4 +1,5 @@
 export type Policy = "sliding_window" | "belady_reactive" | "roundtrip_planner" | "max_reduce" | "min_grow" | "pressurefit";
+export type OptimizerMode = "none" | "adamw" | "muon";
 
 export interface HardwareParams {
   preset: string;
@@ -31,6 +32,10 @@ export interface SimulationParams {
   model: ModelParams;
   seqlen: number;
   num_seqs: number;
+  grad_accum_rounds: number;
+  num_steps: number;
+  optimizer: OptimizerMode;
+  final_model_state_on_host: boolean;
   policy: Policy;
   window_size: number;
   device_capacity_gb: number | null;
@@ -72,6 +77,10 @@ export const DEFAULT_PARAMS: SimulationParams = {
   model: DEFAULT_MODEL,
   seqlen: 4096,
   num_seqs: 4,
+  grad_accum_rounds: 1,
+  num_steps: 1,
+  optimizer: "none",
+  final_model_state_on_host: false,
   policy: "pressurefit",
   window_size: 2,
   device_capacity_gb: null,
@@ -84,6 +93,12 @@ export const POLICY_OPTIONS: { value: Policy; label: string; hint: string }[] = 
   { value: "belady_reactive", label: "Reactive Belady", hint: "shadow-simulator walk; evicts farthest-next-use when capacity binds" },
   { value: "roundtrip_planner", label: "Round-trip planner", hint: "constructively enumerates (offload, prefetch) round-trips and packs them onto streams" },
   { value: "sliding_window", label: "Sliding window", hint: "hand-crafted fixed-width window over W/dW/A; tune `weight window`" },
+];
+
+const OPTIMIZER_OPTIONS: { value: OptimizerMode; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "adamw", label: "AdamW" },
+  { value: "muon", label: "Muon" },
 ];
 
 const HW_FIELDS: { key: keyof Omit<HardwareParams, "preset">; label: string; step?: number; min?: number }[] = [
@@ -284,7 +299,7 @@ export function InputPanel({ params, setParams, onSubmit, onReset, locked, statu
               />
             </label>
             <label className="form-field">
-              <span className="form-field-label">num seqs</span>
+              <span className="form-field-label">microbatch size</span>
               <input
                 type="number" min={1} step={1}
                 value={String(params.num_seqs)}
@@ -294,6 +309,61 @@ export function InputPanel({ params, setParams, onSubmit, onReset, locked, statu
                 }}
               />
             </label>
+            <label className="form-field">
+              <span className="form-field-label">grad. accum rounds</span>
+              <input
+                type="number" min={1} step={1}
+                value={String(params.grad_accum_rounds)}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  if (Number.isFinite(v)) setParams({ ...params, grad_accum_rounds: v });
+                }}
+              />
+            </label>
+            <label className="form-field">
+              <span className="form-field-label">num steps</span>
+              <input
+                type="number" min={1} step={1}
+                value={String(params.num_steps)}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  if (Number.isFinite(v)) setParams({ ...params, num_steps: v });
+                }}
+              />
+            </label>
+            <label className="form-field">
+              <span className="form-field-label">optimizer</span>
+              <select
+                value={params.optimizer}
+                onChange={(e) => setParams({ ...params, optimizer: e.target.value as OptimizerMode })}
+              >
+                {OPTIMIZER_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="form-field form-field-checkbox">
+              <span className="form-field-label">final model state on host</span>
+              <input
+                type="checkbox"
+                checked={params.final_model_state_on_host}
+                onChange={(e) => setParams({
+                  ...params,
+                  final_model_state_on_host: e.target.checked,
+                })}
+              />
+            </label>
+          </div>
+        </section>
+
+        {/* Memory */}
+        <section className="form-section">
+          <header className="form-section-header">
+            <span className="form-section-title">memory</span>
+          </header>
+          <div className="form-grid">
             <label className="form-field form-field-wide">
               <span className="form-field-label">policy</span>
               <select
@@ -340,6 +410,7 @@ export function InputPanel({ params, setParams, onSubmit, onReset, locked, statu
           </div>
           <div className="form-section-hint dim">{activePolicyHint}</div>
         </section>
+
       </fieldset>
       {errorMsg && <div className="input-error">{errorMsg}</div>}
     </div>

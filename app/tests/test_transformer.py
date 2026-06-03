@@ -6,8 +6,9 @@ import math
 import pytest
 
 from dataflow_sim.simulator import run as sim_run
+from dataflow_app.workloads.optimizers import adamw_step_bytes, muon_step_flops_bytes
 from dataflow_app.workloads.presets import HARDWARE_PRESETS, load_model_presets
-from dataflow_app.workloads.training import build_transformer_bare_chain
+from dataflow_app.workloads.training import build_bare_training_chain, build_transformer_bare_chain
 from dataflow_app.workloads.transformer import (
     BYTES_PER_ELEMENT,
     HardwareEnv,
@@ -24,11 +25,15 @@ from dataflow_app.workloads.transformer import (
     head_subops,
     head_weight_bytes,
     input_bytes,
+    layer_weight_matrices,
     layer_bwd_microseconds,
     layer_fwd_breakdown,
     layer_fwd_microseconds,
     layer_output_bytes,
     layer_weight_bytes,
+    optimizer_state_bytes_per_layer,
+    optimizer_step_breakdown,
+    optimizer_step_microseconds,
     params_per_layer,
     time_subop,
 )
@@ -87,6 +92,39 @@ def test_byte_helpers_use_bf16(models, cfg):
     assert layer_output_bytes(s, cfg) == input_bytes(s, cfg)
     assert layer_weight_bytes(s) == params_per_layer(s) * BYTES_PER_ELEMENT
     assert head_weight_bytes(s) == head_params(s) * BYTES_PER_ELEMENT
+
+
+def test_layer_weight_matrix_inventory_sums_to_params(models):
+    for s in models.values():
+        mats = layer_weight_matrices(s)
+        assert mats, "every preset should expose at least one layer matrix"
+        assert sum(m.rows * m.cols * m.count for m in mats) == params_per_layer(s)
+
+
+def test_optimizer_state_and_adamw_bytes_llama3(models):
+    s = models["llama3_8B"]
+    w_bytes = layer_weight_bytes(s)
+    assert optimizer_state_bytes_per_layer(s, "none") == 0
+    assert optimizer_state_bytes_per_layer(s, "muon") == w_bytes
+    assert optimizer_state_bytes_per_layer(s, "adamw") == 2 * w_bytes
+    assert adamw_step_bytes(w_bytes) == 7 * w_bytes
+
+
+def test_muon_step_cost_llama3(models, h100):
+    s = models["llama3_8B"]
+    flops, bytes_total = muon_step_flops_bytes(
+        layer_weight_matrices(s),
+        bytes_per_element=BYTES_PER_ELEMENT,
+    )
+    assert flops == 20_621_211_729_920
+    assert bytes_total == 20_166_213_632
+
+    cfg = TrainingConfig(seqlen=4096, num_seqs=4, optimizer="muon")
+    timings = optimizer_step_breakdown(s, h100, cfg)
+    assert [t.name for t in timings] == ["muon_step"]
+    assert timings[0].flops == flops
+    assert timings[0].bytes == bytes_total
+    assert optimizer_step_microseconds(s, h100, cfg) == timings[0].total_us
 
 
 def test_activation_bytes_uses_2_d_model_factor(models, cfg):
@@ -397,8 +435,12 @@ def test_build_transformer_bare_chain_llama3_h100(models, h100, cfg):
     assert all(rt == f_runtimes[0] for rt in f_runtimes)  # identical across layers
 
     # Breakdown structure
-    assert set(breakdown.keys()) == {"fwd", "bwd", "head", "totals_us"}
-    assert set(breakdown["totals_us"].keys()) == {"layer_fwd", "layer_bwd", "head"}
+    assert set(breakdown.keys()) == {"fwd", "bwd", "head", "optimizer", "totals_us"}
+    assert set(breakdown["totals_us"].keys()) == {
+        "layer_fwd", "layer_bwd", "head", "optimizer_step",
+    }
+    assert breakdown["optimizer"] == []
+    assert breakdown["totals_us"]["optimizer_step"] == 0
     assert breakdown["totals_us"]["layer_fwd"] == layer_fwd_microseconds(
         models["llama3_8B"], h100, cfg
     )
@@ -412,6 +454,132 @@ def test_build_transformer_bare_chain_llama3_h100(models, h100, cfg):
     assert "shared_mlp_down" in fwd_names
     # llama3 has no qk_norm
     assert "qk_norm" not in fwd_names
+
+
+def test_grad_accum_rounds_namespace_per_round_objects():
+    bare = build_bare_training_chain(2, grad_accum_rounds=2)
+
+    assert [t.id for t in bare.tasks] == [
+        "f_0_0_0", "f_0_0_1", "head_0_0", "r_0_0_1", "b_0_0_1", "r_0_0_0", "b_0_0_0",
+        "f_0_1_0", "f_0_1_1", "head_0_1", "r_0_1_1", "b_0_1_1", "r_0_1_0", "b_0_1_0",
+    ]
+    initial_by_id = {o.id: o for o in bare.initial_memory}
+    assert initial_by_id["input_0_0"].location == "device"
+    assert initial_by_id["input_0_1"].location == "host"
+    assert "dW_0" not in initial_by_id
+
+    outputs = {out.id for task in bare.tasks for out in task.outputs}
+    assert {"A_0_0_0", "A_0_1_0", "y_0_0_1", "y_0_1_1", "dy_head_0_0", "dy_head_0_1"} <= outputs
+    assert {"dW_0_0", "dW_0_1", "dW_head_0"} <= outputs
+    assert "A_0" not in outputs
+
+    b0_round0 = next(t for t in bare.tasks if t.id == "b_0_0_0")
+    b0_round1 = next(t for t in bare.tasks if t.id == "b_0_1_0")
+    assert "dW_0_0" not in b0_round0.inputs
+    assert "dW_0_0" in {out.id for out in b0_round0.outputs}
+    assert "dW_0_0" in b0_round1.inputs
+    assert b0_round0.mutates_inputs == []
+    assert b0_round1.mutates_inputs == ["dW_0_0"]
+
+
+def test_num_steps_namespace_per_step_gradients():
+    bare = build_bare_training_chain(2, grad_accum_rounds=2, num_steps=2)
+
+    assert any(t.id == "f_1_0_0" for t in bare.tasks)
+    assert any(t.id == "head_1_1" for t in bare.tasks)
+    outputs = {out.id for task in bare.tasks for out in task.outputs}
+    assert {"dW_0_0", "dW_1_0", "dW_head_0", "dW_head_1"} <= outputs
+    assert "dW_0" not in {o.id for o in bare.initial_memory}
+
+    first_b = next(t for t in bare.tasks if t.id == "b_1_0_1")
+    accum_b = next(t for t in bare.tasks if t.id == "b_1_1_1")
+    assert "dW_1_1" not in first_b.inputs
+    assert "dW_1_1" in {out.id for out in first_b.outputs}
+    assert accum_b.inputs[-1] == "dW_1_1"
+    assert accum_b.mutates_inputs == ["dW_1_1"]
+
+
+def test_optimizer_step_appended_after_accumulation_rounds():
+    bare = build_bare_training_chain(
+        2,
+        grad_accum_rounds=2,
+        weight_size=64,
+        optimizer_state_size=128,
+        optimizer_runtime=7,
+    )
+
+    assert [t.id for t in bare.tasks[-2:]] == ["step_0_0", "step_0_1"]
+    initial_by_id = {o.id: o for o in bare.initial_memory}
+    assert initial_by_id["O_0"].location == "host"
+    assert initial_by_id["O_0"].type == "optimizer"
+    assert initial_by_id["O_0"].size == 128
+
+    step0 = bare.tasks[-2]
+    assert step0.inputs == ["dW_0_0", "W_0", "O_0"]
+    assert step0.outputs == []
+    assert step0.runtime == 7
+    assert step0.mutates_inputs == ["W_0", "O_0"]
+    assert bare.final_locations == {}
+    finalized = build_bare_training_chain(
+        2,
+        grad_accum_rounds=2,
+        weight_size=64,
+        optimizer_state_size=128,
+        optimizer_runtime=7,
+        final_model_state_on_host=True,
+    )
+    assert finalized.final_locations == {
+        "W_0": "host", "O_0": "host",
+        "W_1": "host", "O_1": "host",
+    }
+
+
+def test_transformer_grad_accum_rounds_scales_task_count(models, h100, cfg):
+    accum_cfg = TrainingConfig(
+        seqlen=cfg.seqlen,
+        num_seqs=cfg.num_seqs,
+        grad_accum_rounds=2,
+    )
+    bare, _ = build_transformer_bare_chain(models["llama3_8B"], h100, accum_cfg)
+
+    expected_tasks_per_round = 3 * models["llama3_8B"].n_layers + 1
+    assert len(bare.tasks) == 2 * expected_tasks_per_round
+    assert "A_0_0_0" in {out.id for out in bare.tasks[0].outputs}
+    assert any(t.id == "head_0_1" for t in bare.tasks)
+
+
+def test_transformer_optimizer_adds_state_and_step_tasks(models, h100, cfg):
+    opt_cfg = TrainingConfig(
+        seqlen=cfg.seqlen,
+        num_seqs=cfg.num_seqs,
+        optimizer="adamw",
+    )
+    finalized_cfg = TrainingConfig(
+        seqlen=cfg.seqlen,
+        num_seqs=cfg.num_seqs,
+        optimizer="adamw",
+        final_model_state_on_host=True,
+    )
+    spec = models["llama3_8B"]
+    bare, breakdown = build_transformer_bare_chain(spec, h100, opt_cfg)
+    finalized, _ = build_transformer_bare_chain(spec, h100, finalized_cfg)
+
+    expected_tasks = 3 * spec.n_layers + 1 + spec.n_layers
+    assert len(bare.tasks) == expected_tasks
+    assert [t.id for t in bare.tasks[-2:]] == [f"step_0_{spec.n_layers - 2}", f"step_0_{spec.n_layers - 1}"]
+
+    initial_by_id = {o.id: o for o in bare.initial_memory}
+    assert initial_by_id["O_0"].size == optimizer_state_bytes_per_layer(spec, "adamw")
+    assert initial_by_id["O_0"].type == "optimizer"
+    assert bare.final_locations == {}
+    assert finalized.final_locations["W_0"] == "host"
+    assert finalized.final_locations["O_0"] == "host"
+    assert "dW_0" not in finalized.final_locations
+    assert bare.tasks[-1].runtime == optimizer_step_microseconds(spec, h100, opt_cfg)
+    assert breakdown["optimizer"][0]["name"] == "adamw_step"
+    assert breakdown["totals_us"]["optimizer_step"] == optimizer_step_microseconds(
+        spec, h100, opt_cfg
+    )
 
 
 def test_head_subops_order_and_kinds(models, cfg):
@@ -494,8 +662,8 @@ def test_transformer_chain_is_runnable_with_policy(models, h100, cfg):
     bare, _ = build_transformer_bare_chain(spec, h100, cfg)
     chain = apply_belady_reactive_policy(bare, device_capacity=None)
     log = sim_run(chain)
-    # Every bare task produces a compute interval; the auto policy adds
-    # gradient-writeback d2h intervals on top (one per host-initial dW_*).
+    # Every bare task produces a compute interval; policies may add transfer
+    # intervals around those tasks.
     compute_intervals = [iv for iv in log.task_intervals if iv.track == "compute"]
     assert len(compute_intervals) == len(bare.tasks)
     assert max(iv.end for iv in log.task_intervals) > 0
