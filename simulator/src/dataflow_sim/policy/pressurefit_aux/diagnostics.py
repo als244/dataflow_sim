@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from dataflow_sim.policy.pressurefit_aux.core import _Facts
-from dataflow_sim.policy.pressurefit_aux.portfolio import _CandidateSpec
+from dataflow_sim.policy.pressurefit_aux.types import _CandidateSpec
 
 
 @dataclass(frozen=True)
@@ -16,10 +16,10 @@ class PressureFitCandidateDiagnostic:
     makespan_us: int | None
     wall_time_s: float
     error: str | None = None
-    pack_h2d: bool | None = None
-    extend_h2d: bool = False
+    pack_inbound: bool | None = None
+    extend_inbound: bool = False
     respect_interval_start: bool = False
-    latest_h2d: bool = False
+    latest_inbound: bool = False
     reserve_pressure: int = 0
     protected_count: int = 0
     protected_bytes: int = 0
@@ -60,10 +60,10 @@ def _candidate_diagnostic(
         makespan_us=makespan_us,
         wall_time_s=wall_time_s,
         error=error,
-        pack_h2d=spec.pack_h2d,
-        extend_h2d=spec.extend_h2d,
+        pack_inbound=spec.pack_inbound,
+        extend_inbound=spec.extend_inbound,
         respect_interval_start=spec.respect_interval_start,
-        latest_h2d=spec.latest_h2d,
+        latest_inbound=spec.latest_inbound,
         reserve_pressure=spec.reserve_pressure,
         protected_count=len(protected),
         protected_bytes=sum(facts.sizes[oid] for oid in protected),

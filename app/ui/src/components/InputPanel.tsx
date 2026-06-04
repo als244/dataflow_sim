@@ -90,7 +90,7 @@ export const DEFAULT_PARAMS: SimulationParams = {
 };
 
 export const POLICY_OPTIONS: { value: Policy; label: string; hint: string }[] = [
-  { value: "pressurefit", label: "PressureFit", hint: "pressure-fit interval planning with bounded candidate specs and deadline-aware H2D scheduling" },
+  { value: "pressurefit", label: "PressureFit", hint: "pressure-fit interval planning with bounded candidate specs and deadline-aware inbound scheduling" },
   { value: "max_reduce", label: "Max-reduce", hint: "analytic top-down: start at MAX residency, split most-overloaded boundary until cap fits" },
   { value: "min_grow", label: "Min-grow", hint: "MIN-seeded over-shrink + beam search using the simulator as cost oracle" },
   { value: "belady_reactive", label: "Reactive Belady", hint: "shadow-simulator walk; evicts farthest-next-use when capacity binds" },

@@ -6,10 +6,10 @@ export interface PressureFitCandidateDiagnostic {
   makespan_us: number | null;
   wall_time_s: number;
   error: string | null;
-  pack_h2d: boolean | null;
-  extend_h2d: boolean;
+  pack_inbound: boolean | null;
+  extend_inbound: boolean;
   respect_interval_start: boolean;
-  latest_h2d: boolean;
+  latest_inbound: boolean;
   reserve_pressure: number;
   protected_count: number;
   protected_bytes: number;
@@ -55,11 +55,11 @@ function fmtBytes(bytes: number | null): string {
 
 function candidateKnobs(c: PressureFitCandidateDiagnostic): string {
   const knobs: string[] = [];
-  if (c.pack_h2d === true) knobs.push("packed");
-  if (c.pack_h2d === false) knobs.push("local");
-  if (c.latest_h2d) knobs.push("latest-trigger");
+  if (c.pack_inbound === true) knobs.push("packed");
+  if (c.pack_inbound === false) knobs.push("local");
+  if (c.latest_inbound) knobs.push("latest-trigger");
   if (c.respect_interval_start) knobs.push("interval-entry");
-  if (c.extend_h2d) knobs.push("extend-H2D");
+  if (c.extend_inbound) knobs.push("extend-inbound");
   if (c.reserve_pressure > 0) knobs.push(`reserve ${fmtBytes(c.reserve_pressure)}`);
   if (c.seed !== "base") knobs.push(c.seed);
   if (c.protected_count > 0) knobs.push(`protect ${c.protected_count}`);

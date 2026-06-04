@@ -34,21 +34,27 @@ from dataflow_sim.policy.pressurefit_aux.diagnostics import (
 )
 from dataflow_sim.policy.pressurefit_aux.emit import (
     _emit_chain,
-    _extend_h2d_lead_time,
 )
-from dataflow_sim.policy.pressurefit_aux.portfolio import (
-    PressureFitPortfolioMode,
-    _CandidateSpec,
-    _InitialProtectionJob,
-    _build_candidate_portfolio,
-    _build_candidate_seeds,
-    _copy_intervals,
+from dataflow_sim.policy.pressurefit_aux.inbound_schedules import _extend_inbound_lead_time
+from dataflow_sim.policy.pressurefit_aux.initial_protection import (
     _initial_protection_headroom,
     _initial_protection_jobs_from_probe,
     _initial_protection_sets,
+    _select_initial_protection_set,
+)
+from dataflow_sim.policy.pressurefit_aux.portfolio import (
+    _build_candidate_portfolio,
+)
+from dataflow_sim.policy.pressurefit_aux.seeds import (
+    _build_candidate_seeds,
+    _copy_intervals,
     _initial_residency,
     _pressure_initial_placement,
-    _select_initial_protection_set,
+)
+from dataflow_sim.policy.pressurefit_aux.types import (
+    PressureFitPortfolioMode,
+    _CandidateSpec,
+    _InitialProtectionJob,
 )
 from dataflow_sim.policy.pressurefit_aux.physical_repair import (
     _PHYSICAL_REPAIR_LIMIT,
@@ -165,8 +171,8 @@ def _reduce_candidate_intervals(
         facts, intervals, bare.device_capacity, extra_pressure,
         protected_initial=protected_initial,
     )
-    if spec.extend_h2d:
-        _extend_h2d_lead_time(
+    if spec.extend_inbound:
+        _extend_inbound_lead_time(
             facts, intervals, bare.device_capacity, bare.bandwidth_h2d,
             extra_pressure,
         )
@@ -180,9 +186,9 @@ def _emit_candidate_chain(
 ) -> TaskChain:
     return _emit_chain(
         bare, facts, intervals,
-        pack_h2d=spec.pack_h2d,
+        pack_inbound=spec.pack_inbound,
         respect_interval_start=spec.respect_interval_start,
-        latest_h2d=spec.latest_h2d,
+        latest_inbound=spec.latest_inbound,
     )
 
 

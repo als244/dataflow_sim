@@ -1,0 +1,205 @@
+"""Initial residency and seed interval construction for PressureFit."""
+from __future__ import annotations
+
+import math
+from dataclasses import replace
+
+from dataflow_sim.policy._common import _UseEvent
+from dataflow_sim.policy.pressurefit_aux.core import (
+    _Facts,
+    _anchors,
+    _build_facts,
+    _fire_task_for_interval,
+    _first_use_in_interval,
+    _transfer_time,
+)
+from dataflow_sim.policy.pressurefit_aux.types import _IntervalSet, _SeedPortfolio
+from dataflow_sim.schema import TaskChain
+
+
+def _pressure_initial_placement(
+    bare: TaskChain,
+    device_capacity: int | None,
+    sizes: dict[str, int],
+    uses_by_task: dict[str, list[_UseEvent]],
+) -> set[str]:
+    """Select host-initial objects to add to device at t=0."""
+    if not bare.tasks:
+        return set()
+
+    host_objs = {o.id: o for o in bare.initial_memory if o.location == "host"}
+    already_device = {o.id for o in bare.initial_memory if o.location == "device"}
+    if device_capacity is None:
+        return {oid for oid in host_objs if uses_by_task.get(oid)}
+
+    cap = device_capacity
+    task0 = bare.tasks[0]
+    placement = {
+        oid for oid in task0.inputs
+        if oid in host_objs and oid not in already_device
+    }
+    initial_device_bytes = sum(
+        o.size for o in bare.initial_memory if o.location == "device"
+    )
+    task0_outputs = sum(o.size for o in task0.outputs if o.location == "device")
+    must_bytes = sum(sizes[o] for o in placement)
+    if initial_device_bytes + must_bytes + task0_outputs > cap:
+        raise ValueError(
+            "infeasible: task 0 inputs plus device output reservation exceed "
+            f"device_capacity ({initial_device_bytes}+{must_bytes}+"
+            f"{task0_outputs}>{cap})"
+        )
+
+    facts = _build_facts(replace(bare, device_capacity=cap))
+    inbound_bw = bare.bandwidth_h2d
+    used = initial_device_bytes + must_bytes
+
+    def cold_deadline_misses() -> dict[str, int]:
+        if inbound_bw is None or inbound_bw <= 0:
+            return {}
+        jobs: list[tuple[int, int, str, int]] = []
+        for oid, obj in host_objs.items():
+            if oid in placement:
+                continue
+            events = uses_by_task.get(oid, [])
+            if not events:
+                continue
+            first = events[0].task_idx
+            if first == 0:
+                continue
+            tau = max(1, math.ceil(obj.size / inbound_bw))
+            jobs.append((facts.task_start[first], first, oid, tau))
+
+        jobs.sort(key=lambda j: (j[0], j[1], j[2]))
+        cursor = facts.task_end[0]
+        misses: dict[str, int] = {}
+        for deadline, _first, oid, tau in jobs:
+            end = cursor + tau
+            miss = max(0, end - deadline)
+            if miss:
+                misses[oid] = miss
+            cursor = end
+        return misses
+
+    miss_by_oid = cold_deadline_misses()
+    remaining: list[tuple[int, int, int, int, str]] = []
+    for oid, obj in host_objs.items():
+        if oid in placement or not uses_by_task.get(oid):
+            continue
+        first = uses_by_task[oid][0]
+        tau = (
+            max(1, math.ceil(obj.size / inbound_bw))
+            if inbound_bw is not None and inbound_bw > 0
+            else 0
+        )
+        slack = max(0, first.ideal_start - facts.task_end[0] - tau)
+        remaining.append((
+            first.task_idx,
+            slack,
+            -miss_by_oid.get(oid, 0),
+            -sizes[oid],
+            oid,
+        ))
+
+    for _first, _slack, _neg_miss, _neg_size, oid in sorted(remaining):
+        if used + sizes[oid] + task0_outputs <= cap:
+            placement.add(oid)
+            used += sizes[oid]
+
+    return placement
+
+
+def _initial_residency(
+    facts: _Facts,
+    initial_device: set[str],
+) -> _IntervalSet:
+    intervals: _IntervalSet = {}
+    all_ids = set(facts.sizes) | set(facts.uses) | set(facts.producer)
+    for oid in all_ids:
+        p = facts.producer.get(oid, -1)
+        uses = facts.uses.get(oid, [])
+        if oid in facts.host_ids:
+            if not uses:
+                continue
+            a = -1 if oid in initial_device else uses[0] - 1
+            b = uses[-1] - 1
+        elif oid in facts.device_ids:
+            a = -1
+            b = uses[-1] - 1 if uses else -1
+        else:
+            if p < 0:
+                continue
+            a = p
+            b = uses[-1] - 1 if uses else p
+        intervals[oid] = [(a, b)]
+    return intervals
+
+
+def _copy_intervals(seed: _IntervalSet) -> _IntervalSet:
+    return {oid: list(ivs) for oid, ivs in seed.items()}
+
+
+def _build_candidate_seeds(
+    facts: _Facts,
+    base_intervals: _IntervalSet,
+    inbound_bw: int | None,
+    outbound_bw: int | None,
+) -> _SeedPortfolio:
+    """Build seed interval sets shared by candidate specs."""
+    all_initial_host = {oid for oid in facts.host_ids if facts.uses.get(oid)}
+    return {
+        "base": base_intervals,
+        "source-gap": _trim_source_idle_gaps(
+            facts, base_intervals, inbound_bw, outbound_bw,
+        ),
+        "all-host": _initial_residency(facts, all_initial_host),
+    }
+
+
+def _trim_source_idle_gaps(
+    facts: _Facts,
+    intervals: _IntervalSet,
+    inbound_bw: int | None,
+    outbound_bw: int | None,
+) -> _IntervalSet:
+    """Build the source-gap seed by splitting long source-state no-use gaps."""
+    out: _IntervalSet = {}
+    source_ids = facts.host_ids | facts.device_ids
+    for oid, ivs in intervals.items():
+        if oid not in source_ids:
+            out[oid] = list(ivs)
+            continue
+        anchors = _anchors(oid, facts)
+        size = facts.sizes[oid]
+        inbound_tau = _transfer_time(size, inbound_bw)
+        new_ivs: list[tuple[int, int]] = []
+        for a, b in sorted(ivs):
+            anchors_in = [x for x in anchors if a <= x <= b]
+            if len(anchors_in) < 2:
+                new_ivs.append((a, b))
+                continue
+
+            start = a
+            for left_anchor, right_anchor in zip(anchors_in, anchors_in[1:]):
+                if right_anchor - left_anchor <= 1:
+                    continue
+                first_use = _first_use_in_interval(oid, right_anchor, b, facts)
+                left_fire = _fire_task_for_interval(oid, start, left_anchor, facts)
+                if first_use is None or left_fire is None:
+                    continue
+
+                dirty = any(
+                    start <= m - 1 <= left_anchor
+                    for m in facts.mutators.get(oid, set())
+                )
+                needs_writeback = dirty or oid not in facts.host_ids
+                if not needs_writeback:
+                    continue
+                outbound_tau = _transfer_time(size, outbound_bw)
+                gap_time = facts.task_start[first_use] - facts.task_end[left_fire]
+                if gap_time >= outbound_tau + inbound_tau:
+                    new_ivs.append((start, left_anchor))
+                    start = right_anchor
+            new_ivs.append((start, b))
+        out[oid] = new_ivs
+    return out

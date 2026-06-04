@@ -4,7 +4,7 @@ from dataflow_sim.policy._common import _compute_ideal_starts, _object_sizes, _o
 from dataflow_sim.policy.pressurefit import (
     _InitialProtectionJob,
     _build_facts,
-    _extend_h2d_lead_time,
+    _extend_inbound_lead_time,
     _initial_protection_headroom,
     _initial_protection_jobs_from_probe,
     _initial_protection_sets,
@@ -48,7 +48,7 @@ def test_pressure_initial_placement_skips_hidden_future_use():
     )
 
     assert "early" in placement  # task-0 input, no prior trigger slot
-    assert "late" not in placement  # its first H2D hides behind t1
+    assert "late" not in placement  # its first inbound hides behind t1
 
 
 def test_pressurefit_prefetches_late_object_instead_of_preplacing():
@@ -260,7 +260,7 @@ def test_pressurefit_extends_prefetch_intervals_under_strict_cap():
     assert intervals["x"] == [(2, 2)]
     assert intervals["y"] == [(3, 3)]
 
-    _extend_h2d_lead_time(
+    _extend_inbound_lead_time(
         facts, intervals, bare.device_capacity, bare.bandwidth_h2d,
     )
 
@@ -313,7 +313,7 @@ def test_pressurefit_initial_protection_uses_deadline_demand():
     assert intervals["y"] == [(1, 1)]
 
 
-def test_pressurefit_initial_protection_selection_uses_capacity_and_h2d_work():
+def test_pressurefit_initial_protection_selection_uses_capacity_and_inbound_work():
     jobs = [
         _InitialProtectionJob(
             oid="large",

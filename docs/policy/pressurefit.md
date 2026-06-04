@@ -2,19 +2,29 @@
 
 Fast standalone policy for linear `TaskChain`s. It plans device residency as
 object intervals over task boundaries, cuts those intervals where byte pressure
-is too high, tries bounded slack and H2D stall-relief candidate plans, then
-emits release/offload/prefetch triggers with deadline-aware H2D ordering.
+is too high, tries bounded slack and inbound stall-relief candidate plans, then
+emits release/offload/prefetch triggers with deadline-aware inbound ordering.
 
 Implementation modules:
 
 - `simulator/src/dataflow_sim/policy/pressurefit.py`: public entry point,
   candidate verification and fastest-valid selection;
-- `simulator/src/dataflow_sim/policy/pressurefit_aux/portfolio.py`: candidate
-  specs, seed construction, portfolio modes, and candidate-family assembly;
+- `simulator/src/dataflow_sim/policy/pressurefit_aux/portfolio.py`:
+  candidate portfolio orchestration;
+- `simulator/src/dataflow_sim/policy/pressurefit_aux/types.py`: shared
+  candidate spec and portfolio dataclasses;
+- `simulator/src/dataflow_sim/policy/pressurefit_aux/seeds.py`: initial
+  residency and seed interval construction;
+- `simulator/src/dataflow_sim/policy/pressurefit_aux/candidate_specs.py`:
+  candidate-family assembly and portfolio mode selection;
+- `simulator/src/dataflow_sim/policy/pressurefit_aux/initial_protection.py`:
+  initial-residency protection frontier construction;
 - `simulator/src/dataflow_sim/policy/pressurefit_aux/reducer.py`: deterministic
   greedy pressure reduction;
-- `simulator/src/dataflow_sim/policy/pressurefit_aux/emit.py`: H2D lead-time
-  extension and interval-to-trigger emission;
+- `simulator/src/dataflow_sim/policy/pressurefit_aux/emit.py`:
+  interval-to-trigger emission;
+- `simulator/src/dataflow_sim/policy/pressurefit_aux/inbound_schedules.py`:
+  inbound lead-time extension and inbound prefetch scheduling;
 - `simulator/src/dataflow_sim/policy/pressurefit_aux/physical_repair.py`:
   simulator-error interpretation and boundary pressure repair;
 - `simulator/src/dataflow_sim/policy/pressurefit_aux/diagnostics.py`: diagnostic
@@ -38,14 +48,14 @@ PressureFit is schema-driven. It uses:
 - object sizes and initial source locations;
 - producer/use positions;
 - explicit mutation metadata from `Task.mutates_inputs`;
-- H2D/D2H bandwidths and `device_capacity`.
+- inbound and outbound bandwidths and `device_capacity`.
 
 It does not depend on object ids, object types, or task names.
 
 ## Core Algorithm: Pressure Reduction
 
 Pressure reduction is the central algorithm in PressureFit. Candidate specs
-choose where the algorithm starts, and H2D schedules choose how the resulting
+choose where the algorithm starts, and inbound schedules choose how the resulting
 interval entries become prefetch triggers, but the residency decision itself is
 made by pressure reduction.
 
@@ -58,7 +68,7 @@ The simplest way to read the policy is:
 5. return the valid candidate with the lowest makespan.
 
 The candidate specs are heuristic. They choose the initial interval hypothesis,
-initial-residency/protection choices, reserve pressure, and H2D scheduling
+initial-residency/protection choices, reserve pressure, and inbound scheduling
 style. Pressure reduction is deterministic once those choices are fixed, but it
 is still greedy: its split ranking is a local rule for reaching feasibility, not
 a proof of globally optimal residency.
@@ -112,7 +122,7 @@ contains the precise definitions and ranking rules.
   pressure reduction cuts optional gaps.
 - **Candidate spec:** one recipe for producing an annotated chain. It chooses
   a seed interval set, optional protected initial objects, optional reserve
-  pressure, an H2D schedule, and whether to run H2D lead-time extension.
+  pressure, an inbound schedule, and whether to run inbound lead-time extension.
 - **Pressure reduction:** the shared pass that cuts non-required residency gaps
   from a candidate spec until the capacity inequality is satisfied at every
   boundary.
@@ -120,7 +130,7 @@ contains the precise definitions and ranking rules.
   candidate's interval set after optional gaps have been removed, before trigger
   emission turns interval entries/exits into annotations.
 - **Candidate plan:** the result of running one candidate spec through pressure
-  reduction, optional H2D lead-time extension, trigger emission, physical
+  reduction, optional inbound lead-time extension, trigger emission, physical
   repair, and simulator verification.
 
 ## Algorithm
@@ -130,8 +140,8 @@ chooses the few things that are allowed to vary; the rest of the planner is
 shared. This is the central separation:
 
 - **Candidate-specific fields:** seed intervals, protected initial set, pressure
-  reserve, H2D schedule, and whether H2D lead-time extension is enabled.
-- **Common to every candidate:** pressure reduction, optional H2D lead-time
+  reserve, inbound schedule, and whether inbound lead-time extension is enabled.
+- **Common to every candidate:** pressure reduction, optional inbound lead-time
   extension, trigger emission, simulator verification, physical repair,
   and final makespan scoring.
 
@@ -142,20 +152,20 @@ The candidate-specific fields have these meanings:
 | `seed_intervals` | Map from object id to inclusive residency intervals before reduction. | The starting residency hypothesis, especially which host-source objects are initially resident. |
 | `protected_initial` | Set of host-source object ids whose boundary-`-1` residency cannot be removed during pressure reduction. | Which initial objects are treated as non-droppable for this spec. It does not pin them forever. |
 | `reserve_pressure` | Nonnegative bytes added to each boundary pressure check before comparing against capacity. | The amount of headroom pressure reduction must leave. It is not an object or runtime allocation. |
-| `h2d_schedule` | Rule used when emitting prefetch triggers for interval entries that require H2D transfer. | Where H2D triggers are placed on the task chain from the pressure-fit interval set. |
-| `extend_h2d` | Boolean enabling a pre-emission pass that moves some H2D interval starts earlier when strict capacity remains valid. | H2D lead time only. It does not split intervals or change object sources. |
+| `inbound_schedule` | Rule used when emitting prefetch triggers for interval entries that require inbound transfer. | Where inbound triggers are placed on the task chain from the pressure-fit interval set. |
+| `extend_inbound` | Boolean enabling a pre-emission pass that moves some inbound interval starts earlier when strict capacity remains valid. | Inbound lead time only. It does not split intervals or change object sources. |
 
 The simulator never sees a candidate spec directly. It sees only the annotated
-chain produced after pressure reduction, optional H2D lead-time extension,
+chain produced after pressure reduction, optional inbound lead-time extension,
 trigger emission, and physical repair.
 
 The common pipeline phases have these meanings:
 
 | Phase | Input | Output | What it is allowed to change |
 |---|---|---|---|
-| Pressure reduction | Candidate `seed_intervals`, `protected_initial`, `reserve_pressure`, and any `physical_extra` from repair. | A pressure-fit interval set that satisfies the strict capacity inequality. | Interval splits only. It does not choose a new seed or H2D schedule. |
-| H2D lead-time extension | Pressure-fit interval set plus the same capacity model. | A pressure-fit interval set with some H2D entries moved earlier. | Interval starts for H2D-prefetched intervals only, and only when strict pressure remains valid. |
-| Trigger emission | Pressure-fit interval set and the candidate `h2d_schedule`. | An annotated `TaskChain`. | Adds release, offload, prefetch, and initial-copy annotations. It does not replan residency. |
+| Pressure reduction | Candidate `seed_intervals`, `protected_initial`, `reserve_pressure`, and any `physical_extra` from repair. | A pressure-fit interval set that satisfies the strict capacity inequality. | Interval splits only. It does not choose a new seed or inbound schedule. |
+| Inbound lead-time extension | Pressure-fit interval set plus the same capacity model. | A pressure-fit interval set with some inbound entries moved earlier. | Interval starts for inbound-prefetched intervals only, and only when strict pressure remains valid. |
+| Trigger emission | Pressure-fit interval set and the candidate `inbound_schedule`. | An annotated `TaskChain`. | Adds release, offload, prefetch, and initial-copy annotations. It does not replan residency. |
 | Simulator verification | Annotated `TaskChain`. | A simulator makespan or a feasibility error. | Nothing; this phase observes the plan. |
 | Physical repair | Simulator feasibility error plus current intervals. | Extra boundary pressure, followed by another reduction/emission attempt. | Adds conservative pressure at specific boundaries. It does not search for a faster plan. |
 
@@ -172,18 +182,18 @@ The common pipeline phases have these meanings:
 3. **Generate candidate specs.** The current portfolio contains:
 
    - base candidate specs using the base seed with packed FIFO, latest-safe,
-     interval-entry, and latest-trigger H2D schedules;
+     interval-entry, and latest-trigger inbound schedules;
    - source-gap candidate specs using the source-gap seed;
    - one slack-reserve candidate spec using the base seed;
    - one cold-admission candidate spec using a colder initial-residency seed;
-   - initial-protection candidate specs chosen from H2D deadline demand and
-     H2D-work frontiers.
+   - initial-protection candidate specs chosen from inbound deadline demand and
+     inbound-work frontiers.
 
    Portfolio mode controls how much of this candidate list is run. `full` runs
    the complete portfolio, `fast` skips the initial-protection frontier family,
    and `auto` uses the full portfolio on smaller chains but switches to bounded
    fast portfolios for large chains. Very large chains use `fast-minimal`,
-   which evaluates the base and source-gap unpacked candidates, uses latest-H2D
+   which evaluates the base and source-gap unpacked candidates, uses latest-inbound
    only if those fail, and records the other fast candidates as skipped.
 
    The appendix enumerates every candidate family and its purpose.
@@ -202,15 +212,15 @@ The common pipeline phases have these meanings:
    ```
 
    If strict pressure has no legal split, pressure reduction may use timing
-   relief for bytes that leave immediately after the boundary or H2D arrivals
+   relief for bytes that leave immediately after the boundary or inbound arrivals
    that can wait until after the next task reserves outputs.
 
-5. **Optionally extend H2D lead time.** Some specs move H2D interval
+5. **Optionally extend inbound lead time.** Some specs move inbound interval
    entries earlier when strict capacity permits. This pass changes only interval
    starts; it does not split intervals or change object sources.
 
 6. **Emit and verify the candidate plan.** Convert interval entries/exits into
-   release, offload, and prefetch triggers according to the spec's H2D schedule.
+   release, offload, and prefetch triggers according to the spec's inbound schedule.
    Run the simulator. If the simulator reports a capacity
    contradiction caused by output reservation, missing live inputs, or stream
    queue timing, translate that contradiction into additional physical pressure,
@@ -230,7 +240,7 @@ The common pipeline phases have these meanings:
 - **Conservative first:** strict pressure reduction is preferred; timing relief
   is used only when strict reduction cannot make progress.
 - **Standalone:** the policy does not fall back to another policy. Its only
-  makespan choice is between local H2D schedules derived from its own interval
+  makespan choice is between local inbound schedules derived from its own interval
   plan.
 
 ## Portfolio Modes And Diagnostics
@@ -245,7 +255,7 @@ The common pipeline phases have these meanings:
 
 For very large chains, `auto` and `fast` may resolve to effective mode
 `fast-minimal`. This evaluates `base-unpacked` and `source-gap-unpacked`, uses
-`base-latest-h2d` only as a fallback if those fail, and records the remaining
+`base-latest-inbound` only as a fallback if those fail, and records the remaining
 secondary candidates as skipped. `full` is the escape hatch when exhaustive
 candidate comparison is desired.
 
@@ -268,7 +278,7 @@ including makespan, policy wall time, selected candidate, and candidate counts.
 
 ## Known Limits
 
-- It can miss a faster chain that requires globally coordinated D2H/H2D stream
+- It can miss a faster chain that requires globally coordinated outbound and inbound stream
   placement rather than local interval pressure reduction.
 - Physical verification repairs feasibility contradictions; it is not a general
   makespan optimizer.
@@ -315,18 +325,18 @@ apply_pressurefit_policy(chain):
 build_candidate_specs(chain, facts, base_intervals, portfolio_mode):
     specs = []
 
-    specs += base_intervals with h2d_schedule = packed_fifo
-    specs += base_intervals with h2d_schedule = latest_safe
-    specs += base_intervals with h2d_schedule = interval_entry
-    specs += base_intervals with h2d_schedule = latest_trigger
-    specs += source_gap_seed with h2d_schedule = latest_safe
+    specs += base_intervals with inbound_schedule = packed_fifo
+    specs += base_intervals with inbound_schedule = latest_safe
+    specs += base_intervals with inbound_schedule = interval_entry
+    specs += base_intervals with inbound_schedule = latest_trigger
+    specs += source_gap_seed with inbound_schedule = latest_safe
 
     specs += base_intervals with:
         reserve_pressure = max(next_task_device_outputs)
-        h2d_schedule = packed_fifo
+        inbound_schedule = packed_fifo
 
     specs += cold_admission_seed(device_capacity / 2) with:
-        h2d_schedule = packed_fifo
+        inbound_schedule = packed_fifo
 
     effective_mode = resolve_portfolio_mode(portfolio_mode, chain, facts)
 
@@ -334,8 +344,8 @@ build_candidate_specs(chain, facts, base_intervals, portfolio_mode):
         for protected in select_initial_protection_sets(facts):
             specs += all_host_seed with:
                 protected_initial = protected
-                extend_h2d = true
-                h2d_schedule in [packed_fifo, latest_safe, interval_entry]
+                extend_inbound = true
+                inbound_schedule in [packed_fifo, latest_safe, interval_entry]
 
     return specs
 ```
@@ -348,11 +358,11 @@ verify_candidate_plan(spec):
 
     reduce_to_fit(intervals, extra_pressure, protected_initial)
 
-    if spec.extend_h2d:
-        extend_h2d_lead_time(intervals, extra_pressure)
+    if spec.extend_inbound:
+        extend_inbound_lead_time(intervals, extra_pressure)
 
     repeat up to fixed repair limit:
-        annotated = emit_triggers(intervals, spec.h2d_schedule)
+        annotated = emit_triggers(intervals, spec.inbound_schedule)
 
         try:
             log = simulator_run(annotated, snapshots=False)
@@ -362,12 +372,12 @@ verify_candidate_plan(spec):
             extra_pressure[boundary] = required additional bytes
             reduce_to_fit(intervals, extra_pressure, protected_initial)
 
-            if spec.extend_h2d:
-                extend_h2d_lead_time(intervals, extra_pressure)
+            if spec.extend_inbound:
+                extend_inbound_lead_time(intervals, extra_pressure)
         else:
             raise error
 
-    annotated = emit_triggers(intervals, spec.h2d_schedule)
+    annotated = emit_triggers(intervals, spec.inbound_schedule)
     log = simulator_run(annotated, snapshots=False)
     return (makespan(log), annotated)
 ```
@@ -411,21 +421,21 @@ reduce_to_fit(intervals, extra_pressure, protected_initial):
 ```
 
 ```text
-emit_triggers(intervals, h2d_schedule):
+emit_triggers(intervals, inbound_schedule):
     for each interval of each object:
         if interval starts at initial boundary:
             add initial device copy when object has a host source
         else if interval starts at object's producer:
             no arrival trigger is needed
         else:
-            add H2D prefetch trigger according to h2d_schedule
+            add inbound prefetch trigger according to inbound_schedule
 
         if interval exit contains a mutation and object has a later interval:
-            add D2H offload trigger
+            add outbound offload trigger
         else if final_locations[object] == host and host lacks latest bytes:
-            add D2H offload trigger
+            add outbound offload trigger
         else if object has no host source and has a later interval:
-            add D2H offload trigger
+            add outbound offload trigger
         else:
             add release trigger
 
@@ -445,7 +455,7 @@ task `u` starts.
 Produced objects are different from prefetched objects. A produced object starts
 at its producer task because it becomes live at that task's end. A prefetched
 object that starts at interval boundary `a` is counted from boundary `a - 1`
-when the H2D transfer can begin.
+when the inbound transfer can begin.
 
 ### Byte Accounting
 
@@ -457,7 +467,7 @@ does not include the next task's output reservation, host memory, or
 For an interval `[a, b]`, the counted boundaries are:
 
 - `a .. b` for initial-device, initial-host, and naturally produced intervals;
-- `a - 1 .. b` for H2D-prefetched intervals, because the simulator allocates H2D
+- `a - 1 .. b` for inbound-prefetched intervals, because the simulator allocates
   destination bytes when the transfer starts, not when it finishes.
 
 `next_task_device_outputs(boundary)` is the number of device bytes that the next
@@ -467,8 +477,8 @@ are not part of any existing residency interval yet.
 `physical_extra(boundary)` is a repair term, initially zero. It is not an object.
 It means: "the analytic model must free at least this many more bytes at this
 boundary because the simulator observed a real FIFO/capacity effect that the
-static interval model missed." Examples are H2D destination bytes appearing when
-a transfer starts, D2H source bytes staying live until transfer completion, or a
+static interval model missed." Examples are inbound destination bytes appearing when
+a transfer starts, outbound source bytes staying live until transfer completion, or a
 queue head blocked behind capacity.
 
 ### Seed Interval Set
@@ -543,7 +553,7 @@ what pressure reduction is allowed to cut.
 In plain terms, a pressure-fit interval set is the result of taking a seed
 interval set and cutting out some non-required residency gaps so the modeled
 device bytes satisfy the capacity inequality. It does not invent new objects,
-new uses, new producers, or a new H2D schedule. It only decides which optional
+new uses, new producers, or a new inbound schedule. It only decides which optional
 stretches of device residency to remove.
 
 Mathematically, take the seed interval set `S` defined above as input. Pressure
@@ -580,11 +590,11 @@ For boundary accounting, define:
 
 ```text
 effective_start(o, [a, b]) =
-    a - 1   if the interval starts from an H2D prefetch
+    a - 1   if the interval starts from an inbound prefetch
     a       otherwise
 ```
 
-An interval starts from an H2D prefetch when `a > -1` and `a` is not the
+An interval starts from an inbound prefetch when `a > -1` and `a` is not the
 producer task for `o`. Object `o` is counted resident at boundary `x` when:
 
 ```text
@@ -623,22 +633,22 @@ initial interval if keeping it resident creates too much later pressure.
 Finite-cap initial selection works in this order:
 
 1. host-source task-0 inputs are mandatory;
-2. the policy computes a cold H2D FIFO estimate for every other used host-source
+2. the policy computes a cold inbound FIFO estimate for every other used host-source
    object, sorted by ascending first consumer task index;
-3. for each object, `miss = max(0, estimated_h2d_end - first_consumer_start)`;
+3. for each object, `miss = max(0, estimated_inbound_end - first_consumer_start)`;
 4. remaining objects are sorted by this exact key:
 
    ```text
    (
        first_consumer_task_index,
-       h2d_slack,
+       inbound_slack,
        -miss,
        -object_size,
        object_id,
    )
    ```
 
-5. `h2d_slack = max(0, first_consumer_start - task0_end - h2d_runtime)`;
+5. `inbound_slack = max(0, first_consumer_start - task0_end - inbound_runtime)`;
 6. objects are admitted in that order while initial device bytes plus mandatory
    task-0 inputs plus task-0 device outputs still fit.
 
@@ -668,7 +678,7 @@ Where:
 
 - `stream_cost = 0` when the split either drops unused initial residency or can
   release a clean host-source object;
-- `stream_cost = 1` when the split needs a D2H offload to preserve bytes for a
+- `stream_cost = 1` when the split needs an outbound offload to preserve bytes for a
   later interval;
 - `drop_initial_rank = 0` when the split removes initial residency, otherwise
   `1`;
@@ -703,7 +713,7 @@ Relaxed pressure subtracts two kinds of bytes that the static boundary model can
 over-charge:
 
 1. bytes that depart immediately after the current boundary;
-2. H2D arrivals that are not needed by the next task and can wait until after
+2. inbound arrivals that are not needed by the next task and can wait until after
    that task reserves outputs.
 
 Pressure reduction always tries strict pressure first. Relaxed pressure is used
@@ -722,8 +732,8 @@ A candidate spec is exactly the tuple:
     seed_intervals,
     protected_initial,
     reserve_pressure,
-    extend_h2d,
-    h2d_schedule,
+    extend_inbound,
+    inbound_schedule,
 )
 ```
 
@@ -734,20 +744,20 @@ Those fields are interpreted as follows:
 | `seed_intervals` | object id -> list of inclusive `[start, end]` boundary intervals | Copied at the start of verification, then passed to pressure reduction. Different seeds give pressure reduction different starting assumptions. |
 | `protected_initial` | set of object ids | Makes a split illegal if that split would remove boundary-`-1` residency for one of these objects. Later non-initial gaps may still be split normally. |
 | `reserve_pressure` | bytes | Added as a baseline to every boundary's pressure check. Physical repair may add more pressure at individual boundaries, but may not go below this baseline. |
-| `extend_h2d` | boolean | If true, run the H2D lead-time extension pass after each pressure-reduction attempt. |
-| `h2d_schedule` | enum | Selects packed FIFO, latest-safe, interval-entry, or latest-trigger placement for H2D prefetch triggers. |
+| `extend_inbound` | boolean | If true, run the inbound lead-time extension pass after each pressure-reduction attempt. |
+| `inbound_schedule` | enum | Selects packed FIFO, latest-safe, interval-entry, or latest-trigger placement for inbound prefetch triggers. |
 
 Only these fields vary across the portfolio. All candidate specs use the same
 split legality rules, pressure reduction pass, trigger emission, simulator
 verification, and physical repair loop.
 
-| Family | Seed | Extra pressure | Protected initial set | H2D schedule(s) | Purpose |
+| Family | Seed | Extra pressure | Protected initial set | Inbound schedule(s) | Purpose |
 |---|---|---|---|---|---|
-| Base | normal finite-cap initial residency | none | none | packed FIFO, latest-safe, interval-entry, latest-trigger | Try the natural interval plan with different H2D trigger placement. |
-| Source gap | base seed after long dirty source-state no-use gaps are split when the round trip fits | none | none | latest-safe | Avoid carrying updated source-state bytes through long no-use gaps when a bounded D2H/H2D round trip can fit inside the gap. |
+| Base | normal finite-cap initial residency | none | none | packed FIFO, latest-safe, interval-entry, latest-trigger | Try the natural interval plan with different inbound trigger placement. |
+| Source gap | base seed after long dirty source-state no-use gaps are split when the round trip fits | none | none | latest-safe | Avoid carrying updated source-state bytes through long no-use gaps when a bounded outbound and inbound round trip can fit inside the gap. |
 | Slack reserve | base seed | `max(next_task_device_outputs)` at every boundary | none | packed FIFO | Leave output/FIFO headroom earlier than strict static pressure requires. |
 | Cold admission | initial residency selected with half-cap admission budget | none | none | packed FIFO | Try one colder starting point without searching over initial subsets. |
-| Initial protection | every used host-source object initially resident | none | deadline-demand and H2D-work frontier sets | packed FIFO for the first set and smallest byte-scale frontiers; latest-safe and interval-entry for all sets | Preserve selected boundary-`-1` residency when H2D demand or source-object timing suggests that dropping it may create FIFO stalls. Skipped by the large-chain fast portfolio. |
+| Initial protection | every used host-source object initially resident | none | deadline-demand and inbound-work frontier sets | packed FIFO for the first set and smallest byte-scale frontiers; latest-safe and interval-entry for all sets | Preserve selected boundary-`-1` residency when inbound demand or source-object timing suggests that dropping it may create FIFO stalls. Skipped by the large-chain fast portfolio. |
 
 These families are stitched together only at the candidate-selection level. They
 do not use separate correctness rules: all of them pass through the same
@@ -766,13 +776,13 @@ deliberately skipped family-level candidates. The diagnostic row name is stable
 enough for measurement scripts and UI display, but it is not part of the
 simulator schema.
 
-### H2D Schedules
+### Inbound Schedules
 
 After pressure reduction produces a pressure-fit interval set, every
-non-initial, non-produced interval entry becomes an H2D prefetch. The
-candidate's H2D schedule determines where that prefetch trigger is emitted.
+non-initial, non-produced interval entry becomes an inbound prefetch. The
+candidate's inbound schedule determines where that prefetch trigger is emitted.
 
-All schedules start from the same H2D job for each prefetched interval
+All schedules start from the same inbound job for each prefetched interval
 `[a, b]` of object `o`:
 
 ```text
@@ -780,7 +790,7 @@ first_use = first task that consumes o inside [a, b]
 earliest = max(previous_interval_fire_task(o), producer_task(o), 0)
 latest = first_use - 1
 deadline = ideal_start(first_use)
-h2d_runtime = ceil(size(o) / h2d_bandwidth)
+inbound_runtime = ceil(size(o) / inbound_bandwidth)
 ```
 
 The schedule chooses a trigger task `fire` in `[earliest, latest]`. The trigger
@@ -788,10 +798,10 @@ is emitted as `prefetch_after` on that task.
 
 | Schedule | Exact placement rule | Purpose |
 |---|---|---|
-| packed FIFO | Treat all H2D jobs as one FIFO queue. Sort jobs from latest deadline to earliest deadline, then pack them backward so each job finishes before its consumer deadline and before the next later-packed H2D job. If no such trigger exists inside the job window, use `earliest`. | Coordinate multiple H2D transfers that would otherwise pile up near their consumers. This is the default schedule when H2D queue congestion is the main risk. |
-| latest-safe | Schedule each H2D independently. Pick the latest `fire` in `[earliest, latest]` such that `task_end(fire) + h2d_runtime <= deadline`, assuming the H2D FIFO is otherwise idle. If none exists, use `latest`. | Keep objects off device as long as possible. This is useful when memory pressure matters more than H2D FIFO congestion. |
-| interval-entry | Use the latest-safe rule, but first tighten `latest` to `min(first_use - 1, a - 1)`. The trigger is therefore no later than the task immediately before the pressure-fit interval begins. | Respect the timing implied by the pressure-fit interval set, especially after H2D lead-time extension has intentionally moved an interval entry earlier. |
-| latest-trigger | Use `fire = latest` for every H2D job, even when the transfer cannot finish by the consumer's ideal start. The consumer may stall while the transfer completes. | Preserve capacity for the task immediately before the consumer. This is useful when an early H2D destination would fit by itself but would make that predecessor's output reservation impossible. |
+| packed FIFO | Treat all inbound jobs as one FIFO queue. Sort jobs from latest deadline to earliest deadline, then pack them backward so each job finishes before its consumer deadline and before the next later-packed inbound job. If no such trigger exists inside the job window, use `earliest`. | Coordinate multiple inbound transfers that would otherwise pile up near their consumers. This is the default schedule when inbound queue congestion is the main risk. |
+| latest-safe | Schedule each inbound independently. Pick the latest `fire` in `[earliest, latest]` such that `task_end(fire) + inbound_runtime <= deadline`, assuming the inbound FIFO is otherwise idle. If none exists, use `latest`. | Keep objects off device as long as possible. This is useful when memory pressure matters more than inbound FIFO congestion. |
+| interval-entry | Use the latest-safe rule, but first tighten `latest` to `min(first_use - 1, a - 1)`. The trigger is therefore no later than the task immediately before the pressure-fit interval begins. | Respect the timing implied by the pressure-fit interval set, especially after inbound lead-time extension has intentionally moved an interval entry earlier. |
+| latest-trigger | Use `fire = latest` for every inbound job, even when the transfer cannot finish by the consumer's ideal start. The consumer may stall while the transfer completes. | Preserve capacity for the task immediately before the consumer. This is useful when an early inbound destination would fit by itself but would make that predecessor's output reservation impossible. |
 
 All schedules still rely on simulator verification; a schedule that looks valid
 analytically can be rejected or repaired if FIFO timing creates real pressure.
@@ -815,7 +825,7 @@ planned_resident_bytes
 ```
 
 This reserve is deliberately conservative and bounded: there is only one such
-candidate, and it uses packed FIFO H2D scheduling. It is not a correctness
+candidate, and it uses packed FIFO inbound scheduling. It is not a correctness
 requirement. Its purpose is to produce an alternate colder plan that may avoid
 small stalls when real output reservations or queued transfers need room before
 the static interval model would otherwise force that room to appear.
@@ -838,10 +848,10 @@ by pressure reduction except through the colder interval seed. This gives the
 policy a single bounded alternative when filling the initial boundary too
 aggressively creates later FIFO stalls.
 
-### H2D Lead-Time Extension
+### Inbound Lead-Time Extension
 
 After pressure reduction, some prefetch intervals are capacity-feasible but too
-late for the H2D FIFO. The lead-time pass enumerates prefetched intervals, sorts
+late for the inbound FIFO. The lead-time pass enumerates prefetched intervals, sorts
 them from latest deadline to earliest deadline, and packs them backward. For
 each interval, it tries to move the entry earlier and accepts the move only when
 every newly covered boundary still satisfies the strict capacity inequality.
@@ -853,7 +863,7 @@ exist, which objects have host sources, or which intervals are split.
 
 Initial-protection plans handle cases where pressure reduction's cheapest local
 choice is to drop boundary-`-1` residency for host-source objects, but the
-resulting H2D jobs may create FIFO stalls. The policy does not choose a fixed
+resulting inbound jobs may create FIFO stalls. The policy does not choose a fixed
 number of objects. It builds a small set of candidate protected sets from object
 sizes, transfer bandwidth, compute slack, reduced interval entries, first-use
 positions, mutation metadata, and initial capacity.
@@ -871,12 +881,12 @@ The construction is:
    [a, b]          = reduced interval containing first_use - 1
    release_time    = task_end(max(0, a - 1))
    deadline        = ideal_start(first_use)
-   h2d_runtime     = ceil(size(o) / h2d_bandwidth)
+   inbound_runtime     = ceil(size(o) / inbound_bandwidth)
    residency_cost  = size(o) * max(1, deadline)
    ```
 
    `release_time` is the earliest time implied by the reduced interval entry:
-   if the object is not protected initially, an H2D transfer cannot safely begin
+   if the object is not protected initially, an inbound transfer cannot safely begin
    before that entry without increasing modeled residency pressure.
 
 4. Compute the bytes available for optional initial protection:
@@ -890,12 +900,12 @@ The construction is:
    ```
 
 5. Build the **deadline-deficit set**. Schedule unprotected protection jobs on a
-   single H2D FIFO in deadline order,
+   single inbound FIFO in deadline order,
    respecting each job's `release_time`:
 
    ```text
-   start = max(h2d_cursor, release_time)
-   end   = start + h2d_runtime
+   start = max(inbound_cursor, release_time)
+   end   = start + inbound_runtime
    miss  = max(0, end - deadline)
    ```
 
@@ -910,16 +920,16 @@ The construction is:
    The chosen job is the one with the smallest:
 
    ```text
-   residency_cost / h2d_runtime
+   residency_cost / inbound_runtime
    ```
 
-   with ties broken by larger `h2d_runtime`, earlier deadline, smaller size,
+   with ties broken by larger `inbound_runtime`, earlier deadline, smaller size,
    then object id. Add that object to `protected_initial`, subtract its size
-   from remaining headroom, and recompute H2D misses. The resulting set is one
+   from remaining headroom, and recompute inbound misses. The resulting set is one
    candidate protected set.
 
-7. Build **H2D-work frontier sets**. A frontier set is a prefix of an ordered
-   source-job list whose cumulative protected H2D runtime reaches a
+7. Build **inbound-work frontier sets**. A frontier set is a prefix of an ordered
+   source-job list whose cumulative protected inbound runtime reaches a
    resource-derived scale point while still fitting `protection_headroom`.
 
    PressureFit currently uses three source-job orderings:
@@ -935,8 +945,8 @@ The construction is:
 
    ```text
    first_group = maximal prefix whose group_key equals group_key(first job)
-   first_work  = sum(h2d_runtime(job) for job in first_group)
-   total_work  = sum(h2d_runtime(job) for job in ordered jobs)
+   first_work  = sum(inbound_runtime(job) for job in first_group)
+   total_work  = sum(inbound_runtime(job) for job in ordered jobs)
    horizon     = ceil(sqrt(first_work * total_work))
    ```
 
@@ -945,19 +955,19 @@ The construction is:
 
    The policy records the first urgency group and the immediately following
    urgency group. If the first group contains a single job, it also records
-   prefixes at successive doubled H2D-work targets:
+   prefixes at successive doubled inbound-work targets:
 
    ```text
    first_work, 2 * first_work, 4 * first_work, ...
    ```
 
-   and stops after recording the first prefix whose cumulative H2D work reaches
+   and stops after recording the first prefix whose cumulative inbound work reaches
    `horizon`. This is a logarithmic transfer-work frontier. The scale comes from
    transfer time and the ordered job list, not from a fixed number of objects.
 
 8. For each nonempty deduplicated protected set, run candidate specs with the
-   all-host-source seed, that `protected_initial` set, and H2D lead-time
-   extension. The first protected set also tries packed FIFO H2D scheduling.
+   all-host-source seed, that `protected_initial` set, and inbound lead-time
+   extension. The first protected set also tries packed FIFO inbound scheduling.
    Packed FIFO is also tried for any frontier whose protected bytes fit within
    the largest single used host-source object:
 
@@ -975,11 +985,11 @@ derived from `first_work` and `total_work`.
 
 ### Physical Repair
 
-The analytic model does not fully simulate the H2D and D2H FIFO queues. In the
+The analytic model does not fully simulate the inbound and outbound FIFO queues. In the
 real simulator:
 
-- an H2D destination consumes device bytes when the transfer starts;
-- a D2H source keeps consuming device bytes until the transfer completes;
+- an inbound destination consumes device bytes when the transfer starts;
+- an outbound source keeps consuming device bytes until the transfer completes;
 - a queued transfer can block behind capacity at the queue head.
 
 If the simulator reports a capacity contradiction, PressureFit translates the
