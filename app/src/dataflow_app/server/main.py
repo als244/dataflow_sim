@@ -17,7 +17,11 @@ from dataflow_sim.policy.belady_reactive import apply_belady_reactive_policy
 from dataflow_sim.policy.roundtrip_planner import apply_roundtrip_planner_policy
 from dataflow_sim.policy.max_reduce import apply_max_reduce_policy
 from dataflow_sim.policy.min_grow import apply_min_grow_policy
-from dataflow_sim.policy.pressurefit import apply_pressurefit_policy
+from dataflow_sim.policy.pressurefit import (
+    PressureFitDiagnostics,
+    apply_pressurefit_policy,
+    plan_pressurefit_policy,
+)
 from dataflow_sim.simulator import run as sim_run
 from dataflow_sim.schema import EventLog, TaskChain
 from dataflow_app.workloads.presets import HARDWARE_PRESETS, load_model_presets
@@ -30,6 +34,8 @@ from dataflow_app.workloads.transformer import (
 
 app = FastAPI(title="dataflow_sim")
 MAX_RESPONSE_EVENTS = 300
+MAX_MEMORY_TRACE_POINTS = 6_000
+MAX_SNAPSHOT_TASKS = 3_000
 
 Policy = Literal[
     "sliding_window",
@@ -40,6 +46,7 @@ Policy = Literal[
     "pressurefit",
 ]
 Optimizer = Literal["none", "adamw", "muon"]
+PressureFitMode = Literal["auto", "fast", "full"]
 
 
 class HardwareParams(BaseModel):
@@ -78,6 +85,7 @@ class SimulationParams(BaseModel):
     optimizer: Optimizer = "none"
     final_model_state_on_host: bool = False
     policy: Policy = "pressurefit"
+    pressurefit_mode: PressureFitMode = "auto"
     window_size: int = Field(2, ge=1, le=32)
     device_capacity_gb: float | None = Field(None, gt=0)
 
@@ -101,6 +109,8 @@ def _log_makespan(log) -> int:
 
 
 def _peak_device_gb(log) -> float:
+    if getattr(log, "peak_device_bytes", 0):
+        return log.peak_device_bytes / (1024 ** 3)
     peak_bytes = 0
     for ev in log.events:
         b = sum(m.size for m in ev.snapshot.memory if m.location == "device")
@@ -137,7 +147,11 @@ def _apply_policy(params: SimulationParams, bare, cap_bytes: int | None) -> Task
         bare_capped = replace(bare, device_capacity=cap_bytes) if cap_bytes is not None else bare
         return apply_min_grow_policy(bare_capped)
     if params.policy == "pressurefit":
-        return apply_pressurefit_policy(bare, device_capacity=cap_bytes)
+        return apply_pressurefit_policy(
+            bare,
+            device_capacity=cap_bytes,
+            portfolio_mode=params.pressurefit_mode,
+        )
     raise ValueError(f"unknown policy: {params.policy!r}")
 
 
@@ -147,10 +161,24 @@ def _run_config(
     hw: HardwareEnv,
     cfg: TrainingConfig,
     cap_bytes: int | None,
-) -> tuple[TaskChain, dict, EventLog]:
+) -> tuple[TaskChain, dict, EventLog, PressureFitDiagnostics | None]:
     bare, breakdown = build_transformer_bare_chain(spec, hw, cfg)
-    chain = _apply_policy(params, bare, cap_bytes)
-    return chain, breakdown, sim_run(chain)
+    diagnostics = None
+    if params.policy == "pressurefit":
+        chain, diagnostics = plan_pressurefit_policy(
+            bare,
+            device_capacity=cap_bytes,
+            portfolio_mode=params.pressurefit_mode,
+        )
+    else:
+        chain = _apply_policy(params, bare, cap_bytes)
+    snapshots = len(chain.tasks) <= MAX_SNAPSHOT_TASKS
+    return (
+        chain,
+        breakdown,
+        sim_run(chain, snapshots=snapshots, memory_trace=not snapshots),
+        diagnostics,
+    )
 
 
 def _compute_summary(
@@ -273,6 +301,35 @@ def _compact_log_for_response(log, max_events: int = MAX_RESPONSE_EVENTS):
     return replace(log, events=[log.events[i] for i in sorted(keep)])
 
 
+def _compact_memory_trace_for_response(
+    log,
+    max_points: int = MAX_MEMORY_TRACE_POINTS,
+):
+    """Downsample compact memory traces while preserving endpoints and peaks."""
+    points = getattr(log, "memory_trace", [])
+    if len(points) <= max_points:
+        return log
+
+    bucket_count = max(1, max_points // 3)
+    last = len(points) - 1
+    keep: set[int] = {0, last}
+    for bucket_idx in range(bucket_count):
+        lo = round(bucket_idx * last / bucket_count)
+        hi = round((bucket_idx + 1) * last / bucket_count)
+        if hi < lo:
+            lo, hi = hi, lo
+        hi = min(last, max(lo, hi))
+        keep.add(lo)
+        keep.add(hi)
+        peak_idx = max(
+            range(lo, hi + 1),
+            key=lambda i: sum(points[i].device_bytes_by_band.values()),
+        )
+        keep.add(peak_idx)
+
+    return replace(log, memory_trace=[points[i] for i in sorted(keep)])
+
+
 @app.post("/api/simulate")
 def simulate(params: SimulationParams) -> dict:
     try:
@@ -318,7 +375,9 @@ def simulate(params: SimulationParams) -> dict:
             optimizer=params.optimizer,
             final_model_state_on_host=params.final_model_state_on_host,
         )
-        chain, breakdown, log = _run_config(params, spec, hw, cfg, cap_bytes)
+        chain, breakdown, log, policy_diagnostics = _run_config(
+            params, spec, hw, cfg, cap_bytes,
+        )
         summary = _compute_summary(
             log,
             breakdown,
@@ -330,10 +389,15 @@ def simulate(params: SimulationParams) -> dict:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    response_log = _compact_log_for_response(log)
+    response_log = _compact_memory_trace_for_response(_compact_log_for_response(log))
     return {
         "log": asdict(response_log),
         "breakdown": breakdown,
         "summary": summary,
         "chain": asdict(chain),
+        "policy_diagnostics": (
+            asdict(policy_diagnostics)
+            if policy_diagnostics is not None
+            else None
+        ),
     }

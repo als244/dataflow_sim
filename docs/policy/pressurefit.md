@@ -5,10 +5,30 @@ object intervals over task boundaries, cuts those intervals where byte pressure
 is too high, tries bounded slack and H2D stall-relief candidate plans, then
 emits release/offload/prefetch triggers with deadline-aware H2D ordering.
 
-Implementation: `simulator/src/dataflow_sim/policy/pressurefit.py`.
+Implementation modules:
+
+- `simulator/src/dataflow_sim/policy/pressurefit.py`: public entry point,
+  candidate verification and fastest-valid selection;
+- `simulator/src/dataflow_sim/policy/pressurefit_aux/portfolio.py`: candidate
+  specs, seed construction, portfolio modes, and candidate-family assembly;
+- `simulator/src/dataflow_sim/policy/pressurefit_aux/reducer.py`: deterministic
+  greedy pressure reduction;
+- `simulator/src/dataflow_sim/policy/pressurefit_aux/emit.py`: H2D lead-time
+  extension and interval-to-trigger emission;
+- `simulator/src/dataflow_sim/policy/pressurefit_aux/physical_repair.py`:
+  simulator-error interpretation and boundary pressure repair;
+- `simulator/src/dataflow_sim/policy/pressurefit_aux/diagnostics.py`: diagnostic
+  result types and candidate diagnostic rows;
+- `simulator/src/dataflow_sim/policy/pressurefit_aux/core.py`: shared interval and
+  boundary accounting model.
+
 Entry point: `apply_pressurefit_policy(bare, *, device_capacity=None,
-refinement_iters=0)`. `refinement_iters` is accepted for API compatibility; the
-policy does not use a tunable search budget.
+refinement_iters=0, portfolio_mode="auto")`. `refinement_iters` is accepted for
+API compatibility; the policy does not use a tunable search budget.
+
+Diagnostics entry point: `plan_pressurefit_policy(...) -> (chain,
+diagnostics)`. It runs the same planner and returns candidate-level status,
+timing, makespan, and selection metadata.
 
 ## Design Contract
 
@@ -21,6 +41,61 @@ PressureFit is schema-driven. It uses:
 - H2D/D2H bandwidths and `device_capacity`.
 
 It does not depend on object ids, object types, or task names.
+
+## Core Algorithm: Pressure Reduction
+
+Pressure reduction is the central algorithm in PressureFit. Candidate specs
+choose where the algorithm starts, and H2D schedules choose how the resulting
+interval entries become prefetch triggers, but the residency decision itself is
+made by pressure reduction.
+
+The simplest way to read the policy is:
+
+1. use a bounded set of heuristics to construct candidate specs;
+2. for each spec, run the same deterministic greedy pressure-reduction pass;
+3. emit transfer/release annotations from the reduced intervals;
+4. verify each annotated chain in the simulator;
+5. return the valid candidate with the lowest makespan.
+
+The candidate specs are heuristic. They choose the initial interval hypothesis,
+initial-residency/protection choices, reserve pressure, and H2D scheduling
+style. Pressure reduction is deterministic once those choices are fixed, but it
+is still greedy: its split ranking is a local rule for reaching feasibility, not
+a proof of globally optimal residency.
+
+The pressure-reduction problem is:
+
+```text
+given:
+    seed intervals S
+    required anchors A
+    object sizes size(o)
+    device capacity C
+    output reservation Q(x) at each boundary x
+    repair pressure E(x) at each boundary x
+    candidate reserve R
+
+find:
+    intervals P
+
+such that:
+    P is made only by cutting gaps out of S
+    every required anchor in A remains covered
+    for every boundary x:
+        resident_P(x) + Q(x) + E(x) + R <= C
+```
+
+Here `resident_P(x)` is the sum of device bytes for objects whose planned
+intervals count resident at boundary `x`. `Q(x)` reserves memory for the next
+task's device outputs, `E(x)` is extra pressure discovered by simulator repair,
+and `R` is candidate-requested headroom. The appendix defines these quantities
+and the exact boundary accounting.
+
+Operationally, pressure reduction repeatedly finds the most overloaded
+boundary, chooses a legal non-anchor gap whose removal reduces pressure at that
+boundary, splits that interval, and updates the boundary byte counts. It stops
+when the capacity inequality above holds at every boundary, or raises infeasible
+when no legal split can remove enough optional residency.
 
 ## Core Vocabulary
 
@@ -39,7 +114,8 @@ contains the precise definitions and ranking rules.
   a seed interval set, optional protected initial objects, optional reserve
   pressure, an H2D schedule, and whether to run H2D lead-time extension.
 - **Pressure reduction:** the shared pass that cuts non-required residency gaps
-  from a candidate spec until the modeled pressure fits.
+  from a candidate spec until the capacity inequality is satisfied at every
+  boundary.
 - **Pressure-fit interval set:** the output of pressure reduction. It is the
   candidate's interval set after optional gaps have been removed, before trigger
   emission turns interval entries/exits into annotations.
@@ -77,7 +153,7 @@ The common pipeline phases have these meanings:
 
 | Phase | Input | Output | What it is allowed to change |
 |---|---|---|---|
-| Pressure reduction | Candidate `seed_intervals`, `protected_initial`, `reserve_pressure`, and any `physical_extra` from repair. | A pressure-fit interval set that satisfies the modeled capacity check. | Interval splits only. It does not choose a new seed or H2D schedule. |
+| Pressure reduction | Candidate `seed_intervals`, `protected_initial`, `reserve_pressure`, and any `physical_extra` from repair. | A pressure-fit interval set that satisfies the strict capacity inequality. | Interval splits only. It does not choose a new seed or H2D schedule. |
 | H2D lead-time extension | Pressure-fit interval set plus the same capacity model. | A pressure-fit interval set with some H2D entries moved earlier. | Interval starts for H2D-prefetched intervals only, and only when strict pressure remains valid. |
 | Trigger emission | Pressure-fit interval set and the candidate `h2d_schedule`. | An annotated `TaskChain`. | Adds release, offload, prefetch, and initial-copy annotations. It does not replan residency. |
 | Simulator verification | Annotated `TaskChain`. | A simulator makespan or a feasibility error. | Nothing; this phase observes the plan. |
@@ -87,38 +163,41 @@ The common pipeline phases have these meanings:
    object sizes, producers, uses, mutators, initial host/device sets, terminal
    placement constraints, and each next task's device output reservation.
 
-2. **Build reusable seeds and protection sets.** Choose finite-cap initial residency,
-   then build the base seed: one continuous interval per object from its
-   anchors. Also build any auxiliary seeds or resource-derived protection sets
-   used by the portfolio, such as a colder initial-residency seed and the
-   initial-protection set.
+2. **Build reusable seeds and protection sets.** Choose finite-cap initial
+   residency, then build the base seed: one continuous interval per object from
+   its anchors. Also build auxiliary seeds used by the portfolio: a source-gap
+   seed that cuts long dirty source-state no-use gaps, a colder initial-residency
+   seed, and the all-host seed used by initial-protection specs.
 
 3. **Generate candidate specs.** The current portfolio contains:
 
    - base candidate specs using the base seed with packed FIFO, latest-safe,
      interval-entry, and latest-trigger H2D schedules;
+   - source-gap candidate specs using the source-gap seed;
    - one slack-reserve candidate spec using the base seed;
    - one cold-admission candidate spec using a colder initial-residency seed;
    - initial-protection candidate specs chosen from H2D deadline demand and
      H2D-work frontiers.
 
-   On large interactive chains, the portfolio skips the initial-protection
-   frontier family and keeps the base/slack/cold-admission specs. This is a
-   runtime guard for repeated-step chains, where each frontier candidate is
-   much more expensive.
+   Portfolio mode controls how much of this candidate list is run. `full` runs
+   the complete portfolio, `fast` skips the initial-protection frontier family,
+   and `auto` uses the full portfolio on smaller chains but switches to bounded
+   fast portfolios for large chains. Very large chains use `fast-minimal`,
+   which evaluates the base and source-gap unpacked candidates, uses latest-H2D
+   only if those fail, and records the other fast candidates as skipped.
 
    The appendix enumerates every candidate family and its purpose.
 
 4. **Run the common pipeline for each spec.** Copy the spec's seed, then run the
    same pressure reduction pass. While a boundary exceeds capacity, split one
    interval around that boundary. Pressure reduction first uses strict static
-   pressure:
+   pressure. At boundary `x`, the strict capacity inequality is:
 
    ```text
-   resident_bytes(boundary)
-   + next_task_device_outputs(boundary)
-   + physical_extra(boundary)
-   + candidate_reserve(boundary)
+   resident_P(x)
+   + next_task_device_outputs(x)
+   + physical_extra(x)
+   + candidate_reserve
    <= device_capacity
    ```
 
@@ -154,6 +233,39 @@ The common pipeline phases have these meanings:
   makespan choice is between local H2D schedules derived from its own interval
   plan.
 
+## Portfolio Modes And Diagnostics
+
+`portfolio_mode` is a runtime/quality knob, not a correctness knob.
+
+| Mode | Behavior | Intended use |
+|---|---|---|
+| `full` | Runs every candidate family, including initial-protection frontier specs. | Offline sweeps and small chains where best quality matters more than planner wall time. |
+| `fast` | Runs base, slack-reserve, and cold-admission families; skips initial-protection frontier specs. | Interactive or repeated-step chains where frontier candidates dominate planning time. |
+| `auto` | Uses `full` below the large-chain guard and `fast` above it. | Default UI mode. |
+
+For very large chains, `auto` and `fast` may resolve to effective mode
+`fast-minimal`. This evaluates `base-unpacked` and `source-gap-unpacked`, uses
+`base-latest-h2d` only as a fallback if those fail, and records the remaining
+secondary candidates as skipped. `full` is the escape hatch when exhaustive
+candidate comparison is desired.
+
+`plan_pressurefit_policy` returns a `PressureFitDiagnostics` object with:
+
+- requested and effective portfolio mode;
+- task/object counts and total planning wall time;
+- number of valid candidates;
+- selected candidate name and selected makespan;
+- one row per candidate with status (`valid`, `error`, or `skipped`),
+  candidate family, wall time, makespan when valid, and candidate-specific
+  fields.
+
+These diagnostics are observational. They do not alter the selected plan.
+
+For repeatable mode comparisons, run
+`python app/scripts/pressurefit_mode_sweep.py --quick` or use `--compact` /
+`--canonical` for broader grids. The script writes one row per config and mode,
+including makespan, policy wall time, selected candidate, and candidate counts.
+
 ## Known Limits
 
 - It can miss a faster chain that requires globally coordinated D2H/H2D stream
@@ -184,7 +296,9 @@ apply_pressurefit_policy(chain):
     base_intervals = build_initial_intervals(facts, initial)
 
     plans = []
-    candidate_specs = build_candidate_specs(chain, facts, base_intervals)
+    candidate_specs = build_candidate_specs(
+        chain, facts, base_intervals, portfolio_mode
+    )
 
     for spec in candidate_specs:
         plan = verify_candidate_plan(spec)
@@ -198,13 +312,14 @@ apply_pressurefit_policy(chain):
 ```
 
 ```text
-build_candidate_specs(chain, facts, base_intervals):
+build_candidate_specs(chain, facts, base_intervals, portfolio_mode):
     specs = []
 
     specs += base_intervals with h2d_schedule = packed_fifo
     specs += base_intervals with h2d_schedule = latest_safe
     specs += base_intervals with h2d_schedule = interval_entry
     specs += base_intervals with h2d_schedule = latest_trigger
+    specs += source_gap_seed with h2d_schedule = latest_safe
 
     specs += base_intervals with:
         reserve_pressure = max(next_task_device_outputs)
@@ -213,7 +328,9 @@ build_candidate_specs(chain, facts, base_intervals):
     specs += cold_admission_seed(device_capacity / 2) with:
         h2d_schedule = packed_fifo
 
-    if chain is small enough for the full portfolio:
+    effective_mode = resolve_portfolio_mode(portfolio_mode, chain, facts)
+
+    if effective_mode == full:
         for protected in select_initial_protection_sets(facts):
             specs += all_host_seed with:
                 protected_initial = protected
@@ -259,7 +376,13 @@ verify_candidate_plan(spec):
 reduce_to_fit(intervals, extra_pressure, protected_initial):
     loop:
         pool = planned resident bytes at every boundary
-        worst = boundary with largest strict overflow
+        strict_overflow(x) =
+            pool[x]
+            + next_task_device_outputs(x)
+            + extra_pressure[x]
+            - device_capacity
+
+        worst = boundary with largest strict_overflow(x)
 
         if strict_overflow(worst) <= 0:
             return
@@ -357,7 +480,8 @@ candidate specs use different seeds, mainly by changing which host-source
 objects are assumed to be resident at boundary `-1`.
 
 The seed is not required to fit device capacity. It is the input to pressure
-reduction, which removes optional gaps until the modeled pressure fits.
+reduction, which removes optional gaps until the strict capacity inequality can
+be satisfied at every boundary.
 
 Mathematically, a seed interval set `S` maps each planned object `o` to zero or
 more inclusive boundary intervals:
@@ -418,9 +542,9 @@ what pressure reduction is allowed to cut.
 
 In plain terms, a pressure-fit interval set is the result of taking a seed
 interval set and cutting out some non-required residency gaps so the modeled
-device bytes fit the capacity check. It does not invent new objects, new uses,
-new producers, or a new H2D schedule. It only decides which optional stretches
-of device residency to remove.
+device bytes satisfy the capacity inequality. It does not invent new objects,
+new uses, new producers, or a new H2D schedule. It only decides which optional
+stretches of device residency to remove.
 
 Mathematically, take the seed interval set `S` defined above as input. Pressure
 reduction produces a new interval set `P`, where `P[o]` is the list of
@@ -474,13 +598,13 @@ resident_P(x) =
     sum(size(o) for o where some interval in P[o] counts resident at x)
 ```
 
-The strict pressure check is:
+The strict capacity inequality is:
 
 ```text
 resident_P(x)
 + next_task_device_outputs(x)
 + physical_extra(x)
-+ reserve_pressure
++ candidate_reserve
 <= device_capacity
 ```
 
@@ -556,13 +680,24 @@ key.
 
 ### Strict And Relaxed Pressure
 
-Strict pressure is:
+For interval set `P`, strict pressure at boundary `x` is:
 
 ```text
-planned_resident_bytes
-+ next_task_device_outputs
-+ physical_extra
+strict_pressure_P(x) =
+    resident_P(x)
+    + next_task_device_outputs(x)
+    + physical_extra(x)
+    + candidate_reserve
 ```
+
+The corresponding overflow is:
+
+```text
+strict_overflow_P(x) = strict_pressure_P(x) - device_capacity
+```
+
+The strict capacity inequality is satisfied at `x` when
+`strict_overflow_P(x) <= 0`.
 
 Relaxed pressure subtracts two kinds of bytes that the static boundary model can
 over-charge:
@@ -609,6 +744,7 @@ verification, and physical repair loop.
 | Family | Seed | Extra pressure | Protected initial set | H2D schedule(s) | Purpose |
 |---|---|---|---|---|---|
 | Base | normal finite-cap initial residency | none | none | packed FIFO, latest-safe, interval-entry, latest-trigger | Try the natural interval plan with different H2D trigger placement. |
+| Source gap | base seed after long dirty source-state no-use gaps are split when the round trip fits | none | none | latest-safe | Avoid carrying updated source-state bytes through long no-use gaps when a bounded D2H/H2D round trip can fit inside the gap. |
 | Slack reserve | base seed | `max(next_task_device_outputs)` at every boundary | none | packed FIFO | Leave output/FIFO headroom earlier than strict static pressure requires. |
 | Cold admission | initial residency selected with half-cap admission budget | none | none | packed FIFO | Try one colder starting point without searching over initial subsets. |
 | Initial protection | every used host-source object initially resident | none | deadline-demand and H2D-work frontier sets | packed FIFO for the first set and smallest byte-scale frontiers; latest-safe and interval-entry for all sets | Preserve selected boundary-`-1` residency when H2D demand or source-object timing suggests that dropping it may create FIFO stalls. Skipped by the large-chain fast portfolio. |
@@ -617,6 +753,18 @@ These families are stitched together only at the candidate-selection level. They
 do not use separate correctness rules: all of them pass through the same
 pressure reduction pass, trigger emission, simulator verification, and physical
 repair loop.
+
+Portfolio modes decide which rows from this table are evaluated:
+
+- `full` evaluates all rows.
+- `fast` evaluates base, source-gap, slack reserve, and cold admission only.
+- `auto` resolves to `full` for small chains, `fast` for large chains, and
+  `fast-minimal` for very large chains.
+
+Candidate diagnostics report one row for every evaluated candidate and for
+deliberately skipped family-level candidates. The diagnostic row name is stable
+enough for measurement scripts and UI display, but it is not part of the
+simulator schema.
 
 ### H2D Schedules
 
@@ -696,7 +844,7 @@ After pressure reduction, some prefetch intervals are capacity-feasible but too
 late for the H2D FIFO. The lead-time pass enumerates prefetched intervals, sorts
 them from latest deadline to earliest deadline, and packs them backward. For
 each interval, it tries to move the entry earlier and accepts the move only when
-every newly covered boundary still satisfies the strict capacity check.
+every newly covered boundary still satisfies the strict capacity inequality.
 
 This changes only interval start positions. It does not change which objects
 exist, which objects have host sources, or which intervals are split.

@@ -1,5 +1,6 @@
 export type Policy = "sliding_window" | "belady_reactive" | "roundtrip_planner" | "max_reduce" | "min_grow" | "pressurefit";
 export type OptimizerMode = "none" | "adamw" | "muon";
+export type PressureFitMode = "auto" | "fast" | "full";
 
 export interface HardwareParams {
   preset: string;
@@ -37,6 +38,7 @@ export interface SimulationParams {
   optimizer: OptimizerMode;
   final_model_state_on_host: boolean;
   policy: Policy;
+  pressurefit_mode: PressureFitMode;
   window_size: number;
   device_capacity_gb: number | null;
 }
@@ -82,6 +84,7 @@ export const DEFAULT_PARAMS: SimulationParams = {
   optimizer: "none",
   final_model_state_on_host: false,
   policy: "pressurefit",
+  pressurefit_mode: "auto",
   window_size: 2,
   device_capacity_gb: null,
 };
@@ -99,6 +102,12 @@ const OPTIMIZER_OPTIONS: { value: OptimizerMode; label: string }[] = [
   { value: "none", label: "None" },
   { value: "adamw", label: "AdamW" },
   { value: "muon", label: "Muon" },
+];
+
+const PRESSUREFIT_MODE_OPTIONS: { value: PressureFitMode; label: string }[] = [
+  { value: "auto", label: "Auto" },
+  { value: "fast", label: "Fast" },
+  { value: "full", label: "Full" },
 ];
 
 const HW_FIELDS: { key: keyof Omit<HardwareParams, "preset">; label: string; step?: number; min?: number }[] = [
@@ -184,6 +193,7 @@ export function InputPanel({ params, setParams, onSubmit, onReset, locked, statu
     <div className="panel input-panel">
       <div className="panel-header">
         <h3>inputs</h3>
+        {status === "loading" && <span className="loading-spinner" aria-hidden="true" />}
         <span className={`tag status-${status}`}>{statusLabel}</span>
         <div className="header-buttons">
           {locked ? (
@@ -192,7 +202,7 @@ export function InputPanel({ params, setParams, onSubmit, onReset, locked, statu
             </button>
           ) : (
             <button className="submit-btn" onClick={onSubmit} disabled={status === "loading"}>
-              submit
+              {status === "loading" ? "running..." : "submit"}
             </button>
           )}
         </div>
@@ -388,6 +398,24 @@ export function InputPanel({ params, setParams, onSubmit, onReset, locked, statu
                     if (Number.isFinite(v)) setParams({ ...params, window_size: v });
                   }}
                 />
+              </label>
+            )}
+            {params.policy === "pressurefit" && (
+              <label className="form-field">
+                <span className="form-field-label">PressureFit mode</span>
+                <select
+                  value={params.pressurefit_mode}
+                  onChange={(e) => setParams({
+                    ...params,
+                    pressurefit_mode: e.target.value as PressureFitMode,
+                  })}
+                >
+                  {PRESSUREFIT_MODE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
               </label>
             )}
             <label className="form-field">

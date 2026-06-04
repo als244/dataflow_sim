@@ -127,9 +127,28 @@ const ALL_KEYS_AS_RECORD = (): Record<BandKey, number> => ({
   inbound: 0, outbound: 0, pending_outbound: 0,
 });
 
+function pointFromBandBytes(t: number, bandBytes: Record<string, number>): Point {
+  const sumByBand = ALL_KEYS_AS_RECORD();
+  for (const key of STACK_ORDER) {
+    sumByBand[key] = bandBytes[key] ?? 0;
+  }
+  const cumByBand = ALL_KEYS_AS_RECORD();
+  let running = 0;
+  for (const key of STACK_ORDER) {
+    running += sumByBand[key];
+    cumByBand[key] = running;
+  }
+  return { t, sumByBand, cumByBand, totalBytes: running };
+}
+
 export function MemoryTimelinePanel({ log, deviceCapacityGb, currentT }: Props) {
   const points: Point[] = useMemo(() => {
     if (!log) return [];
+    if (log.events.length === 0) {
+      return (log.memory_trace ?? []).map((p) => (
+        pointFromBandBytes(p.t, p.device_bytes_by_band)
+      ));
+    }
     return log.events.map((ev) => {
       const sumByBand = ALL_KEYS_AS_RECORD();
       for (const m of ev.snapshot.memory) {

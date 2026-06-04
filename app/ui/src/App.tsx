@@ -11,12 +11,17 @@ import {
   type Presets,
   type Policy,
   type OptimizerMode,
+  type PressureFitMode,
 } from "./components/InputPanel";
 import { ComparePoliciesPanel } from "./components/ComparePoliciesPanel";
 import { SubOpBreakdownPanel, type Breakdown } from "./components/SubOpBreakdownPanel";
 import { SummaryPanel, type Summary } from "./components/SummaryPanel";
 import { MemoryTimelinePanel } from "./components/MemoryTimelinePanel";
 import { AnnotatedPlanPanel, type AnnotatedChain } from "./components/AnnotatedPlanPanel";
+import {
+  PolicyDiagnosticsPanel,
+  type PressureFitDiagnostics,
+} from "./components/PolicyDiagnosticsPanel";
 import type { EventLog } from "./types";
 import "./App.css";
 
@@ -27,6 +32,7 @@ interface SimulateResponse {
   breakdown: Breakdown;
   summary: Summary;
   chain: AnnotatedChain;
+  policy_diagnostics: PressureFitDiagnostics | null;
 }
 
 // Flat URL-param encoding for nested params.
@@ -108,6 +114,13 @@ function initialParams(): SimulationParams {
       out.policy = policy as Policy;
     }
   }
+  const pressurefitMode = url.get("pressurefit_mode");
+  if (pressurefitMode !== null) {
+    const VALID_PRESSUREFIT_MODES: PressureFitMode[] = ["auto", "fast", "full"];
+    if ((VALID_PRESSUREFIT_MODES as string[]).includes(pressurefitMode)) {
+      out.pressurefit_mode = pressurefitMode as PressureFitMode;
+    }
+  }
   const ws = url.get("window_size");
   if (ws !== null) {
     const n = Number(ws);
@@ -136,6 +149,7 @@ function syncUrl(params: SimulationParams): void {
   url.searchParams.set("optimizer", params.optimizer);
   url.searchParams.set("final_model_state_on_host", params.final_model_state_on_host ? "true" : "false");
   url.searchParams.set("policy", params.policy);
+  url.searchParams.set("pressurefit_mode", params.pressurefit_mode);
   url.searchParams.set("window_size", String(params.window_size));
   url.searchParams.set(
     "device_capacity_gb",
@@ -145,11 +159,18 @@ function syncUrl(params: SimulationParams): void {
 }
 
 async function simulate(params: SimulationParams): Promise<SimulateResponse> {
-  const res = await fetch("/api/simulate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-  });
+  let res: Response;
+  try {
+    res = await fetch("/api/simulate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+  } catch (e) {
+    throw new Error(
+      `Network connection failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
     try {
@@ -175,6 +196,7 @@ export default function App() {
   const [breakdown, setBreakdown] = useState<Breakdown | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [chain, setChain] = useState<AnnotatedChain | null>(null);
+  const [policyDiagnostics, setPolicyDiagnostics] = useState<PressureFitDiagnostics | null>(null);
   const [presets, setPresets] = useState<Presets | null>(null);
   const [status, setStatus] = useState<Status>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -210,12 +232,15 @@ export default function App() {
   const handleSubmit = useCallback(async () => {
     setStatus("loading");
     setErrorMsg(null);
+    setPolicyDiagnostics(null);
+    setPlaying(false);
     try {
       const resp = await simulate(params);
       setLog(resp.log);
       setBreakdown(resp.breakdown);
       setSummary(resp.summary);
       setChain(resp.chain);
+      setPolicyDiagnostics(resp.policy_diagnostics);
       setIndex(0);
       setStatus("ok");
     } catch (e) {
@@ -247,8 +272,13 @@ export default function App() {
     [log],
   );
 
-  const safeIndex = log ? Math.min(index, log.events.length - 1) : 0;
-  const current = log ? log.events[safeIndex] : null;
+  const safeIndex = log && log.events.length > 0 ? Math.min(index, log.events.length - 1) : 0;
+  const current = log && log.events.length > 0 ? log.events[safeIndex] : null;
+  const hasSnapshots = log !== null && log.events.length > 0;
+  const hasMemoryTimeline = (
+    log !== null
+    && (hasSnapshots || (log.memory_trace?.length ?? 0) > 0)
+  );
 
   return (
     <div className="app">
@@ -272,6 +302,7 @@ export default function App() {
           setBreakdown(null);
           setSummary(null);
           setChain(null);
+          setPolicyDiagnostics(null);
           setIndex(0);
           setPlaying(false);
           setStatus("idle");
@@ -283,9 +314,11 @@ export default function App() {
         presets={presets}
       />
 
-      {log && current ? (
+      {log ? (
         <>
           <SummaryPanel summary={summary} />
+
+          <PolicyDiagnosticsPanel diagnostics={policyDiagnostics} />
 
           <details className="panel collapsible-panel">
             <summary className="collapsible-summary">Compute Block Breakdown</summary>
@@ -294,61 +327,72 @@ export default function App() {
             </div>
           </details>
 
-          <MemoryTimelinePanel
-            log={log}
-            deviceCapacityGb={params.device_capacity_gb}
-            currentT={current.t}
-          />
+          {hasMemoryTimeline && (
+            <MemoryTimelinePanel
+              log={log}
+              deviceCapacityGb={params.device_capacity_gb}
+              currentT={current?.t ?? null}
+            />
+          )}
 
           <ComputeTimeline
             intervals={log.task_intervals}
-            currentT={current.t}
+            currentT={current?.t ?? 0}
             totalDuration={totalDuration}
-            activeTaskId={current.snapshot.active_task?.id ?? null}
+            activeTaskId={current?.snapshot.active_task?.id ?? null}
             hoverTaskId={hoverTaskId}
             onHoverTask={setHoverTaskId}
           />
 
-          <EventControls
-            events={log.events}
-            index={safeIndex}
-            setIndex={setIndex}
-            playing={playing}
-            setPlaying={setPlaying}
-          />
+          {hasSnapshots && current ? (
+            <>
+              <EventControls
+                events={log.events}
+                index={safeIndex}
+                setIndex={setIndex}
+                playing={playing}
+                setPlaying={setPlaying}
+              />
 
-          <details className="panel collapsible-panel">
-            <summary className="collapsible-summary">Memory Contents &amp; Reference Stream</summary>
-            <div className="collapsible-content">
-              <div className="three-col">
-                <div className="scroll-subpanel">
-                  <MemoryPanel
-                    title="host memory"
-                    memory={current.snapshot.memory.filter((m) => m.location === "host")}
-                    highlightedIds={new Set()}
-                    selectedObjId={selectedObjId}
-                    onSelectObj={setSelectedObjId}
-                  />
+              <details className="panel collapsible-panel">
+                <summary className="collapsible-summary">Memory Contents &amp; Reference Stream</summary>
+                <div className="collapsible-content">
+                  <div className="three-col">
+                    <div className="scroll-subpanel">
+                      <MemoryPanel
+                        title="host memory"
+                        memory={current.snapshot.memory.filter((m) => m.location === "host")}
+                        highlightedIds={new Set()}
+                        selectedObjId={selectedObjId}
+                        onSelectObj={setSelectedObjId}
+                      />
+                    </div>
+                    <div className="scroll-subpanel">
+                      <MemoryPanel
+                        title="device memory"
+                        memory={current.snapshot.memory.filter((m) => m.location === "device")}
+                        highlightedIds={new Set()}
+                        selectedObjId={selectedObjId}
+                        onSelectObj={setSelectedObjId}
+                      />
+                    </div>
+                    <div className="scroll-subpanel">
+                      <ReferenceStream
+                        references={current.snapshot.reference_stream}
+                        memory={current.snapshot.memory}
+                        selectedObjId={selectedObjId}
+                      />
+                    </div>
+                  </div>
                 </div>
-                <div className="scroll-subpanel">
-                  <MemoryPanel
-                    title="device memory"
-                    memory={current.snapshot.memory.filter((m) => m.location === "device")}
-                    highlightedIds={new Set()}
-                    selectedObjId={selectedObjId}
-                    onSelectObj={setSelectedObjId}
-                  />
-                </div>
-                <div className="scroll-subpanel">
-                  <ReferenceStream
-                    references={current.snapshot.reference_stream}
-                    memory={current.snapshot.memory}
-                    selectedObjId={selectedObjId}
-                  />
-                </div>
-              </div>
+              </details>
+            </>
+          ) : (
+            <div className="panel trace-note">
+              exact summary, compute intervals, and compact GPU memory trace returned;
+              full memory contents and reference stream were omitted for this large chain
             </div>
-          </details>
+          )}
 
           <AnnotatedPlanPanel chain={chain} />
 
@@ -356,9 +400,16 @@ export default function App() {
         </>
       ) : (
         <div className="panel empty-panel">
-          <p className="dim">
-            press <span className="kbd">submit</span> on the inputs panel above to run a simulation.
-          </p>
+          {status === "loading" ? (
+            <p className="dim loading-line">
+              <span className="loading-spinner" aria-hidden="true" />
+              running simulation
+            </p>
+          ) : (
+            <p className="dim">
+              press <span className="kbd">submit</span> on the inputs panel above to run a simulation.
+            </p>
+          )}
         </div>
       )}
     </div>

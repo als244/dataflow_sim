@@ -18,6 +18,7 @@ from dataflow_sim.schema import (
     EventLog,
     Location,
     MemoryEntry,
+    MemoryTracePoint,
     MemoryState,
     ObjectType,
     Snapshot,
@@ -83,6 +84,32 @@ def _location_total(pool: dict[PoolKey, _PoolEntry], loc: Location) -> int:
     return sum(e.size for (_, l), e in pool.items() if l == loc)
 
 
+def _device_memory_bands(pool: dict[PoolKey, _PoolEntry]) -> dict[str, int]:
+    bands = {
+        "weight": 0,
+        "activation": 0,
+        "gradient": 0,
+        "optimizer": 0,
+        "other": 0,
+        "inbound": 0,
+        "outbound": 0,
+        "pending_outbound": 0,
+    }
+    for (_oid, loc), entry in pool.items():
+        if loc != "device":
+            continue
+        if entry.state in ("pending_inbound", "inbound"):
+            band = "inbound"
+        elif entry.state == "outbound":
+            band = "outbound"
+        elif entry.state == "pending_outbound":
+            band = "pending_outbound"
+        else:
+            band = entry.type
+        bands[band] += entry.size
+    return bands
+
+
 def _snapshot(
     t: int,
     pool: dict[PoolKey, _PoolEntry],
@@ -119,6 +146,7 @@ def run(
     *,
     validate: bool = True,
     snapshots: bool = True,
+    memory_trace: bool = False,
 ) -> EventLog:
     """Execute the task chain and return a full event log with per-event snapshots.
 
@@ -131,7 +159,8 @@ def run(
 
     Set ``snapshots=False`` for policy scoring: the simulator still validates
     runtime behavior and returns task/transfer intervals, but skips event
-    snapshots and reference streams.
+    snapshots and reference streams. Set ``memory_trace=True`` to retain a
+    compact device-memory plot trace without full snapshots.
 
     Set ``validate=False`` to skip the static prepass — useful for tests that
     deliberately exercise runtime error paths or for benchmarking the inner
@@ -140,13 +169,28 @@ def run(
     if validate:
         validate_chain(chain)
     if not snapshots:
-        return _run_impl(chain, task_starts_override=None, snapshots=False)
+        return _run_impl(
+            chain,
+            task_starts_override=None,
+            snapshots=False,
+            memory_trace=memory_trace,
+        )
 
-    first = _run_impl(chain, task_starts_override=None, snapshots=False)
+    first = _run_impl(
+        chain,
+        task_starts_override=None,
+        snapshots=False,
+        memory_trace=False,
+    )
     actual_starts = {
         iv.task_id: iv.start for iv in first.task_intervals if iv.track == "compute"
     }
-    return _run_impl(chain, task_starts_override=actual_starts, snapshots=True)
+    return _run_impl(
+        chain,
+        task_starts_override=actual_starts,
+        snapshots=True,
+        memory_trace=memory_trace,
+    )
 
 
 def _run_impl(
@@ -154,10 +198,12 @@ def _run_impl(
     task_starts_override: dict[str, int] | None,
     *,
     snapshots: bool,
+    memory_trace: bool,
 ) -> EventLog:
     pool: dict[PoolKey, _PoolEntry] = {}
     events: list[Event] = []
     intervals: list[TaskInterval] = []
+    memory_points: list[MemoryTracePoint] = []
 
     # Stream state — each may be idle (None) or have a single in-flight transfer.
     in_flight: dict[TransferDirection, _InFlight | None] = {"h2d": None, "d2h": None}
@@ -192,6 +238,21 @@ def _run_impl(
     tasks = list(chain.tasks)
 
     # ---------- helpers (closures over pool, in_flight, queue, events, intervals) ----------
+
+    def emit_memory_trace(t: int) -> None:
+        if not memory_trace:
+            return
+        point = MemoryTracePoint(
+            t=t,
+            device_bytes_by_band=_device_memory_bands(pool),
+        )
+        if (
+            memory_points
+            and memory_points[-1].t == point.t
+            and memory_points[-1].device_bytes_by_band == point.device_bytes_by_band
+        ):
+            return
+        memory_points.append(point)
 
     def loc_free(loc: Location) -> int:
         cap = chain.device_capacity if loc == "device" else chain.host_capacity
@@ -234,6 +295,7 @@ def _run_impl(
     ) -> None:
         nonlocal peak_device_bytes
         peak_device_bytes = max(peak_device_bytes, _location_total(pool, "device"))
+        emit_memory_trace(t)
         if not snapshots:
             return
         events.append(
@@ -739,6 +801,7 @@ def _run_impl(
         task_intervals=intervals,
         events=events,
         peak_device_bytes=peak_device_bytes,
+        memory_trace=memory_points,
     )
 
 

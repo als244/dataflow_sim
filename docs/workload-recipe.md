@@ -164,6 +164,8 @@ actual starts. The return value is an `EventLog` with:
   reference stream.
 - `peak_device_bytes: int` — maximum device-pool bytes observed during
   simulation.
+- `memory_trace: list[MemoryTracePoint]` — optional compact GPU-memory plot
+  samples when `run(..., memory_trace=True)`.
 
 For policy scoring or sweeps that only need makespan/peak and runtime
 validation, use:
@@ -174,6 +176,15 @@ score_log = run(annotated_chain, snapshots=False)
 
 This returns the same `task_intervals` and `peak_device_bytes`, but leaves
 `events` empty and skips snapshot/reference-stream construction.
+
+For large UI-style runs that still need a GPU memory plot, use:
+
+```python
+trace_log = run(annotated_chain, snapshots=False, memory_trace=True)
+```
+
+This keeps `events` empty but fills `memory_trace` with aggregate device bytes
+by band, without object-level memory contents or reference streams.
 
 Key `Event.kind` values:
 

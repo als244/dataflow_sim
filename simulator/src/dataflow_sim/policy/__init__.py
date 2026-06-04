@@ -3,7 +3,12 @@ from typing import Callable
 from dataflow_sim.policy.belady_reactive import apply_belady_reactive_policy
 from dataflow_sim.policy.max_reduce import apply_max_reduce_policy
 from dataflow_sim.policy.min_grow import apply_min_grow_policy
-from dataflow_sim.policy.pressurefit import apply_pressurefit_policy
+from dataflow_sim.policy.pressurefit import (
+    PressureFitCandidateDiagnostic,
+    PressureFitDiagnostics,
+    apply_pressurefit_policy,
+    plan_pressurefit_policy,
+)
 from dataflow_sim.policy.roundtrip_planner import apply_roundtrip_planner_policy
 from dataflow_sim.policy.sliding_window import apply_sliding_window_policy
 from dataflow_sim.schema import TaskChain
@@ -15,6 +20,9 @@ __all__ = [
     "apply_max_reduce_policy",
     "apply_min_grow_policy",
     "apply_pressurefit_policy",
+    "plan_pressurefit_policy",
+    "PressureFitCandidateDiagnostic",
+    "PressureFitDiagnostics",
     "get_all_policies",
 ]
 

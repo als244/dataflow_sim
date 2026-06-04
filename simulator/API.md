@@ -8,7 +8,7 @@ This doc covers the **simulator surface** (run, validate, schema). For policies 
 
 ## `dataflow_sim.simulator`
 
-### `run(chain: TaskChain, *, validate: bool = True, snapshots: bool = True) -> EventLog`
+### `run(chain: TaskChain, *, validate: bool = True, snapshots: bool = True, memory_trace: bool = False) -> EventLog`
 
 Execute a fully-annotated `TaskChain` and return a complete event log.
 
@@ -16,19 +16,21 @@ Execute a fully-annotated `TaskChain` and return a complete event log.
 - `chain` (`TaskChain`) — annotated chain (all `releases_after` / `offload_after` / `prefetch_after` triggers populated; a policy normally builds this from a bare chain). Must have `device_capacity`, `host_capacity`, `bandwidth_h2d`, `bandwidth_d2h` set (or `None` for unbounded).
 - `validate` (`bool`, keyword-only, default `True`) — if `True`, run [`validate_chain(chain)`](#validate_chainchain-taskchain---none) as a static prepass before stepping. Set `False` to bypass (useful when deliberately exercising runtime error paths or for raw-speed benchmarks).
 - `snapshots` (`bool`, keyword-only, default `True`) — if `True`, return the full UI-grade event timeline with per-event snapshots and reference streams. If `False`, run a lightweight scoring simulation: runtime behavior is still validated and `task_intervals` / `peak_device_bytes` are populated, but `events` is empty and no snapshots/reference streams are materialized.
+- `memory_trace` (`bool`, keyword-only, default `False`) — if `True`, also record compact GPU memory plot samples in `EventLog.memory_trace`. These samples contain aggregate device bytes by band, not object-level snapshots or reference streams.
 
 **Returns**
 - `EventLog` — see [schema](#dataflow_simschema).
   - `EventLog.task_intervals` — start/end times for every compute task and every transfer (each gets its own `TaskInterval` with `track` ∈ {`compute`, `h2d`, `d2h`}).
   - `EventLog.events` — when `snapshots=True`, full timeline (`task_start`, `task_end`, `release`, `transfer_enqueue`, `transfer_start`, `transfer_end`, `transfer_deferred`), each with a `Snapshot` of pool state at that moment. Empty when `snapshots=False`.
   - `EventLog.peak_device_bytes` — maximum device-pool bytes observed during the run. Available in both full and snapshot-free modes.
+  - `EventLog.memory_trace` — compact aggregate device-memory samples when `memory_trace=True`; otherwise empty.
 
 **Raises**
 - `ValidationError` — if `validate=True` and the chain fails any static rule.
 - `ValueError` / `RuntimeError` — runtime contract violations the validator can't catch (transit bytes exceeding cap, deadlock, etc.). See [docs/policy/principles.md](../docs/policy/principles.md) §1.
 
 **Mechanics (brief)**
-With `snapshots=True`, the simulator runs two passes: pass 1 discovers actual stalled start times; pass 2 re-snapshots `reference_stream.next_t` from those actual starts so the UI sees realistic next-use timestamps. With `snapshots=False`, it runs one pass and skips event/snapshot construction. Makespan = `max(iv.end for iv in task_intervals)`.
+With `snapshots=True`, the simulator runs two passes: pass 1 discovers actual stalled start times; pass 2 re-snapshots `reference_stream.next_t` from those actual starts so the UI sees realistic next-use timestamps. With `snapshots=False`, it runs one pass and skips event/snapshot construction. `memory_trace=True` is still one pass in snapshot-free mode and is meant for large UI runs that need a memory plot without object-level browsing. Makespan = `max(iv.end for iv in task_intervals)`.
 
 **Example**
 ```python
@@ -43,6 +45,10 @@ makespan = max(iv.end for iv in log.task_intervals)
 score_log = run(annotated, snapshots=False)
 score = max(iv.end for iv in score_log.task_intervals)
 peak = score_log.peak_device_bytes
+
+# Large UI path: exact intervals + peak plus compact GPU memory plot data.
+trace_log = run(annotated, snapshots=False, memory_trace=True)
+points = trace_log.memory_trace
 ```
 
 ---
@@ -140,6 +146,7 @@ Per-task trigger that enqueues a transfer when the task ends.
 | `task_intervals` | `list[TaskInterval]` | Start/end per compute task and per transfer. `iv.track` ∈ {`compute`, `h2d`, `d2h`}. |
 | `events` | `list[Event]` | Full timeline of events when `run(..., snapshots=True)`; empty when `snapshots=False`. Each event carries a `Snapshot` of pool state. |
 | `peak_device_bytes` | `int` | Maximum device-pool bytes observed during simulation. Populated even when `snapshots=False`. |
+| `memory_trace` | `list[MemoryTracePoint]` | Compact device-memory plot samples when `run(..., memory_trace=True)`; empty otherwise. |
 
 Methods: `to_dict()` for JSON-safe export; `dump(path)` writes formatted JSON.
 
@@ -163,6 +170,15 @@ State at one moment. `memory: list[MemoryEntry]`, `total_size: int`, `active_tas
 
 A single object's row in a snapshot. Includes `state` ∈ {`live`, `reserved`, `pending_inbound`, `inbound`, `pending_outbound`, `outbound`} and `next_ref_t` (next time the object will appear as an input, or `None` if never).
 
+### `MemoryTracePoint`
+
+A compact aggregate sample for memory plots. Fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `t` | `int` | Time of sample. |
+| `device_bytes_by_band` | `dict[str, int]` | Device bytes by display band. Keys are object types (`weight`, `activation`, `gradient`, `optimizer`, `other`) plus transfer-state bands (`inbound`, `outbound`, `pending_outbound`). |
+
 ---
 
 ## `dataflow_sim.policy`
@@ -183,6 +199,12 @@ Canonical list of every selectable policy. Each entry is `(name, fn)`:
 Each `fn` accepts a bare `TaskChain` (with `device_capacity` already set) and returns the annotated chain. Adapters in `get_all_policies()` paper over per-policy kwarg differences. Use this when iterating across all policies — adding a new policy means only updating this function.
 
 Individual policy entry points (each module's `apply_<stem>_policy`) are also re-exported from `dataflow_sim.policy` for direct use with custom kwargs (e.g. `window_size`, `time_budget_s`).
+
+PressureFit also exposes `plan_pressurefit_policy(...) -> (TaskChain, PressureFitDiagnostics)`.
+Use `apply_pressurefit_policy(...)` when you only need the annotated chain; use
+`plan_pressurefit_policy(...)` when you want the candidate portfolio timings,
+which candidate was selected, and whether `portfolio_mode="auto"` resolved to
+the fast or full portfolio.
 
 ---
 

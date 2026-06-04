@@ -44,7 +44,8 @@ export type EventKind =
   | "release"
   | "transfer_enqueue"
   | "transfer_start"
-  | "transfer_end";
+  | "transfer_end"
+  | "transfer_deferred";
 
 export interface SimEvent {
   t: number;
@@ -65,7 +66,14 @@ export interface TaskInterval {
   track: Track;
 }
 
+export interface MemoryTracePoint {
+  t: number;
+  device_bytes_by_band: Record<string, number>;
+}
+
 export interface EventLog {
   task_intervals: TaskInterval[];
   events: SimEvent[];
+  peak_device_bytes: number;
+  memory_trace: MemoryTracePoint[];
 }

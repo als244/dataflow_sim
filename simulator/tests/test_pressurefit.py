@@ -13,6 +13,7 @@ from dataflow_sim.policy.pressurefit import (
     _reduce_to_fit,
     _select_initial_protection_set,
     apply_pressurefit_policy,
+    plan_pressurefit_policy,
 )
 from dataflow_sim.schema import Object, OutputAlloc, Task, TaskChain
 from dataflow_sim.simulator import run
@@ -72,6 +73,26 @@ def test_pressurefit_runs_training_chain_at_moderate_cap():
     compute_ids = {iv.task_id for iv in log.task_intervals if iv.track == "compute"}
     assert "f_0" in compute_ids
     assert "b_0" in compute_ids
+
+
+def test_pressurefit_diagnostics_describe_selected_candidate():
+    bare = build_bare_training_chain(L=5)
+    annotated, diagnostics = plan_pressurefit_policy(
+        bare,
+        device_capacity=800,
+        portfolio_mode="fast",
+    )
+    log = run(annotated)
+    makespan = max(iv.end for iv in log.task_intervals)
+
+    assert diagnostics.portfolio_mode == "fast"
+    assert diagnostics.effective_portfolio_mode == "fast"
+    assert diagnostics.selected_makespan_us == makespan
+    assert diagnostics.valid_candidate_count > 0
+    selected = [c for c in diagnostics.candidates if c.selected]
+    assert len(selected) == 1
+    assert selected[0].name == diagnostics.selected_candidate
+    assert selected[0].status == "valid"
 
 
 def test_pressurefit_can_release_disposable_mutation_after_final_use():

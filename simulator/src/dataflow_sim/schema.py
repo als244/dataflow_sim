@@ -208,10 +208,23 @@ class TaskInterval:
 
 
 @dataclass(frozen=True)
+class MemoryTracePoint:
+    """Compact device-memory sample for UI plotting.
+
+    The keys in `device_bytes_by_band` match the memory timeline bands:
+    object types for live/reserved bytes plus inbound/outbound transfer states.
+    It intentionally omits object ids and reference-stream data.
+    """
+    t: int
+    device_bytes_by_band: dict[str, int]
+
+
+@dataclass(frozen=True)
 class EventLog:
     task_intervals: list[TaskInterval]
     events: list[Event]
     peak_device_bytes: int = 0
+    memory_trace: list[MemoryTracePoint] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

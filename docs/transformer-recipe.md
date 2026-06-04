@@ -288,6 +288,14 @@ for the resulting annotated plan. Returned event snapshots may be downsampled
 for response size, but the summary metrics are computed from the full event
 log before compaction.
 
+For very large chains, the app runs the final simulation with
+`snapshots=False`. In that mode, makespan, peak memory, utilization metrics, and
+all compute/transfer intervals are still exact. The app also requests the
+simulator's compact `memory_trace`, so the GPU memory plot remains available.
+Only per-event object-level memory contents and reference streams are omitted so
+the response does not spend minutes constructing data that the UI would heavily
+downsample.
+
 ## Presets
 - **`model_dims.json`** (loaded by `load_model_presets()`, lru-cached) — a
   name→spec registry. Each entry sets `vocab_size`, `n_layers`, `d_model`,
@@ -316,12 +324,16 @@ log before compaction.
    `(num_seqs, seqlen)` and writes a results table.
    `app/scripts/compare_policies.py` reuses one bare chain and runs each
    registered policy against it for an apples-to-apples comparison.
+   `app/scripts/pressurefit_mode_sweep.py` compares PressureFit's `auto`,
+   `fast`, and `full` candidate portfolios.
 3. **Webapp.** The UI POSTs a model+hardware+training-config selection to
    `POST /api/simulate`. The server builds the bare chain via
    `build_transformer_bare_chain`, applies the user-selected policy, runs the
-   simulator, and returns `{events, breakdown, summary}`. The React frontend
-   renders the event log as a Gantt-style trace alongside the per-sub-op
-   roofline table.
+   simulator, and returns `{log, breakdown, summary, chain,
+   policy_diagnostics}`. The React frontend renders the event log as a
+   Gantt-style trace alongside the per-sub-op roofline table. For PressureFit,
+   `policy_diagnostics` reports candidate timings and the selected candidate;
+   for other policies it is `null`.
 
 ## See also
 - `docs/workload-recipe.md` — the general workload-construction API

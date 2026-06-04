@@ -34,6 +34,7 @@ def _payload(**overrides):
         "optimizer": "none",
         "final_model_state_on_host": False,
         "policy": "pressurefit",
+        "pressurefit_mode": "auto",
         "window_size": 2,
         "device_capacity_gb": 1,
     }
@@ -46,8 +47,40 @@ def test_simulate_keeps_exact_step_count():
 
     summary = body["summary"]
     assert summary["makespan_us"] > 0
+    assert body["policy_diagnostics"]["valid_candidate_count"] > 0
     task_ids = {iv["task_id"] for iv in body["log"]["task_intervals"]}
     assert "f_3_0_0" in task_ids
+
+
+def test_simulate_exposes_pressurefit_mode_diagnostics():
+    body = simulate(
+        SimulationParams.model_validate(_payload(pressurefit_mode="fast"))
+    )
+    diagnostics = body["policy_diagnostics"]
+
+    assert diagnostics["portfolio_mode"] == "fast"
+    assert diagnostics["effective_portfolio_mode"] == "fast"
+    assert diagnostics["selected_candidate"]
+    assert any(c["selected"] for c in diagnostics["candidates"])
+
+
+def test_simulate_omits_policy_diagnostics_for_other_policies():
+    body = simulate(
+        SimulationParams.model_validate(_payload(policy="max_reduce"))
+    )
+
+    assert body["policy_diagnostics"] is None
+
+
+def test_simulate_large_chain_uses_snapshot_free_response():
+    body = simulate(
+        SimulationParams.model_validate(_payload(policy="max_reduce", num_steps=600))
+    )
+
+    assert body["log"]["events"] == []
+    assert body["log"]["memory_trace"]
+    assert len(body["log"]["task_intervals"]) > 3_000
+    assert body["summary"]["peak_memory_gb"] > 0
 
 
 def test_simulate_final_model_state_on_host_is_opt_in():

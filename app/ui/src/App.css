@@ -399,6 +399,33 @@
 .tag-ready { background: #4a8a3e; color: white; }
 .tag-not-ready { background: #555; color: #bbb; }
 
+.loading-spinner {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid #3d4858;
+  border-top-color: #8fb9f0;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+.loading-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.trace-note {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--dim);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 /* --- input panel --- */
 .input-panel {
   margin-bottom: 1rem;
@@ -874,6 +901,79 @@
 .kind-chip.kind-memory, .bound-chip.bound-memory {
   background: rgba(200, 150, 70, 0.2);
   color: #f0c285;
+}
+
+/* --- PressureFit diagnostics panel --- */
+.diagnostics-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.4rem;
+  margin-bottom: 0.7rem;
+}
+.diagnostics-stat {
+  background: rgba(70, 130, 200, 0.06);
+  border: 1px solid #232f40;
+  border-radius: 4px;
+  padding: 0.4rem 0.5rem;
+  min-width: 0;
+}
+.diagnostics-stat-label {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+.diagnostics-stat-value {
+  margin-top: 0.15rem;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: #e8eef7;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diagnostics-table-wrap {
+  overflow-x: auto;
+}
+.diagnostics-table {
+  min-width: 980px;
+  font-size: 0.72rem;
+}
+.diagnostics-table th:nth-child(2),
+.diagnostics-table th:nth-child(3) {
+  text-align: left;
+}
+.diagnostics-table tbody tr {
+  cursor: default;
+}
+.diagnostics-table td {
+  vertical-align: top;
+}
+.diagnostics-selected {
+  background: rgba(232, 169, 59, 0.16);
+}
+.diagnostics-status-error {
+  opacity: 0.75;
+}
+.diagnostics-status-skipped {
+  opacity: 0.58;
+}
+.diagnostics-candidate-name {
+  font-weight: 600;
+}
+.diagnostics-winner {
+  margin-left: 0.35rem;
+  background: #b88324;
+  color: white;
+}
+.diagnostics-note {
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--dim);
 }
 
 /* --- memory breakdown bar --- */
