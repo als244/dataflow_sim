@@ -1,44 +1,48 @@
 # PressureFit
 
-Fast standalone policy for linear `TaskChain`s. It plans device residency as
-object intervals over task boundaries, cuts those intervals where byte pressure
-is too high, tries bounded slack and inbound stall-relief candidate plans, then
-emits release/offload/prefetch triggers with deadline-aware inbound ordering.
+PressureFit is a standalone policy for linear `TaskChain`s. It plans device
+residency as intervals over task boundaries, removes optional residency where
+modeled byte pressure exceeds capacity, emits release/offload/prefetch triggers,
+then verifies the annotated chain with the simulator.
 
-Implementation modules:
+The short version is:
 
-- `simulator/src/dataflow_sim/policy/pressurefit.py`: public entry point,
-  candidate verification and fastest-valid selection;
-- `simulator/src/dataflow_sim/policy/pressurefit_aux/portfolio.py`:
-  candidate portfolio orchestration;
-- `simulator/src/dataflow_sim/policy/pressurefit_aux/types.py`: shared
-  candidate spec and portfolio dataclasses;
-- `simulator/src/dataflow_sim/policy/pressurefit_aux/seeds.py`: initial
-  residency and seed interval construction;
-- `simulator/src/dataflow_sim/policy/pressurefit_aux/candidate_specs.py`:
-  candidate-family assembly and portfolio mode selection;
-- `simulator/src/dataflow_sim/policy/pressurefit_aux/initial_protection.py`:
-  initial-residency protection frontier construction;
-- `simulator/src/dataflow_sim/policy/pressurefit_aux/reducer.py`: deterministic
-  greedy pressure reduction;
-- `simulator/src/dataflow_sim/policy/pressurefit_aux/emit.py`:
-  interval-to-trigger emission;
-- `simulator/src/dataflow_sim/policy/pressurefit_aux/inbound_schedules.py`:
-  inbound lead-time extension and inbound prefetch scheduling;
-- `simulator/src/dataflow_sim/policy/pressurefit_aux/physical_repair.py`:
-  simulator-error interpretation and boundary pressure repair;
-- `simulator/src/dataflow_sim/policy/pressurefit_aux/diagnostics.py`: diagnostic
-  result types and candidate diagnostic rows;
-- `simulator/src/dataflow_sim/policy/pressurefit_aux/core.py`: shared interval and
-  boundary accounting model.
+```text
+candidate specs
+    -> deterministic pressure reduction
+    -> trigger emission
+    -> simulator verification / bounded repair
+    -> fastest valid candidate
+```
 
-Entry point: `apply_pressurefit_policy(bare, *, device_capacity=None,
-refinement_iters=0, portfolio_mode="auto")`. `refinement_iters` is accepted for
-API compatibility; the policy does not use a tunable search budget.
+The candidate specs are a small portfolio of starting assumptions and inbound
+scheduling choices. The core pressure-reduction algorithm is shared by every
+candidate; it is the part that actually decides which residency gaps are kept
+or removed.
 
-Diagnostics entry point: `plan_pressurefit_policy(...) -> (chain,
-diagnostics)`. It runs the same planner and returns candidate-level status,
-timing, makespan, and selection metadata.
+Public entry point:
+
+```text
+apply_pressurefit_policy(
+    bare,
+    *,
+    device_capacity=None,
+    refinement_iters=0,
+    portfolio_mode="auto",
+)
+```
+
+`refinement_iters` is accepted for API compatibility; PressureFit does not use a
+tunable search budget.
+
+Diagnostics entry point:
+
+```text
+plan_pressurefit_policy(...) -> (chain, diagnostics)
+```
+
+It runs the same planner and returns candidate-level status, timing, makespan,
+and selection metadata.
 
 ## Design Contract
 
@@ -133,102 +137,51 @@ contains the precise definitions and ranking rules.
   reduction, optional inbound lead-time extension, trigger emission, physical
   repair, and simulator verification.
 
-## Algorithm
+## Algorithm Summary
 
-The policy is best understood as a fixed portfolio of candidate specs. A spec
-chooses the few things that are allowed to vary; the rest of the planner is
-shared. This is the central separation:
+PressureFit deliberately separates the choices that vary across candidates from
+the planning machinery that every candidate shares.
 
-- **Candidate-specific fields:** seed intervals, protected initial set, pressure
-  reserve, inbound schedule, and whether inbound lead-time extension is enabled.
-- **Common to every candidate:** pressure reduction, optional inbound lead-time
-  extension, trigger emission, simulator verification, physical repair,
-  and final makespan scoring.
+A candidate spec varies only these planning knobs:
 
-The candidate-specific fields have these meanings:
+- the seed interval set;
+- the protected initial set;
+- reserve pressure;
+- inbound trigger scheduling;
+- whether inbound lead-time extension is enabled.
 
-| Field | Meaning | What it can change |
-|---|---|---|
-| `seed_intervals` | Map from object id to inclusive residency intervals before reduction. | The starting residency hypothesis, especially which host-source objects are initially resident. |
-| `protected_initial` | Set of host-source object ids whose boundary-`-1` residency cannot be removed during pressure reduction. | Which initial objects are treated as non-droppable for this spec. It does not pin them forever. |
-| `reserve_pressure` | Nonnegative bytes added to each boundary pressure check before comparing against capacity. | The amount of headroom pressure reduction must leave. It is not an object or runtime allocation. |
-| `inbound_schedule` | Rule used when emitting prefetch triggers for interval entries that require inbound transfer. | Where inbound triggers are placed on the task chain from the pressure-fit interval set. |
-| `extend_inbound` | Boolean enabling a pre-emission pass that moves some inbound interval starts earlier when strict capacity remains valid. | Inbound lead time only. It does not split intervals or change object sources. |
+Everything else is common. For each candidate, PressureFit:
+
+1. copies the candidate's seed intervals;
+2. runs pressure reduction to obtain a pressure-fit interval set;
+3. optionally extends inbound interval starts earlier when strict pressure still
+   fits;
+4. emits release, offload, prefetch, and initial-copy annotations;
+5. verifies the annotated chain with the simulator;
+6. translates bounded simulator capacity contradictions into extra boundary
+   pressure and reruns reduction when repair is possible;
+7. scores the verified candidate by simulator makespan.
 
 The simulator never sees a candidate spec directly. It sees only the annotated
-chain produced after pressure reduction, optional inbound lead-time extension,
-trigger emission, and physical repair.
+`TaskChain` produced by this shared pipeline.
 
-The common pipeline phases have these meanings:
+At a high level, the planner flow is:
 
-| Phase | Input | Output | What it is allowed to change |
-|---|---|---|---|
-| Pressure reduction | Candidate `seed_intervals`, `protected_initial`, `reserve_pressure`, and any `physical_extra` from repair. | A pressure-fit interval set that satisfies the strict capacity inequality. | Interval splits only. It does not choose a new seed or inbound schedule. |
-| Inbound lead-time extension | Pressure-fit interval set plus the same capacity model. | A pressure-fit interval set with some inbound entries moved earlier. | Interval starts for inbound-prefetched intervals only, and only when strict pressure remains valid. |
-| Trigger emission | Pressure-fit interval set and the candidate `inbound_schedule`. | An annotated `TaskChain`. | Adds release, offload, prefetch, and initial-copy annotations. It does not replan residency. |
-| Simulator verification | Annotated `TaskChain`. | A simulator makespan or a feasibility error. | Nothing; this phase observes the plan. |
-| Physical repair | Simulator feasibility error plus current intervals. | Extra boundary pressure, followed by another reduction/emission attempt. | Adds conservative pressure at specific boundaries. It does not search for a faster plan. |
+1. **Build reference facts.** Compute ideal compute-stream times, object sizes,
+   producers, uses, mutators, initial locations, final locations, and each next
+   task's device output reservation.
+2. **Build seed interval sets.** Construct the base seed from liveness anchors,
+   plus auxiliary seeds for source-gap, cold-admission, and initial-protection
+   candidates.
+3. **Build the candidate portfolio.** Assemble a bounded list of candidate
+   specs from the current portfolio mode.
+4. **Evaluate candidates independently.** Run the shared pipeline above for each
+   candidate.
+5. **Return the fastest valid plan.** If no candidate verifies, raise the first
+   planning error.
 
-1. **Build reference facts.** Compute ideal compute-stream start/end times,
-   object sizes, producers, uses, mutators, initial host/device sets, terminal
-   placement constraints, and each next task's device output reservation.
-
-2. **Build reusable seeds and protection sets.** Choose finite-cap initial
-   residency, then build the base seed: one continuous interval per object from
-   its anchors. Also build auxiliary seeds used by the portfolio: a source-gap
-   seed that cuts long dirty source-state no-use gaps, a colder initial-residency
-   seed, and the all-host seed used by initial-protection specs.
-
-3. **Generate candidate specs.** The current portfolio contains:
-
-   - base candidate specs using the base seed with packed FIFO, latest-safe,
-     interval-entry, and latest-trigger inbound schedules;
-   - source-gap candidate specs using the source-gap seed;
-   - one slack-reserve candidate spec using the base seed;
-   - one cold-admission candidate spec using a colder initial-residency seed;
-   - initial-protection candidate specs chosen from inbound deadline demand and
-     inbound-work frontiers.
-
-   Portfolio mode controls how much of this candidate list is run. `full` runs
-   the complete portfolio, `fast` skips the initial-protection frontier family,
-   and `auto` uses the full portfolio on smaller chains but switches to bounded
-   fast portfolios for large chains. Very large chains use `fast-minimal`,
-   which evaluates the base and source-gap unpacked candidates, uses latest-inbound
-   only if those fail, and records the other fast candidates as skipped.
-
-   The appendix enumerates every candidate family and its purpose.
-
-4. **Run the common pipeline for each spec.** Copy the spec's seed, then run the
-   same pressure reduction pass. While a boundary exceeds capacity, split one
-   interval around that boundary. Pressure reduction first uses strict static
-   pressure. At boundary `x`, the strict capacity inequality is:
-
-   ```text
-   resident_P(x)
-   + next_task_device_outputs(x)
-   + physical_extra(x)
-   + candidate_reserve
-   <= device_capacity
-   ```
-
-   If strict pressure has no legal split, pressure reduction may use timing
-   relief for bytes that leave immediately after the boundary or inbound arrivals
-   that can wait until after the next task reserves outputs.
-
-5. **Optionally extend inbound lead time.** Some specs move inbound interval
-   entries earlier when strict capacity permits. This pass changes only interval
-   starts; it does not split intervals or change object sources.
-
-6. **Emit and verify the candidate plan.** Convert interval entries/exits into
-   release, offload, and prefetch triggers according to the spec's inbound schedule.
-   Run the simulator. If the simulator reports a capacity
-   contradiction caused by output reservation, missing live inputs, or stream
-   queue timing, translate that contradiction into additional physical pressure,
-   reduce again, and re-emit. The repair loop is bounded.
-
-7. **Select the fastest valid plan.** Among candidate plans that verify, return
-   the annotated chain with the lowest simulator makespan. If no spec produces a
-   valid plan, raise the first planning error.
+The appendix gives the exact candidate fields, candidate families, inbound
+schedule rules, and pressure-reduction split ranking.
 
 ## Properties
 
@@ -250,14 +203,18 @@ The common pipeline phases have these meanings:
 | Mode | Behavior | Intended use |
 |---|---|---|
 | `full` | Runs every candidate family, including initial-protection frontier specs. | Offline sweeps and small chains where best quality matters more than planner wall time. |
-| `fast` | Runs base, slack-reserve, and cold-admission families; skips initial-protection frontier specs. | Interactive or repeated-step chains where frontier candidates dominate planning time. |
+| `fast` | Runs base, source-gap, slack-reserve, and cold-admission families; skips initial-protection frontier specs. | Interactive or repeated-step chains where frontier candidates dominate planning time. |
 | `auto` | Uses `full` below the large-chain guard and `fast` above it. | Default UI mode. |
+
+In the current implementation, `auto` switches to `fast` when the chain has
+more than 256 tasks or more than 512 distinct objects.
 
 For very large chains, `auto` and `fast` may resolve to effective mode
 `fast-minimal`. This evaluates `base-unpacked` and `source-gap-unpacked`, uses
 `base-latest-inbound` only as a fallback if those fail, and records the remaining
-secondary candidates as skipped. `full` is the escape hatch when exhaustive
-candidate comparison is desired.
+secondary candidates as skipped. In the current implementation, this guard
+starts above 4096 tasks or above 4096 distinct objects. `full` is the escape
+hatch when exhaustive candidate comparison is desired.
 
 `plan_pressurefit_policy` returns a `PressureFitDiagnostics` object with:
 
@@ -278,8 +235,8 @@ including makespan, policy wall time, selected candidate, and candidate counts.
 
 ## Known Limits
 
-- It can miss a faster chain that requires globally coordinated outbound and inbound stream
-  placement rather than local interval pressure reduction.
+- It can miss a faster chain that requires globally coordinated outbound and
+  inbound stream placement rather than local interval pressure reduction.
 - Physical verification repairs feasibility contradictions; it is not a general
   makespan optimizer.
 - The policy is designed for ordered `TaskChain`s. A DAG scheduler would need a
@@ -297,62 +254,105 @@ including makespan, policy wall time, selected candidate, and candidate counts.
 ## Pseudocode
 
 ```text
-apply_pressurefit_policy(chain):
+plan_pressurefit_policy(chain):
     if device_capacity override is provided:
         chain.device_capacity = override
 
     facts = build_facts(chain)
-    initial = choose_initial_residency(chain, facts)
-    base_intervals = build_initial_intervals(facts, initial)
-
-    plans = []
-    candidate_specs = build_candidate_specs(
-        chain, facts, base_intervals, portfolio_mode
+    initial_device = choose_initial_residency(chain, facts)
+    base_intervals = build_initial_intervals(facts, initial_device)
+    seeds = build_candidate_seeds(chain, facts, base_intervals)
+    portfolio = build_candidate_portfolio(
+        chain, facts, initial_device, seeds, portfolio_mode
     )
 
-    for spec in candidate_specs:
-        plan = verify_candidate_plan(spec)
-        if plan is valid:
-            append plan to plans
+    plans = []
+    diagnostics = []
+
+    for spec in portfolio.specs:
+        if spec is marked skipped:
+            append skipped diagnostic
+            continue
+
+        if spec is fallback-only and plans is not empty:
+            append skipped diagnostic
+            continue
+
+        if spec has a precomputed construction error:
+            append error diagnostic
+            continue
+
+        try:
+            plan = verify_candidate_plan(spec, seeds[spec.seed_key])
+            append plan and valid diagnostic
+        except planning error:
+            append error diagnostic
 
     if plans is empty:
         raise first planning error
 
-    return annotated chain from plan with lowest simulator makespan
+    return annotated chain from plan with lowest simulator makespan, diagnostics
 ```
 
 ```text
-build_candidate_specs(chain, facts, base_intervals, portfolio_mode):
+build_candidate_portfolio(chain, facts, initial_device, seeds, portfolio_mode):
+    effective_mode = resolve_portfolio_mode(portfolio_mode, facts)
+    minimal_fast = effective_mode == fast-minimal
     specs = []
 
-    specs += base_intervals with inbound_schedule = packed_fifo
-    specs += base_intervals with inbound_schedule = latest_safe
-    specs += base_intervals with inbound_schedule = interval_entry
-    specs += base_intervals with inbound_schedule = latest_trigger
-    specs += source_gap_seed with inbound_schedule = latest_safe
+    add base specs:
+        if minimal_fast:
+            base-unpacked       -> seed_key=base, pack_inbound=false
+            source-gap-unpacked -> seed_key=source-gap, pack_inbound=false
+            base-latest-inbound -> seed_key=base,
+                                   pack_inbound=true,
+                                   latest_inbound=true,
+                                   fallback_only=true
+            record secondary base schedules as skipped
+        else:
+            base-packed-fifo    -> seed_key=base, pack_inbound=true
+            base-unpacked       -> seed_key=base, pack_inbound=false
+            source-gap-unpacked -> seed_key=source-gap, pack_inbound=false
+            base-interval-entry -> seed_key=base,
+                                   extend_inbound=true,
+                                   respect_interval_start=true
+            base-latest-inbound -> seed_key=base,
+                                   pack_inbound=true,
+                                   latest_inbound=true
 
-    specs += base_intervals with:
-        reserve_pressure = max(next_task_device_outputs)
-        inbound_schedule = packed_fifo
+    add reserve spec:
+        if minimal_fast:
+            record reserve-next-output as skipped
+        else:
+            seed_key=base
+            reserve_pressure = max(next_task_device_outputs)
+            pack_inbound=true
 
-    specs += cold_admission_seed(device_capacity / 2) with:
-        inbound_schedule = packed_fifo
+    add cold-admission spec when it differs from base:
+        if minimal_fast:
+            record cold-admission as skipped
+        else:
+            seed_key=cold-admission
+            pack_inbound=true
 
-    effective_mode = resolve_portfolio_mode(portfolio_mode, chain, facts)
+    if effective_mode is fast or fast-minimal:
+        record skipped initial-protection frontier diagnostic if applicable
+        return specs
 
-    if effective_mode == full:
+    if effective_mode is full:
         for protected in select_initial_protection_sets(facts):
-            specs += all_host_seed with:
-                protected_initial = protected
-                extend_inbound = true
-                inbound_schedule in [packed_fifo, latest_safe, interval_entry]
+            add protected specs:
+                seed_key=all-host
+                protected_initial=protected
+                extend_inbound=true
+                schedules in [packed FIFO, latest-safe, interval-entry]
 
     return specs
 ```
 
 ```text
 verify_candidate_plan(spec):
-    intervals = copy(spec.seed_intervals)
+    intervals = copy(seeds[spec.seed_key])
     protected_initial = spec.protected_initial
     extra_pressure = spec.reserve_pressure at every boundary
 
@@ -362,7 +362,7 @@ verify_candidate_plan(spec):
         extend_inbound_lead_time(intervals, extra_pressure)
 
     repeat up to fixed repair limit:
-        annotated = emit_triggers(intervals, spec.inbound_schedule)
+        annotated = emit_triggers(intervals, spec schedule flags)
 
         try:
             log = simulator_run(annotated, snapshots=False)
@@ -377,7 +377,7 @@ verify_candidate_plan(spec):
         else:
             raise error
 
-    annotated = emit_triggers(intervals, spec.inbound_schedule)
+    annotated = emit_triggers(intervals, spec schedule flags)
     log = simulator_run(annotated, snapshots=False)
     return (makespan(log), annotated)
 ```
@@ -421,14 +421,14 @@ reduce_to_fit(intervals, extra_pressure, protected_initial):
 ```
 
 ```text
-emit_triggers(intervals, inbound_schedule):
+emit_triggers(intervals, spec schedule flags):
     for each interval of each object:
         if interval starts at initial boundary:
             add initial device copy when object has a host source
         else if interval starts at object's producer:
             no arrival trigger is needed
         else:
-            add inbound prefetch trigger according to inbound_schedule
+            add inbound prefetch trigger according to spec schedule flags
 
         if interval exit contains a mutation and object has a later interval:
             add outbound offload trigger
@@ -444,6 +444,28 @@ emit_triggers(intervals, inbound_schedule):
 ```
 
 ## Appendix
+
+### Implementation Module Map
+
+- `pressurefit.py`: public entry points, candidate evaluation, simulator
+  verification, fastest-valid selection;
+- `pressurefit_aux/portfolio.py`: candidate portfolio orchestration;
+- `pressurefit_aux/candidate_specs.py`: candidate-family assembly and portfolio
+  mode selection;
+- `pressurefit_aux/types.py`: shared candidate, portfolio, and interval types;
+- `pressurefit_aux/core.py`: shared facts, interval accounting, and boundary
+  helpers;
+- `pressurefit_aux/seeds.py`: initial residency and seed interval construction;
+- `pressurefit_aux/reducer.py`: deterministic greedy pressure reduction;
+- `pressurefit_aux/emit.py`: interval-to-trigger emission;
+- `pressurefit_aux/inbound_schedules.py`: inbound lead-time extension and
+  inbound prefetch scheduling;
+- `pressurefit_aux/initial_protection.py`: initial-residency protection
+  frontier construction;
+- `pressurefit_aux/physical_repair.py`: simulator-error interpretation and
+  boundary pressure repair;
+- `pressurefit_aux/diagnostics.py`: diagnostic result types and candidate
+  diagnostic rows.
 
 ### Boundary Model
 
@@ -725,31 +747,47 @@ The portfolio is a fixed list of local alternatives. Every candidate spec goes
 through pressure reduction, trigger emission, and simulator verification
 independently.
 
-A candidate spec is exactly the tuple:
+A candidate spec has identity fields plus control fields. The identity fields
+are `name`, `family`, `seed_key`, and `seed`; they are used for diagnostics and
+for choosing which seed interval set to copy. The control fields are:
 
 ```text
 (
-    seed_intervals,
     protected_initial,
     reserve_pressure,
     extend_inbound,
-    inbound_schedule,
+    pack_inbound,
+    respect_interval_start,
+    latest_inbound,
 )
 ```
 
-Those fields are interpreted as follows:
+Those control fields are interpreted as follows:
 
 | Field | Type | Operational effect |
 |---|---|---|
-| `seed_intervals` | object id -> list of inclusive `[start, end]` boundary intervals | Copied at the start of verification, then passed to pressure reduction. Different seeds give pressure reduction different starting assumptions. |
 | `protected_initial` | set of object ids | Makes a split illegal if that split would remove boundary-`-1` residency for one of these objects. Later non-initial gaps may still be split normally. |
 | `reserve_pressure` | bytes | Added as a baseline to every boundary's pressure check. Physical repair may add more pressure at individual boundaries, but may not go below this baseline. |
 | `extend_inbound` | boolean | If true, run the inbound lead-time extension pass after each pressure-reduction attempt. |
-| `inbound_schedule` | enum | Selects packed FIFO, latest-safe, interval-entry, or latest-trigger placement for inbound prefetch triggers. |
+| `pack_inbound` | boolean | If true, inbound jobs are assigned by the packed FIFO scheduler. If false, each inbound trigger is placed independently. |
+| `respect_interval_start` | boolean | If true, independent inbound placement cannot fire later than the task immediately before the planned interval entry. |
+| `latest_inbound` | boolean | If true with `pack_inbound`, packed jobs fire at their latest legal trigger instead of being packed backward by deadline. |
 
-Only these fields vary across the portfolio. All candidate specs use the same
-split legality rules, pressure reduction pass, trigger emission, simulator
-verification, and physical repair loop.
+`skip_reason`, `pre_error`, and `fallback_only` are portfolio-control or
+diagnostic fields. They do not define a different residency algorithm.
+
+Only the seed identity and control fields above vary across the portfolio. All
+candidate specs use the same split legality rules, pressure reduction pass,
+trigger emission, simulator verification, and physical repair loop.
+
+The named inbound schedules used in this document map to control fields as:
+
+| Schedule | Control fields |
+|---|---|
+| packed FIFO | `pack_inbound=true` |
+| latest-safe | `pack_inbound=false`, `respect_interval_start=false`, `latest_inbound=false` |
+| interval-entry | `pack_inbound=false`, `respect_interval_start=true` |
+| latest-trigger | `pack_inbound=true`, `latest_inbound=true` |
 
 | Family | Seed | Extra pressure | Protected initial set | Inbound schedule(s) | Purpose |
 |---|---|---|---|---|---|
