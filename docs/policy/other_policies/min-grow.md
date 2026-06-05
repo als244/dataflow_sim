@@ -1,6 +1,6 @@
 # min_grow — design doc
 
-Implementation: [`simulator/src/dataflow_sim/policy/min_grow.py`](../../../simulator/src/dataflow_sim/policy/min_grow.py).
+Implementation: [`src/dataflow_sim/policies/min_grow.py`](../../../src/dataflow_sim/policies/min_grow.py).
 
 > **NOTE:** this is the original design spec; the live implementation has evolved (MIN-seeded over-shrink + beam search). Treat divergence as design history; the code is source of truth.
 
@@ -44,7 +44,7 @@ Per [problem.md](../../problem.md): given a DAG of compute tasks on a single com
 
 ### 3.1 Input format (min_grow's input)
 
-min_grow's public entry point is `apply_min_grow_policy(bare: TaskChain) -> TaskChain`. The input is a **bare** `TaskChain` as defined in `simulator/src/dataflow_sim/schema.py` — "bare" meaning the task list contains tasks whose `releases_after`, `offload_after`, `prefetch_after` lists are empty (no policy has been applied yet). The relevant fields, copied verbatim from `simulator/src/dataflow_sim/schema.py:22-83`:
+min_grow's public entry point is `apply_min_grow_policy(bare: TaskChain) -> TaskChain`. The input is a **bare** `TaskChain` as defined in `src/dataflow_sim/core/schema.py` — "bare" meaning the task list contains tasks whose `releases_after`, `offload_after`, `prefetch_after` lists are empty (no policy has been applied yet). The relevant fields, copied verbatim from `src/dataflow_sim/core/schema.py:22-83`:
 
 ```python
 @dataclass(frozen=True)
@@ -424,23 +424,23 @@ min_grow inherits from max_reduce only the **boundary convention** and the **sch
 ## 11. Code structure
 
 **Files**:
-- `simulator/src/dataflow_sim/policy/min_grow.py` — min_grow implementation. Public: `apply_min_grow_policy(bare: TaskChain) -> TaskChain`. Internal: `Plan` dataclass, `Interval`, `MIN_plan`, `enumerate_extensions`, `apply_extension`, `respects_static_cap`, `analytic_bound`, `derive_schedule`, `score`.
+- `src/dataflow_sim/policies/min_grow.py` — min_grow implementation. Public: `apply_min_grow_policy(bare: TaskChain) -> TaskChain`. Internal: `Plan` dataclass, `Interval`, `MIN_plan`, `enumerate_extensions`, `apply_extension`, `respects_static_cap`, `analytic_bound`, `derive_schedule`, `score`.
 - `docs/policy/other_policies/min-grow.md` — this doc.
-- `simulator/tests/test_min_grow.py` — unit tests.
-- `app/scripts/compare_policies.py` — adds min_grow to policy dict in `run_one()`; min_grow column in output table.
+- `tests/policies/test_min_grow.py` — unit tests.
+- `scripts/compare_policies.py` — adds min_grow to policy dict in `run_one()`; min_grow column in output table.
 
 **Primitives reused** (unchanged):
-- `simulator/src/dataflow_sim/schema.py` — `Task`, `TaskChain`, `Object`, `OutputAlloc`, `TransferTrigger`, boundary convention.
-- `simulator/src/dataflow_sim/simulator.py` — `simulator.run(chain) -> EventLog`; makespan = `max(iv.end for iv in event_log.task_intervals)`. Use `snapshots=False` for scoring paths that need intervals and peak bytes but not the full event timeline.
+- `src/dataflow_sim/core/schema.py` — `Task`, `TaskChain`, `Object`, `OutputAlloc`, `TransferTrigger`, boundary convention.
+- `src/dataflow_sim/engine/simulator.py` — `simulator.run(chain) -> EventLog`; makespan = `max(iv.end for iv in event_log.task_intervals)`. Use `snapshots=False` for scoring paths that need intervals and peak bytes but not the full event timeline.
 
 **Not touched**:
-- `simulator/src/dataflow_sim/policy/max_reduce.py`, `simulator/src/dataflow_sim/policy/belady_reactive.py`, `simulator/src/dataflow_sim/policy/sliding_window.py`. `min_grow` is independent; these stay as comparison baselines.
+- `src/dataflow_sim/policies/max_reduce.py`, `src/dataflow_sim/policies/belady_reactive.py`, `src/dataflow_sim/policies/sliding_window.py`. `min_grow` is independent; these stay as comparison baselines.
 
 ---
 
 ## 12. Verification
 
-### 12.1 Unit tests (`simulator/tests/test_min_grow.py`)
+### 12.1 Unit tests (`tests/policies/test_min_grow.py`)
 
 - **MIN plan correctness**: 3-task synthetic chain. Verify only forced residency.
 - **Extension enumeration**: on L=2 transformer, verify expected gap-merge candidates surfaced for `W_1` (the only object with a real gap in MIN).
@@ -451,7 +451,7 @@ min_grow inherits from max_reduce only the **boundary convention** and the **sch
 
 ### 12.2 Sweep regression
 
-Run `app/scripts/compare_policies.py` with min_grow added:
+Run `scripts/compare_policies.py` with min_grow added:
 - Bar: min_grow makespan ≤ best-of-{belady_reactive, roundtrip_planner, max_reduce, sliding} on every (seqlen, num_seqs, cap) cell.
 - Strict improvement: min_grow beats best-of-prior on at least the configs where max_reduce currently regresses (e.g., `sql=2048 M=1 cap=20GB`, currently +36.8% over belady_reactive).
 

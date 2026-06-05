@@ -1,6 +1,6 @@
 # roundtrip_planner
 
-Constructively enumerates offload/prefetch round-trips over the oracle reference stream and packs them onto D2H/H2D timelines before the simulator runs. For each object, gaps between consecutive uses that fit `tau_d2h + tau_h2d` become candidate round-trips; the planner ranks them by `size × gap_length`, then greedily commits only those that actually relieve a predicted capacity overflow. Mandatory first-use prefetches for host-only objects are packed in a second pass. Implemented in `simulator/src/dataflow_sim/policy/roundtrip_planner.py`.
+Constructively enumerates offload/prefetch round-trips over the oracle reference stream and packs them onto D2H/H2D timelines before the simulator runs. For each object, gaps between consecutive uses that fit `tau_d2h + tau_h2d` become candidate round-trips; the planner ranks them by `size × gap_length`, then greedily commits only those that actually relieve a predicted capacity overflow. Mandatory first-use prefetches for host-only objects are packed in a second pass. Implemented in `src/dataflow_sim/policies/roundtrip_planner.py`.
 
 ## Mechanism
 

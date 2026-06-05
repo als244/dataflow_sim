@@ -229,7 +229,7 @@ hatch when exhaustive candidate comparison is desired.
 These diagnostics are observational. They do not alter the selected plan.
 
 For repeatable mode comparisons, run
-`python app/scripts/pressurefit_mode_sweep.py --quick` or use `--compact` /
+`python scripts/pressurefit_mode_sweep.py --quick` or use `--compact` /
 `--canonical` for broader grids. The script writes one row per config and mode,
 including makespan, policy wall time, selected candidate, and candidate counts.
 

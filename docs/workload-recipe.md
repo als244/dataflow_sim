@@ -8,7 +8,7 @@ see `docs/transformer-recipe.md`; this document is the reference.
 ## The five primitives
 
 Everything ingested into the simulator is built out of five frozen
-dataclasses defined in `simulator/src/dataflow_sim/schema.py`.
+dataclasses defined in `src/dataflow_sim/core/schema.py`.
 
 ### `Object` — a piece of data present at t=0
 
@@ -82,7 +82,7 @@ placements may have been moved to host in `initial_memory`, and every task
 carries the `releases_after` / `offload_after` / `prefetch_after` triggers
 that make the workload actually fit under `device_capacity`.
 
-Policies in `dataflow_sim.policy.*` are functions `bare → annotated`. You
+Policies in `dataflow_sim.policies.*` are functions `bare → annotated`. You
 hand them the bare chain plus a budget and they return a `TaskChain` with
 the annotations filled in.
 
@@ -107,7 +107,7 @@ the annotations filled in.
 Tiny worked example:
 
 ```python
-from dataflow_sim.schema import Object, Task, OutputAlloc, TaskChain
+from dataflow_sim.core.schema import Object, Task, OutputAlloc, TaskChain
 
 bare = TaskChain(
     initial_memory=[
@@ -146,7 +146,7 @@ Each is `apply_<name>_policy(bare, **kwargs) -> TaskChain`. See
 ## Running the simulator
 
 ```python
-from dataflow_sim.simulator import run
+from dataflow_sim.engine.simulator import run
 
 events = run(annotated_chain)   # -> EventLog
 ```
@@ -232,9 +232,9 @@ Key `Event.kind` values:
 ## A worked example (5-line snippet)
 
 ```python
-from dataflow_sim.schema import Object, Task, OutputAlloc, TaskChain
-from dataflow_sim.policy.belady_reactive import apply_belady_reactive_policy
-from dataflow_sim.simulator import run
+from dataflow_sim.core.schema import Object, Task, OutputAlloc, TaskChain
+from dataflow_sim.policies.belady_reactive import apply_belady_reactive_policy
+from dataflow_sim.engine.simulator import run
 
 bare = TaskChain(
     initial_memory=[Object(id="x", size=4, location="host", type="weight")],

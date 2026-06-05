@@ -7,7 +7,7 @@ and optional optimizer tasks. The chain operates on `Object`s: inputs,
 weights, saved activations, residual handoff tensors, per-step gradients, and
 optimizer state. Per-task `runtime` is a roofline estimate produced by
 decomposing each block into compute and memory-bound **sub-ops**, timing each
-against a `HardwareEnv`, and summing. `Object` sizes come from the same
+against a `HardwareSpec`, and summing. `Object` sizes come from the same
 dimensional math. The chain starts persistent weights and optimizer state on
 host and the first input on device; per-step gradients are produced by the
 backward pass rather than loaded from host. A policy
@@ -136,14 +136,14 @@ per-task scalar in µs (1 tick = 1 µs).
 Each backward step is preceded by a zero-runtime `r_i` task whose only job is
 to declare `inputs=[A_i, W_i]` — that pins both objects co-resident with the
 upcoming `b_i` without overlapping a compute slot. The task is created in
-`app/src/dataflow_app/workloads/training.py` (the backward loop in
-`build_bare_training_chain`) and currently has `runtime=0`.
+`src/dataflow_sim/workloads/training/transformer.py` (the backward loop in
+`build_layerwise_training_chain`) and currently has `runtime=0`.
 
 To extend the model with real partial-recompute cost, define a
 `recompute_subops(spec, cfg)` analogous to `forward_subops` returning the
 subset of fwd sub-ops that would be re-executed, aggregate it with
 `time_subop` into an `r_microseconds(...)`, and thread an `r_runtime`
-parameter through `build_transformer_bare_chain` alongside the existing
+parameter through `build_transformer_training_workload` alongside the existing
 `fwd_runtime` / `bwd_runtime` / `head_runtime` hooks.
 
 ## Sub-op decomposition
@@ -235,7 +235,7 @@ WGRAD block (down before up; mirrors the dgrad ordering):
 - `final_norm_bwd` — memory. Bytes `7 * T * d * 2`.
 
 ### Optimizer sub-ops
-Optimizer formulas live in `app/src/dataflow_app/workloads/optimizers.py`.
+Optimizer formulas live in `src/dataflow_sim/workloads/training/optimizers.py`.
 The transformer module supplies the logical matrix inventory for one layer:
 `qkv_proj`, `attn_proj`, shared MLP up/down matrices, and any routed expert
 up/down matrices. Routed experts are counted as the full expert bank because
@@ -304,7 +304,7 @@ downsample.
   `nanogpt_124M`, `llama3_8B`, and MoE configs (`olmoe_7Bx1B`, …). Fields
   like `datatypes` and `is_causal` in the JSON are ignored — bf16 and causal
   attention are hardcoded.
-- **`HARDWARE_PRESETS`** — name→`HardwareEnv` with the parameters that drive
+- **`HARDWARE_PRESETS`** — name→`HardwareSpec` with the parameters that drive
   every sub-op time: `peak_tflops` (compute roof), `gpu_membw_gbs` (HBM
   roof), `interconnect_bw_gbs` (host↔device link, becomes the chain's
   `bandwidth_h2d` / `bandwidth_d2h`), and the four efficiency knobs
@@ -313,22 +313,23 @@ downsample.
   (210 TFLOPS / 1.5 TB/s / 30 GB/s).
 
 ## End-to-end three paths
-1. **Python.** `from dataflow_app.workloads.training import
-   build_transformer_bare_chain`; pass a `TransformerSpec`, `HardwareEnv`,
-   `TrainingConfig`, get `(bare_chain, breakdown)`. Apply a policy
+1. **Python.** `from dataflow_sim.workloads.training.transformer import
+   build_transformer_training_workload`; pass a `TransformerSpec`, `HardwareSpec`,
+   `TrainingConfig`, get a `Workload` whose `.chain` is bare and whose
+   `metadata["breakdown"]` contains sub-op timings. Apply a policy
    (`apply_pressurefit_policy(bare, …)`) and hand the result to
    `simulator.run(...)`. The `breakdown` payload carries the per-sub-op
    timings used to populate the dashboard's roofline panel.
-2. **Scripts.** `app/scripts/run_training.py` runs a single configuration
-   end-to-end. `app/scripts/sweep_transformer.py` sweeps model × hardware ×
+2. **Scripts.** `scripts/run_training.py` runs a single configuration
+   end-to-end. `scripts/sweep_transformer.py` sweeps model × hardware ×
    `(num_seqs, seqlen)` and writes a results table.
-   `app/scripts/compare_policies.py` reuses one bare chain and runs each
+   `scripts/compare_policies.py` reuses one bare chain and runs each
    registered policy against it for an apples-to-apples comparison.
-   `app/scripts/pressurefit_mode_sweep.py` compares PressureFit's `auto`,
+   `scripts/pressurefit_mode_sweep.py` compares PressureFit's `auto`,
    `fast`, and `full` candidate portfolios.
 3. **Webapp.** The UI POSTs a model+hardware+training-config selection to
    `POST /api/simulate`. The server builds the bare chain via
-   `build_transformer_bare_chain`, applies the user-selected policy, runs the
+   `build_transformer_training_workload`, applies the user-selected policy, runs the
    simulator, and returns `{log, breakdown, summary, chain,
    policy_diagnostics}`. The React frontend renders the event log as a
    Gantt-style trace alongside the per-sub-op roofline table. For PressureFit,

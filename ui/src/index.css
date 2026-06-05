@@ -1,0 +1,102 @@
+:root {
+  --bg: #1a1a1a;
+  --panel: #232323;
+  --hover: #2c2c2c;
+  --border: #353535;
+  --fg: rgba(255, 255, 255, 0.88);
+  --dim: rgba(255, 255, 255, 0.5);
+  --summary-card-bg: linear-gradient(180deg, rgba(59, 111, 184, 0.24), rgba(42, 88, 145, 0.16));
+  --summary-card-border: #355d91;
+  --summary-card-accent: #8fb9f0;
+  --summary-card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --summary-label: #aac4e8;
+  --summary-value: #f5f9ff;
+  --summary-sub: #aeb9c8;
+  --subpanel-bg: rgba(20, 28, 40, 0.28);
+  --subpanel-border: #232f40;
+  --subpanel-title: #cdd6e3;
+  --subpanel-chip-bg: rgba(40, 55, 80, 0.5);
+  --scrollbar-track: #1a2231;
+  --scrollbar-thumb: #4a5b78;
+  --scrollbar-thumb-hover: #5d7196;
+  --plan-task-bg: rgba(70, 130, 200, 0.08);
+  --plan-task-bare-bg: rgba(70, 130, 200, 0.035);
+  --plan-obj-bg: rgba(70, 130, 200, 0.12);
+  --plan-obj-preplaced-bg: rgba(126, 217, 135, 0.16);
+  --plan-task-id: #f0f6ff;
+  --plan-input: #75c0ff;
+  --plan-mutate: #f0a65c;
+  --plan-output: #86e28f;
+  --plan-release: #df8b8b;
+  --plan-offload: #eda6ff;
+  --plan-prefetch: #3ff0b2;
+  --plan-preplaced: #86e28f;
+  --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  line-height: 1.5;
+  color: var(--fg);
+  background-color: var(--bg);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fafafa;
+    --panel: #ffffff;
+    --hover: #f0f0f0;
+    --border: #dcdcdc;
+    --fg: #1a1a1a;
+    --dim: #707070;
+    --summary-card-bg: linear-gradient(180deg, #eef8ff 0%, #dceeff 100%);
+    --summary-card-border: #8bbce8;
+    --summary-card-accent: #2d6ea8;
+    --summary-card-shadow: 0 8px 18px rgba(34, 89, 144, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.82);
+    --summary-label: #385f83;
+    --summary-value: #102f52;
+    --summary-sub: #4f6a83;
+    --subpanel-bg: #fbfdff;
+    --subpanel-border: #e4edf6;
+    --subpanel-title: #26394d;
+    --subpanel-chip-bg: #eef4fb;
+    --scrollbar-track: #eef3f8;
+    --scrollbar-thumb: #b5c5d6;
+    --scrollbar-thumb-hover: #97aabd;
+    --plan-task-bg: #f6fbff;
+    --plan-task-bare-bg: #fbfdff;
+    --plan-obj-bg: #edf5fc;
+    --plan-obj-preplaced-bg: #e9f7ed;
+    --plan-task-id: #102f52;
+    --plan-input: #0f5f9f;
+    --plan-mutate: #9a4f13;
+    --plan-output: #1f7a3a;
+    --plan-release: #9b3838;
+    --plan-offload: #87349a;
+    --plan-prefetch: #0d7659;
+    --plan-preplaced: #1f7a3a;
+  }
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.95em;
+}
+
+pre {
+  font-family: var(--mono);
+  background: var(--panel);
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  overflow-x: auto;
+}

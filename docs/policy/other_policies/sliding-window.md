@@ -1,6 +1,6 @@
 # sliding_window
 
-A hand-crafted, workload-specific policy that annotates a bare transformer-training chain with a fixed-pattern weight/activation/gradient trigger schedule. This is the only non-auto policy in the suite — it does not reason about residency or generalize beyond chains produced by `build_bare_training_chain`. It keys directly off the `f_i`, `b_i`, `W_i`, `dW_i`, `A_i` id conventions and a tunable `window_size` parameter that controls how many weights are kept device-resident simultaneously during forward/backward.
+A hand-crafted, workload-specific policy that annotates a bare transformer-training chain with a fixed-pattern weight/activation/gradient trigger schedule. This is the only non-auto policy in the suite — it does not reason about residency or generalize beyond chains produced by `build_layerwise_training_chain`. It keys directly off the `f_i`, `b_i`, `W_i`, `dW_i`, `A_i` id conventions and a tunable `window_size` parameter that controls how many weights are kept device-resident simultaneously during forward/backward.
 
 ## Mechanism
 
@@ -87,4 +87,4 @@ Generalizing would require recovering all of this from the schema-level signals 
 
 ## Implementation
 
-`simulator/src/dataflow_sim/policy/sliding_window.py` — entry: `apply_sliding_window_policy(bare, *, window_size=2, device_capacity=None)`.
+`src/dataflow_sim/policies/sliding_window.py` — entry: `apply_sliding_window_policy(bare, *, window_size=2, device_capacity=None)`.

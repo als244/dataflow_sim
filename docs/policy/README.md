@@ -1,6 +1,6 @@
 # Policies
 
-Six built-in scheduling policies. All implement `apply_<name>_policy(bare: TaskChain, ...) -> TaskChain` and live in `simulator/src/dataflow_sim/policy/`.
+Six built-in scheduling policies. All implement `apply_<name>_policy(bare: TaskChain, ...) -> TaskChain` and live in `src/dataflow_sim/policies/`.
 
 See [principles.md](principles.md) for the correctness invariants and resource-conservation principles a good policy follows, and the tensions a new policy must take a stance on.
 

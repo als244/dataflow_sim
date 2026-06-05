@@ -1,6 +1,6 @@
 # max_reduce — clean general formulation
 
-Implementation: [`simulator/src/dataflow_sim/policy/max_reduce.py`](../../../simulator/src/dataflow_sim/policy/max_reduce.py).
+Implementation: [`src/dataflow_sim/policies/max_reduce.py`](../../../src/dataflow_sim/policies/max_reduce.py).
 
 `max_reduce` is a from-first-principles auto policy that decouples *what* is resident from *when* transfers fire. This document defines the inputs, assumptions, outputs, invariants, and algorithm precisely enough that a reader can predict what the planner will do on any input.
 

@@ -2,7 +2,7 @@
 
 A reactive, oracle-aware eviction policy that takes a *bare* task chain (compute tasks with `inputs / outputs / runtime`, all weights on host, zero triggers) and produces a fully annotated `TaskChain` consumable by the simulator. It places `release / offload / prefetch` triggers by walking the chain forward through a `ShadowSimulator` that mirrors the real simulator's state machine, evicting the furthest-next-use object (Belady) when the device is full and chaining offload→prefetch round-trips against actual completion times rather than ideal ones.
 
-Implementation: `simulator/src/dataflow_sim/policy/belady_reactive.py`.
+Implementation: `src/dataflow_sim/policies/belady_reactive.py`.
 
 ## Mechanism
 
@@ -18,7 +18,7 @@ Six phases, applied to a bare chain:
 
 ### ShadowSimulator
 
-A state mirror of the simulator (`simulator/src/dataflow_sim/simulator.py`), forked rather than refactored from a shared base — the simulator's hot path is per-event chronological processing, while the planner's hot path is predicate queries about future state. Advances per task boundary, not per event. Exposes a "decide-and-record" API: trigger decisions are recorded as `(boundary_task_index, kind, obj_id)` and shadow state updates immediately so subsequent decisions see the consequences. Key state: `boundary_pool_size[k]` snapshots, `actual_boundary_end[k]`, per-object `_Entry.producer_task_idx` and `appeared_at`.
+A state mirror of the simulator (`src/dataflow_sim/engine/simulator.py`), forked rather than refactored from a shared base — the simulator's hot path is per-event chronological processing, while the planner's hot path is predicate queries about future state. Advances per task boundary, not per event. Exposes a "decide-and-record" API: trigger decisions are recorded as `(boundary_task_index, kind, obj_id)` and shadow state updates immediately so subsequent decisions see the consequences. Key state: `boundary_pool_size[k]` snapshots, `actual_boundary_end[k]`, per-object `_Entry.producer_task_idx` and `appeared_at`.
 
 ## When it wins
 
