@@ -7,12 +7,11 @@ Run:
     python scripts/canonical_sweep.py --canonical \
         --optimizers adamw,muon \
         --grad-accum-rounds 1,2,4,8,32 \
-        --pressurefit-mode full \
         --pressurefit-candidates-out /tmp/pressurefit_candidates.csv
 
 The policy CSV has one row per config and one makespan column per policy.
-When requested, the PressureFit candidate CSV has one row per full-mode
-candidate per config, including skipped/error candidates.
+When requested, the PressureFit candidate CSV has one row per inbound
+schedule per config, including error candidates.
 """
 from __future__ import annotations
 
@@ -31,8 +30,6 @@ from dataflow_sim.engine.simulator import run as sim_run
 from dataflow_sim.policies import get_all_policies
 from dataflow_sim.policies.pressurefit import (
     PressureFitDiagnostics,
-    PressureFitPortfolioMode,
-    apply_pressurefit_policy,
     plan_pressurefit_policy,
 )
 from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS
@@ -147,23 +144,6 @@ def _cap_bytes(cap_gb: int | None) -> int | None:
     return int(cap_gb * 1e9)
 
 
-def _policy_fns(pressurefit_mode: PressureFitPortfolioMode):
-    policies = []
-    for name, fn in get_all_policies():
-        if name == "pressurefit":
-            policies.append((
-                name,
-                lambda b, mode=pressurefit_mode: apply_pressurefit_policy(
-                    b,
-                    device_capacity=b.device_capacity,
-                    portfolio_mode=mode,
-                ),
-            ))
-        else:
-            policies.append((name, fn))
-    return policies
-
-
 def _build_bare(config: dict[str, Any]) -> TaskChain:
     models = load_model_presets()
     spec = models["llama3_8B"]
@@ -233,10 +213,7 @@ def _candidate_rows(
         )
         rows.append({
             **_config_public_fields(config),
-            "pressurefit_mode": diagnostics.portfolio_mode,
-            "effective_pressurefit_mode": diagnostics.effective_portfolio_mode,
             "candidate_name": candidate.name,
-            "family": candidate.family,
             "status": candidate.status,
             "selected": candidate.selected,
             "makespan_us": "" if makespan is None else makespan,
@@ -244,14 +221,9 @@ def _candidate_rows(
             "gap_vs_best_us": gap_us,
             "gap_vs_best_pct": gap_pct,
             "wall_time_s": candidate.wall_time_s,
-            "seed": candidate.seed,
             "pack_inbound": candidate.pack_inbound,
             "extend_inbound": candidate.extend_inbound,
             "respect_interval_start": candidate.respect_interval_start,
-            "latest_inbound": candidate.latest_inbound,
-            "reserve_pressure": candidate.reserve_pressure,
-            "protected_count": candidate.protected_count,
-            "protected_bytes": candidate.protected_bytes,
             "error": candidate.error or "",
         })
     return rows
@@ -259,15 +231,11 @@ def _candidate_rows(
 
 def _candidate_error_row(
     config: dict[str, Any],
-    pressurefit_mode: PressureFitPortfolioMode,
     error: Exception,
 ) -> dict[str, Any]:
     return {
         **_config_public_fields(config),
-        "pressurefit_mode": pressurefit_mode,
-        "effective_pressurefit_mode": "",
         "candidate_name": "",
-        "family": "",
         "status": "planner_error",
         "selected": False,
         "makespan_us": "",
@@ -275,20 +243,15 @@ def _candidate_error_row(
         "gap_vs_best_us": "",
         "gap_vs_best_pct": "",
         "wall_time_s": "",
-        "seed": "",
         "pack_inbound": "",
         "extend_inbound": "",
         "respect_interval_start": "",
-        "latest_inbound": "",
-        "reserve_pressure": "",
-        "protected_count": "",
-        "protected_bytes": "",
         "error": f"{type(error).__name__}: {error}",
     }
 
 
 def _run_one_config(payload):
-    config, policy_names, pressurefit_mode, collect_candidates = payload
+    config, policy_names, collect_candidates = payload
     tag = (
         f"hw={config['hardware']} cap={config['cap_GB']} "
         f"M={config['num_seqs']} S={config['seqlen']} "
@@ -307,7 +270,7 @@ def _run_one_config(payload):
             policy_results[policy_name] = None
             policy_errors[policy_name] = f"{type(e).__name__}: {e}"
         if collect_candidates:
-            candidate_rows.append(_candidate_error_row(config, pressurefit_mode, e))
+            candidate_rows.append(_candidate_error_row(config, e))
         dur = time.monotonic() - t0
         print(f"ERR   {tag} build {type(e).__name__} ({dur:.2f}s)", file=sys.stderr, flush=True)
         return config, policy_results, policy_errors, candidate_rows, dur
@@ -318,17 +281,16 @@ def _run_one_config(payload):
             _chain, diagnostics = plan_pressurefit_policy(
                 bare,
                 device_capacity=bare.device_capacity,
-                portfolio_mode=pressurefit_mode,
             )
             candidate_rows.extend(_candidate_rows(config, diagnostics))
             policy_results["pressurefit"] = diagnostics.selected_makespan_us
             pressurefit_done = True
         except Exception as e:
-            candidate_rows.append(_candidate_error_row(config, pressurefit_mode, e))
+            candidate_rows.append(_candidate_error_row(config, e))
             policy_results["pressurefit"] = None
             policy_errors["pressurefit"] = f"{type(e).__name__}: {e}"
 
-    policies_by_name = dict(_policy_fns(pressurefit_mode))
+    policies_by_name = dict(get_all_policies())
     for policy_name in policy_names:
         if policy_name == "pressurefit" and pressurefit_done:
             continue
@@ -454,10 +416,7 @@ def _write_candidate_csv(path: Path, rows: list[SweepRow]) -> int:
         "grad_accum_rounds",
         "num_steps",
         "final_model_state_on_host",
-        "pressurefit_mode",
-        "effective_pressurefit_mode",
         "candidate_name",
-        "family",
         "status",
         "selected",
         "makespan_us",
@@ -465,14 +424,9 @@ def _write_candidate_csv(path: Path, rows: list[SweepRow]) -> int:
         "gap_vs_best_us",
         "gap_vs_best_pct",
         "wall_time_s",
-        "seed",
         "pack_inbound",
         "extend_inbound",
         "respect_interval_start",
-        "latest_inbound",
-        "reserve_pressure",
-        "protected_count",
-        "protected_bytes",
         "error",
     ]
     candidate_rows.sort(key=lambda row: (
@@ -521,13 +475,7 @@ def main() -> int:
     parser.add_argument(
         "--pressurefit-candidates-out",
         default="",
-        help="optional CSV with one row per PressureFit candidate",
-    )
-    parser.add_argument(
-        "--pressurefit-mode",
-        choices=["auto", "fast", "full"],
-        default="auto",
-        help="PressureFit portfolio mode for the pressurefit policy/candidates",
+        help="optional CSV with one row per PressureFit inbound-schedule candidate",
     )
     parser.add_argument(
         "--optimizers",
@@ -571,8 +519,6 @@ def main() -> int:
     if args.optimizer_grad_analysis:
         args.optimizers = ANALYSIS_OPTIMIZERS
         args.grad_accum_rounds = ANALYSIS_GRAD_ACCUM_ROUNDS
-        if args.pressurefit_mode == "auto":
-            args.pressurefit_mode = "full"
 
     all_policy_names = [name for name, _fn in get_all_policies()]
     if args.policies == ("all",):
@@ -600,7 +546,7 @@ def main() -> int:
     total_policy_runs = len(configs) * len(policy_names)
     print(f"{len(configs)} configs x {len(policy_names)} policies = {total_policy_runs} policy runs")
     if collect_candidates:
-        print(f"PressureFit candidate diagnostics: mode={args.pressurefit_mode}")
+        print("PressureFit candidate diagnostics: enabled")
     print(f"Workers: {args.workers}", flush=True)
 
     t_start = time.monotonic()
@@ -617,7 +563,7 @@ def main() -> int:
     )
 
     payloads = [
-        (config, policy_names, args.pressurefit_mode, collect_candidates)
+        (config, policy_names, collect_candidates)
         for config in configs
     ]
 

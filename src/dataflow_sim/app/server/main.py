@@ -48,7 +48,6 @@ Policy = Literal[
     "pressurefit",
 ]
 Optimizer = Literal["none", "adamw", "muon"]
-PressureFitMode = Literal["auto", "fast", "full"]
 
 
 class HardwareParams(BaseModel):
@@ -87,7 +86,6 @@ class SimulationParams(BaseModel):
     optimizer: Optimizer = "none"
     final_model_state_on_host: bool = False
     policy: Policy = "pressurefit"
-    pressurefit_mode: PressureFitMode = "auto"
     window_size: int = Field(2, ge=1, le=32)
     device_capacity_gb: float | None = Field(None, gt=0)
 
@@ -149,11 +147,7 @@ def _apply_policy(params: SimulationParams, bare, cap_bytes: int | None) -> Task
         bare_capped = replace(bare, device_capacity=cap_bytes) if cap_bytes is not None else bare
         return apply_min_grow_policy(bare_capped)
     if params.policy == "pressurefit":
-        return apply_pressurefit_policy(
-            bare,
-            device_capacity=cap_bytes,
-            portfolio_mode=params.pressurefit_mode,
-        )
+        return apply_pressurefit_policy(bare, device_capacity=cap_bytes)
     raise ValueError(f"unknown policy: {params.policy!r}")
 
 
@@ -170,9 +164,7 @@ def _run_config(
     diagnostics = None
     if params.policy == "pressurefit":
         chain, diagnostics = plan_pressurefit_policy(
-            bare,
-            device_capacity=cap_bytes,
-            portfolio_mode=params.pressurefit_mode,
+            bare, device_capacity=cap_bytes,
         )
     else:
         chain = _apply_policy(params, bare, cap_bytes)

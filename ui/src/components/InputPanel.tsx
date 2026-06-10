@@ -1,6 +1,5 @@
 export type Policy = "sliding_window" | "belady_reactive" | "roundtrip_planner" | "max_reduce" | "min_grow" | "pressurefit";
 export type OptimizerMode = "none" | "adamw" | "muon";
-export type PressureFitMode = "auto" | "fast" | "full";
 
 export interface HardwareParams {
   preset: string;
@@ -38,7 +37,6 @@ export interface SimulationParams {
   optimizer: OptimizerMode;
   final_model_state_on_host: boolean;
   policy: Policy;
-  pressurefit_mode: PressureFitMode;
   window_size: number;
   device_capacity_gb: number | null;
 }
@@ -84,13 +82,12 @@ export const DEFAULT_PARAMS: SimulationParams = {
   optimizer: "none",
   final_model_state_on_host: false,
   policy: "pressurefit",
-  pressurefit_mode: "auto",
   window_size: 2,
   device_capacity_gb: null,
 };
 
 export const POLICY_OPTIONS: { value: Policy; label: string; hint: string }[] = [
-  { value: "pressurefit", label: "PressureFit", hint: "pressure-fit interval planning with bounded candidate specs and deadline-aware inbound scheduling" },
+  { value: "pressurefit", label: "PressureFit", hint: "pressure-fit interval planning; picks the fastest of three verified inbound schedules" },
   { value: "max_reduce", label: "Max-reduce", hint: "analytic top-down: start at MAX residency, split most-overloaded boundary until cap fits" },
   { value: "min_grow", label: "Min-grow", hint: "MIN-seeded over-shrink + beam search using the simulator as cost oracle" },
   { value: "belady_reactive", label: "Reactive Belady", hint: "shadow-simulator walk; evicts farthest-next-use when capacity binds" },
@@ -102,12 +99,6 @@ const OPTIMIZER_OPTIONS: { value: OptimizerMode; label: string }[] = [
   { value: "none", label: "None" },
   { value: "adamw", label: "AdamW" },
   { value: "muon", label: "Muon" },
-];
-
-const PRESSUREFIT_MODE_OPTIONS: { value: PressureFitMode; label: string }[] = [
-  { value: "auto", label: "Auto" },
-  { value: "fast", label: "Fast" },
-  { value: "full", label: "Full" },
 ];
 
 const HW_FIELDS: { key: keyof Omit<HardwareParams, "preset">; label: string; step?: number; min?: number }[] = [
@@ -398,24 +389,6 @@ export function InputPanel({ params, setParams, onSubmit, onReset, locked, statu
                     if (Number.isFinite(v)) setParams({ ...params, window_size: v });
                   }}
                 />
-              </label>
-            )}
-            {params.policy === "pressurefit" && (
-              <label className="form-field">
-                <span className="form-field-label">PressureFit mode</span>
-                <select
-                  value={params.pressurefit_mode}
-                  onChange={(e) => setParams({
-                    ...params,
-                    pressurefit_mode: e.target.value as PressureFitMode,
-                  })}
-                >
-                  {PRESSUREFIT_MODE_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
               </label>
             )}
             <label className="form-field">

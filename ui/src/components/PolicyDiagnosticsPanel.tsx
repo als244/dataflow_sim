@@ -1,25 +1,16 @@
 export interface PressureFitCandidateDiagnostic {
   name: string;
-  family: string;
-  status: "valid" | "error" | "skipped" | string;
+  status: "valid" | "error" | string;
   selected: boolean;
   makespan_us: number | null;
   wall_time_s: number;
   error: string | null;
-  pack_inbound: boolean | null;
+  pack_inbound: boolean;
   extend_inbound: boolean;
   respect_interval_start: boolean;
-  latest_inbound: boolean;
-  reserve_pressure: number;
-  protected_count: number;
-  protected_bytes: number;
-  seed: string;
 }
 
 export interface PressureFitDiagnostics {
-  portfolio_mode: string;
-  effective_portfolio_mode: string;
-  fast_portfolio: boolean;
   planning_time_s: number;
   task_count: number;
   object_count: number;
@@ -44,26 +35,12 @@ function fmtWall(s: number): string {
   return `${(s * 1_000_000).toFixed(0)} us`;
 }
 
-function fmtBytes(bytes: number | null): string {
-  if (bytes === null || bytes <= 0) return "-";
-  const gib = bytes / (1024 ** 3);
-  if (gib >= 1) return `${gib.toFixed(gib >= 10 ? 1 : 2)} GiB`;
-  const mib = bytes / (1024 ** 2);
-  if (mib >= 1) return `${mib.toFixed(mib >= 10 ? 1 : 2)} MiB`;
-  return `${bytes.toLocaleString()} B`;
-}
-
-function candidateKnobs(c: PressureFitCandidateDiagnostic): string {
+function scheduleKnobs(c: PressureFitCandidateDiagnostic): string {
   const knobs: string[] = [];
-  if (c.pack_inbound === true) knobs.push("packed");
-  if (c.pack_inbound === false) knobs.push("local");
-  if (c.latest_inbound) knobs.push("latest-trigger");
-  if (c.respect_interval_start) knobs.push("interval-entry");
+  if (c.pack_inbound) knobs.push("packed");
   if (c.extend_inbound) knobs.push("extend-inbound");
-  if (c.reserve_pressure > 0) knobs.push(`reserve ${fmtBytes(c.reserve_pressure)}`);
-  if (c.seed !== "base") knobs.push(c.seed);
-  if (c.protected_count > 0) knobs.push(`protect ${c.protected_count}`);
-  return knobs.join(", ") || "-";
+  if (c.respect_interval_start) knobs.push("interval-entry");
+  return knobs.join(", ") || "latest-safe";
 }
 
 function orderCandidates(
@@ -72,8 +49,8 @@ function orderCandidates(
   return [...candidates].sort((a, b) => {
     if (a.selected !== b.selected) return a.selected ? -1 : 1;
     if (a.status !== b.status) {
-      const rank = { valid: 0, error: 1, skipped: 2 } as Record<string, number>;
-      return (rank[a.status] ?? 3) - (rank[b.status] ?? 3);
+      const rank = { valid: 0, error: 1 } as Record<string, number>;
+      return (rank[a.status] ?? 2) - (rank[b.status] ?? 2);
     }
     const am = a.makespan_us ?? Number.POSITIVE_INFINITY;
     const bm = b.makespan_us ?? Number.POSITIVE_INFINITY;
@@ -101,18 +78,14 @@ export function PolicyDiagnosticsPanel({
 
   return (
     <details className="panel collapsible-panel diagnostics-panel">
-      <summary className="collapsible-summary">PressureFit Candidate Diagnostics</summary>
+      <summary className="collapsible-summary">PressureFit Schedule Diagnostics</summary>
       <div className="collapsible-content">
         <div className="diagnostics-stats">
-          <Stat
-            label="mode"
-            value={`${diagnostics.portfolio_mode} -> ${diagnostics.effective_portfolio_mode}`}
-          />
           <Stat label="selected" value={diagnostics.selected_candidate} />
           <Stat label="selected makespan" value={fmtTimeUs(diagnostics.selected_makespan_us)} />
           <Stat label="planning wall" value={fmtWall(diagnostics.planning_time_s)} />
           <Stat
-            label="valid candidates"
+            label="valid schedules"
             value={`${diagnostics.valid_candidate_count}/${diagnostics.candidate_count}`}
           />
           <Stat
@@ -125,13 +98,11 @@ export function PolicyDiagnosticsPanel({
           <table className="data-table diagnostics-table">
             <thead>
               <tr>
-                <th>candidate</th>
-                <th>family</th>
+                <th>inbound schedule</th>
                 <th>status</th>
                 <th>makespan</th>
                 <th>wall</th>
                 <th>knobs</th>
-                <th>protected bytes</th>
                 <th>note</th>
               </tr>
             </thead>
@@ -148,12 +119,10 @@ export function PolicyDiagnosticsPanel({
                     <span className="diagnostics-candidate-name">{c.name}</span>
                     {c.selected && <span className="tag diagnostics-winner">winner</span>}
                   </td>
-                  <td>{c.family}</td>
                   <td>{c.status}</td>
                   <td className="num">{fmtTimeUs(c.makespan_us)}</td>
                   <td className="num">{fmtWall(c.wall_time_s)}</td>
-                  <td>{candidateKnobs(c)}</td>
-                  <td className="num">{fmtBytes(c.protected_bytes)}</td>
+                  <td>{scheduleKnobs(c)}</td>
                   <td className="diagnostics-note" title={c.error ?? ""}>
                     {c.error ?? "-"}
                   </td>

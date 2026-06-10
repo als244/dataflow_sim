@@ -325,8 +325,6 @@ downsample.
    `(num_seqs, seqlen)` and writes a results table.
    `scripts/compare_policies.py` reuses one bare chain and runs each
    registered policy against it for an apples-to-apples comparison.
-   `scripts/pressurefit_mode_sweep.py` compares PressureFit's `auto`,
-   `fast`, and `full` candidate portfolios.
 3. **Webapp.** The UI POSTs a model+hardware+training-config selection to
    `POST /api/simulate`. The server builds the bare chain via
    `build_transformer_training_workload`, applies the user-selected policy, runs the

@@ -34,7 +34,6 @@ def _payload(**overrides):
         "optimizer": "none",
         "final_model_state_on_host": False,
         "policy": "pressurefit",
-        "pressurefit_mode": "auto",
         "window_size": 2,
         "device_capacity_gb": 1,
     }
@@ -52,14 +51,11 @@ def test_simulate_keeps_exact_step_count():
     assert "f_3_0_0" in task_ids
 
 
-def test_simulate_exposes_pressurefit_mode_diagnostics():
-    body = simulate(
-        SimulationParams.model_validate(_payload(pressurefit_mode="fast"))
-    )
+def test_simulate_exposes_pressurefit_diagnostics():
+    body = simulate(SimulationParams.model_validate(_payload()))
     diagnostics = body["policy_diagnostics"]
 
-    assert diagnostics["portfolio_mode"] == "fast"
-    assert diagnostics["effective_portfolio_mode"] == "fast"
+    assert diagnostics["candidate_count"] == 3
     assert diagnostics["selected_candidate"]
     assert any(c["selected"] for c in diagnostics["candidates"])
 

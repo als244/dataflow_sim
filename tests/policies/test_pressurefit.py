@@ -2,16 +2,11 @@ from __future__ import annotations
 
 from dataflow_sim.policies._common import _compute_ideal_starts, _object_sizes, _object_uses_by_task_idx
 from dataflow_sim.policies.pressurefit import (
-    _InitialProtectionJob,
     _build_facts,
     _extend_inbound_lead_time,
-    _initial_protection_headroom,
-    _initial_protection_jobs_from_probe,
-    _initial_protection_sets,
     _initial_residency,
     _pressure_initial_placement,
     _reduce_to_fit,
-    _select_initial_protection_set,
     apply_pressurefit_policy,
     plan_pressurefit_policy,
 )
@@ -77,22 +72,31 @@ def test_pressurefit_runs_training_chain_at_moderate_cap():
 
 def test_pressurefit_diagnostics_describe_selected_candidate():
     bare = build_bare_training_chain(L=5)
-    annotated, diagnostics = plan_pressurefit_policy(
-        bare,
-        device_capacity=800,
-        portfolio_mode="fast",
-    )
+    annotated, diagnostics = plan_pressurefit_policy(bare, device_capacity=800)
     log = run(annotated)
     makespan = max(iv.end for iv in log.task_intervals)
 
-    assert diagnostics.portfolio_mode == "fast"
-    assert diagnostics.effective_portfolio_mode == "fast"
     assert diagnostics.selected_makespan_us == makespan
     assert diagnostics.valid_candidate_count > 0
     selected = [c for c in diagnostics.candidates if c.selected]
     assert len(selected) == 1
     assert selected[0].name == diagnostics.selected_candidate
     assert selected[0].status == "valid"
+
+
+def test_pressurefit_evaluates_exactly_three_inbound_schedules():
+    bare = build_bare_training_chain(L=5)
+    _annotated, diagnostics = plan_pressurefit_policy(bare, device_capacity=800)
+
+    assert [c.name for c in diagnostics.candidates] == [
+        "packed-fifo",
+        "interval-entry",
+        "latest-safe",
+    ]
+    assert diagnostics.candidate_count == 3
+    # The selected plan is the fastest valid one.
+    valid = [c for c in diagnostics.candidates if c.status == "valid"]
+    assert diagnostics.selected_makespan_us == min(c.makespan_us for c in valid)
 
 
 def test_pressurefit_can_release_disposable_mutation_after_final_use():
@@ -190,52 +194,6 @@ def test_pressurefit_uses_timing_relief_when_static_boundary_is_impossible():
     run(annotated)
 
 
-def test_pressurefit_can_delay_prefetch_to_preserve_next_task_capacity():
-    bare = TaskChain(
-        initial_memory=[
-            Object(id="input_0", size=10, location="device", type="activation"),
-            Object(id="input_1", size=30, location="host", type="activation"),
-            Object(id="W", size=10, location="host", type="weight"),
-            Object(id="dW", size=10, location="host", type="gradient"),
-        ],
-        tasks=[
-            Task(
-                id="f_0_0",
-                inputs=["input_0", "W"],
-                outputs=[OutputAlloc(id="A_0_0", size=70, location="device")],
-                runtime=1,
-            ),
-            Task(id="r_0_0", inputs=["A_0_0", "W"], outputs=[], runtime=0),
-            Task(
-                id="b_0_0",
-                inputs=["A_0_0", "W", "dW"],
-                outputs=[OutputAlloc(id="dy_0_0", size=10, location="device")],
-                runtime=100,
-                mutates_inputs=["dW"],
-            ),
-            Task(
-                id="f_0_1",
-                inputs=["input_1", "W"],
-                outputs=[OutputAlloc(id="A_0_1", size=1, location="device")],
-                runtime=1,
-            ),
-        ],
-        device_capacity=120,
-        bandwidth_h2d=1,
-        bandwidth_d2h=10,
-    )
-
-    annotated = apply_pressurefit_policy(bare)
-    run(annotated)
-
-    prefetch_by_task = {
-        task.id: [trig.obj_id for trig in task.prefetch_after]
-        for task in annotated.tasks
-    }
-    assert "input_1" not in prefetch_by_task["r_0_0"]
-    assert "input_1" in prefetch_by_task["b_0_0"]
-
-
 def test_pressurefit_extends_prefetch_intervals_under_strict_cap():
     bare = TaskChain(
         initial_memory=[
@@ -268,72 +226,3 @@ def test_pressurefit_extends_prefetch_intervals_under_strict_cap():
     assert intervals["y"] == [(1, 3)]
 
 
-def test_pressurefit_initial_protection_uses_deadline_demand():
-    bare = TaskChain(
-        initial_memory=[
-            Object(id="x", size=20, location="host", type="other"),
-            Object(id="y", size=20, location="host", type="other"),
-            Object(id="z", size=20, location="host", type="other"),
-        ],
-        tasks=[
-            Task(id="t0", inputs=[], outputs=[], runtime=10),
-            Task(id="t1", inputs=["x"], outputs=[], runtime=10),
-            Task(id="t2", inputs=["y"], outputs=[], runtime=10),
-            Task(id="t3", inputs=["z"], outputs=[], runtime=10),
-        ],
-        device_capacity=40,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
-    )
-    facts = _build_facts(bare)
-
-    assert _initial_protection_headroom(facts, bare.device_capacity) == 40
-    jobs = _initial_protection_jobs_from_probe(
-        facts, bare.device_capacity, bare.bandwidth_h2d,
-    )
-    assert [(job.oid, job.release_t, job.deadline, job.tau) for job in jobs] == [
-        ("z", 20, 30, 20),
-    ]
-    protection_sets = _initial_protection_sets(
-        facts, bare.device_capacity, bare.bandwidth_h2d,
-    )
-    assert {"z"} in protection_sets
-    headroom = _initial_protection_headroom(facts, bare.device_capacity)
-    assert all(
-        sum(facts.sizes[oid] for oid in protected) <= headroom
-        for protected in protection_sets
-    )
-
-    intervals = _initial_residency(facts, initial_device={"x", "y", "z"})
-    _reduce_to_fit(
-        facts, intervals, bare.device_capacity, protected_initial={"z"},
-    )
-
-    assert intervals["z"] == [(-1, 2)]
-    assert intervals["y"] == [(1, 1)]
-
-
-def test_pressurefit_initial_protection_selection_uses_capacity_and_inbound_work():
-    jobs = [
-        _InitialProtectionJob(
-            oid="large",
-            release_t=10,
-            deadline=40,
-            tau=30,
-            first_use=4,
-            size=30,
-            residency_cost=1200,
-        ),
-        _InitialProtectionJob(
-            oid="small",
-            release_t=10,
-            deadline=40,
-            tau=5,
-            first_use=4,
-            size=5,
-            residency_cost=200,
-        ),
-    ]
-
-    assert _select_initial_protection_set(jobs, headroom=5) == {"small"}
-    assert _select_initial_protection_set(jobs, headroom=30) == {"large"}

@@ -35,13 +35,11 @@ class _PressureReducer:
         intervals: dict[str, list[tuple[int, int]]],
         cap: int,
         extra_pressure: list[int],
-        protected_initial: set[str],
     ) -> None:
         self.facts = facts
         self.intervals = intervals
         self.cap = cap
         self.extra_pressure = extra_pressure
-        self.protected_initial = protected_initial
         self.anchors_by_oid = {oid: _anchors(oid, facts) for oid in intervals}
         self.pool = _pool_size(facts, intervals)
         self.overflow_heap = [
@@ -225,8 +223,6 @@ class _PressureReducer:
         if gap_len <= 0:
             return None
         drops_init = left_end is None and interval_start == -1
-        if drops_init and oid in self.protected_initial:
-            return None
         left_dirty = (
             left_end is not None
             and any(
@@ -305,18 +301,13 @@ def _reduce_to_fit(
     intervals: dict[str, list[tuple[int, int]]],
     cap: int | None,
     extra_pressure: list[int] | None = None,
-    protected_initial: set[str] | None = None,
 ) -> None:
     """Mutate `intervals` into a pressure-fit interval set."""
     if cap is None:
         return
     if extra_pressure is None:
         extra_pressure = [0] * (facts.n + 1)
-    if protected_initial is None:
-        protected_initial = set()
-    _PressureReducer(
-        facts, intervals, cap, extra_pressure, protected_initial,
-    ).run()
+    _PressureReducer(facts, intervals, cap, extra_pressure).run()
 
 
 def _subtract_removed_interval_pressure(

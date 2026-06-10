@@ -23,7 +23,6 @@ def _emit_chain(
     *,
     pack_inbound: bool = True,
     respect_interval_start: bool = False,
-    latest_inbound: bool = False,
 ) -> TaskChain:
     releases: list[list[str]] = [[] for _ in range(facts.n)]
     offloads: list[list[str]] = [[] for _ in range(facts.n)]
@@ -82,11 +81,7 @@ def _emit_chain(
             else:
                 releases[fire_task].append(oid)
 
-    prefetches, prefetch_order = _assign_prefetch_jobs(
-        prefetch_jobs,
-        facts,
-        latest_only=latest_inbound,
-    )
+    prefetches, prefetch_order = _assign_prefetch_jobs(prefetch_jobs, facts)
     for i, oids in enumerate(unscheduled_prefetches):
         if oids:
             prefetches[i].extend(oids)

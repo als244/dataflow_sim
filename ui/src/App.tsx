@@ -11,7 +11,6 @@ import {
   type Presets,
   type Policy,
   type OptimizerMode,
-  type PressureFitMode,
 } from "./components/InputPanel";
 import { ComparePoliciesPanel } from "./components/ComparePoliciesPanel";
 import { SubOpBreakdownPanel, type Breakdown } from "./components/SubOpBreakdownPanel";
@@ -114,13 +113,6 @@ function initialParams(): SimulationParams {
       out.policy = policy as Policy;
     }
   }
-  const pressurefitMode = url.get("pressurefit_mode");
-  if (pressurefitMode !== null) {
-    const VALID_PRESSUREFIT_MODES: PressureFitMode[] = ["auto", "fast", "full"];
-    if ((VALID_PRESSUREFIT_MODES as string[]).includes(pressurefitMode)) {
-      out.pressurefit_mode = pressurefitMode as PressureFitMode;
-    }
-  }
   const ws = url.get("window_size");
   if (ws !== null) {
     const n = Number(ws);
@@ -149,7 +141,7 @@ function syncUrl(params: SimulationParams): void {
   url.searchParams.set("optimizer", params.optimizer);
   url.searchParams.set("final_model_state_on_host", params.final_model_state_on_host ? "true" : "false");
   url.searchParams.set("policy", params.policy);
-  url.searchParams.set("pressurefit_mode", params.pressurefit_mode);
+  url.searchParams.delete("pressurefit_mode");
   url.searchParams.set("window_size", String(params.window_size));
   url.searchParams.set(
     "device_capacity_gb",

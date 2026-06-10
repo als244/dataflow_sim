@@ -199,9 +199,8 @@ def _prefetch_job(
 def _assign_prefetch_jobs(
     jobs: list[_PrefetchJob],
     facts: _Facts,
-    *,
-    latest_only: bool = False,
 ) -> tuple[list[list[str]], list[dict[str, int]]]:
+    """Pack inbound jobs backward from their deadlines as one FIFO queue."""
     prefetches: list[list[str]] = [[] for _ in range(facts.n)]
     prefetch_order: list[dict[str, int]] = [dict() for _ in range(facts.n)]
     if not jobs:
@@ -210,22 +209,19 @@ def _assign_prefetch_jobs(
     next_start = math.inf
     assignments: list[tuple[int, _PrefetchJob]] = []
     for job in sorted(jobs, key=lambda j: (j.deadline, j.latest, j.oid), reverse=True):
-        fire = job.latest
-        if not latest_only:
-            latest_finish = (
-                job.deadline if math.isinf(next_start)
-                else min(job.deadline, next_start)
-            )
-            desired_start = latest_finish - job.tau
-            for t in range(job.latest, job.earliest - 1, -1):
-                if facts.task_end[t] <= desired_start:
-                    fire = t
-                    break
-            else:
-                fire = job.earliest
+        latest_finish = (
+            job.deadline if math.isinf(next_start)
+            else min(job.deadline, next_start)
+        )
+        desired_start = latest_finish - job.tau
+        for t in range(job.latest, job.earliest - 1, -1):
+            if facts.task_end[t] <= desired_start:
+                fire = t
+                break
+        else:
+            fire = job.earliest
         assignments.append((fire, job))
-        if not latest_only:
-            next_start = max(facts.task_end[fire], desired_start)
+        next_start = max(facts.task_end[fire], desired_start)
 
     for fire, job in assignments:
         prefetches[fire].append(job.oid)

@@ -43,7 +43,6 @@ def _apply_physical_repair(
     facts: _Facts,
     intervals: dict[str, list[tuple[int, int]]],
     extra_pressure: list[int],
-    reserve_pressure: int,
 ) -> bool:
     """Convert one simulator failure into extra pressure for one boundary."""
     physical = _physical_pressure_from_error(msg, facts, bare)
@@ -54,7 +53,7 @@ def _apply_physical_repair(
     required_extra = observed_need - modeled_need
     if required_extra <= extra_pressure[boundary_idx]:
         required_extra = extra_pressure[boundary_idx] + observed_overage
-    extra_pressure[boundary_idx] = max(reserve_pressure, 1, required_extra)
+    extra_pressure[boundary_idx] = max(1, required_extra)
     return True
 
 

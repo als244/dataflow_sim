@@ -5,15 +5,8 @@ import math
 from dataclasses import replace
 
 from dataflow_sim.policies._common import _UseEvent
-from dataflow_sim.policies.pressurefit_aux.core import (
-    _Facts,
-    _anchors,
-    _build_facts,
-    _fire_task_for_interval,
-    _first_use_in_interval,
-    _transfer_time,
-)
-from dataflow_sim.policies.pressurefit_aux.types import _IntervalSet, _SeedPortfolio
+from dataflow_sim.policies.pressurefit_aux.core import _Facts, _build_facts
+from dataflow_sim.policies.pressurefit_aux.types import _IntervalSet
 from dataflow_sim.core.schema import TaskChain
 
 
@@ -137,69 +130,3 @@ def _initial_residency(
 
 def _copy_intervals(seed: _IntervalSet) -> _IntervalSet:
     return {oid: list(ivs) for oid, ivs in seed.items()}
-
-
-def _build_candidate_seeds(
-    facts: _Facts,
-    base_intervals: _IntervalSet,
-    inbound_bw: int | None,
-    outbound_bw: int | None,
-) -> _SeedPortfolio:
-    """Build seed interval sets shared by candidate specs."""
-    all_initial_host = {oid for oid in facts.host_ids if facts.uses.get(oid)}
-    return {
-        "base": base_intervals,
-        "source-gap": _trim_source_idle_gaps(
-            facts, base_intervals, inbound_bw, outbound_bw,
-        ),
-        "all-host": _initial_residency(facts, all_initial_host),
-    }
-
-
-def _trim_source_idle_gaps(
-    facts: _Facts,
-    intervals: _IntervalSet,
-    inbound_bw: int | None,
-    outbound_bw: int | None,
-) -> _IntervalSet:
-    """Build the source-gap seed by splitting long source-state no-use gaps."""
-    out: _IntervalSet = {}
-    source_ids = facts.host_ids | facts.device_ids
-    for oid, ivs in intervals.items():
-        if oid not in source_ids:
-            out[oid] = list(ivs)
-            continue
-        anchors = _anchors(oid, facts)
-        size = facts.sizes[oid]
-        inbound_tau = _transfer_time(size, inbound_bw)
-        new_ivs: list[tuple[int, int]] = []
-        for a, b in sorted(ivs):
-            anchors_in = [x for x in anchors if a <= x <= b]
-            if len(anchors_in) < 2:
-                new_ivs.append((a, b))
-                continue
-
-            start = a
-            for left_anchor, right_anchor in zip(anchors_in, anchors_in[1:]):
-                if right_anchor - left_anchor <= 1:
-                    continue
-                first_use = _first_use_in_interval(oid, right_anchor, b, facts)
-                left_fire = _fire_task_for_interval(oid, start, left_anchor, facts)
-                if first_use is None or left_fire is None:
-                    continue
-
-                dirty = any(
-                    start <= m - 1 <= left_anchor
-                    for m in facts.mutators.get(oid, set())
-                )
-                needs_writeback = dirty or oid not in facts.host_ids
-                if not needs_writeback:
-                    continue
-                outbound_tau = _transfer_time(size, outbound_bw)
-                gap_time = facts.task_start[first_use] - facts.task_end[left_fire]
-                if gap_time >= outbound_tau + inbound_tau:
-                    new_ivs.append((start, left_anchor))
-                    start = right_anchor
-            new_ivs.append((start, b))
-        out[oid] = new_ivs
-    return out
