@@ -80,10 +80,6 @@ def _precompute_task_starts(chain: TaskChain) -> dict[str, int]:
     return starts
 
 
-def _location_total(pool: dict[PoolKey, _PoolEntry], loc: Location) -> int:
-    return sum(e.size for (_, l), e in pool.items() if l == loc)
-
-
 def _device_memory_bands(pool: dict[PoolKey, _PoolEntry]) -> dict[str, int]:
     bands = {
         "weight": 0,
@@ -229,6 +225,9 @@ def _run_impl(
         initial_alloc[obj.location] += obj.size
     _check_initial_capacity(chain, initial_alloc)
     peak_device_bytes = initial_alloc["device"]
+    # Running per-location byte totals, kept in sync at every pool add/del so
+    # capacity checks and peak tracking are O(1) instead of summing the pool.
+    loc_total = {"host": initial_alloc["host"], "device": initial_alloc["device"]}
 
     # Reference-stream timestamps are only needed for UI-grade snapshots.
     ref_starts = (
@@ -258,7 +257,7 @@ def _run_impl(
         cap = chain.device_capacity if loc == "device" else chain.host_capacity
         if cap is None:
             return INF
-        return cap - _location_total(pool, loc)
+        return cap - loc_total[loc]
 
     def transfer_runtime(direction: TransferDirection, size: int, override: int | None) -> int:
         if override is not None:
@@ -294,7 +293,7 @@ def _run_impl(
         **kwargs,
     ) -> None:
         nonlocal peak_device_bytes
-        peak_device_bytes = max(peak_device_bytes, _location_total(pool, "device"))
+        peak_device_bytes = max(peak_device_bytes, loc_total["device"])
         emit_memory_trace(t)
         if not snapshots:
             return
@@ -326,7 +325,7 @@ def _run_impl(
         # the same size, those bytes are already counted — don't double-count.
         if dst_cap is not None:
             already_counted = existing_dst.size if existing_dst is not None else 0
-            free = dst_cap - _location_total(pool, dst_loc) + already_counted
+            free = dst_cap - loc_total[dst_loc] + already_counted
             if free < tx.src_size:
                 return  # block the queue head
 
@@ -340,6 +339,7 @@ def _run_impl(
                     size=tx.src_size, state="inbound",
                     location="device", type=tx.dst_type or "other",
                 )
+                loc_total["device"] += tx.src_size
             else:
                 existing_dst.state = "inbound"
         else:  # d2h
@@ -349,6 +349,7 @@ def _run_impl(
                     size=tx.src_size, state="inbound",
                     location="host", type=tx.dst_type or "other",
                 )
+                loc_total["host"] += tx.src_size
             else:
                 if existing_dst.size != tx.src_size:
                     raise ValueError(
@@ -398,6 +399,7 @@ def _run_impl(
         if direction == "h2d":
             pool[(obj_id, "device")].state = "live"
         else:  # d2h: free device source, host dest becomes live
+            loc_total["device"] -= pool[(obj_id, "device")].size
             del pool[(obj_id, "device")]
             pool[(obj_id, "host")].state = "live"
         in_flight[direction] = None
@@ -554,7 +556,7 @@ def _run_impl(
                 if e is None or e.state != "live":
                     return False
             if device_outputs_size > 0 and chain.device_capacity is not None:
-                if _location_total(pool, "device") + device_outputs_size > chain.device_capacity:
+                if loc_total["device"] + device_outputs_size > chain.device_capacity:
                     return False
             return True
 
@@ -578,7 +580,7 @@ def _run_impl(
                 if missing_inputs:
                     msg.append(f"inputs {missing_inputs} not live on device")
                 if device_outputs_size > 0 and chain.device_capacity is not None:
-                    used = _location_total(pool, "device")
+                    used = loc_total["device"]
                     if used + device_outputs_size > chain.device_capacity:
                         msg.append(
                             f"device {used}+{device_outputs_size} bytes > cap "
@@ -593,10 +595,10 @@ def _run_impl(
 
         # 3. host-output capacity check (no host stall mechanism; raise if insufficient)
         host_outputs_size = sum(out.size for out in task.outputs if out.location == "host")
-        if chain.host_capacity is not None and _location_total(pool, "host") + host_outputs_size > chain.host_capacity:
+        if chain.host_capacity is not None and loc_total["host"] + host_outputs_size > chain.host_capacity:
             raise ValueError(
                 f"task {task.id!r} cannot allocate {host_outputs_size} on host: "
-                f"used={_location_total(pool, 'host')}, capacity={chain.host_capacity}"
+                f"used={loc_total['host']}, capacity={chain.host_capacity}"
             )
 
         # 4. reserve outputs
@@ -610,6 +612,7 @@ def _run_impl(
             pool[out_key] = _PoolEntry(
                 size=out.size, state="reserved", location=out.location, type=out.type
             )
+            loc_total[out.location] += out.size
 
         # Hard invariant: after reserving outputs, device pool must not
         # exceed capacity. The drain loop above should have ensured this;
@@ -619,7 +622,7 @@ def _run_impl(
         # with pool > cap (subsequent triggers would emit weird errors
         # later, far from the root cause).
         if chain.device_capacity is not None:
-            used = _location_total(pool, "device")
+            used = loc_total["device"]
             if used > chain.device_capacity:
                 raise ValueError(
                     f"task {task.id!r} over-committed device: pool={used} bytes "
@@ -657,6 +660,7 @@ def _run_impl(
                     raise ValueError(
                         f"task {task.id!r} cannot release {obj_id!r}: state={entry.state!r} (only live)"
                     )
+                loc_total[COMPUTE_INPUT_LOC] -= entry.size
                 del pool[release_key]
             emit(
                 "release",

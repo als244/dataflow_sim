@@ -84,16 +84,17 @@ def test_pressurefit_diagnostics_describe_selected_candidate():
     assert selected[0].status == "valid"
 
 
-def test_pressurefit_evaluates_exactly_three_inbound_schedules():
+def test_pressurefit_evaluates_exactly_four_inbound_schedules():
     bare = build_bare_training_chain(L=5)
     _annotated, diagnostics = plan_pressurefit_policy(bare, device_capacity=800)
 
     assert [c.name for c in diagnostics.candidates] == [
         "packed-fifo",
+        "packed-fit",
         "interval-entry",
         "latest-safe",
     ]
-    assert diagnostics.candidate_count == 3
+    assert diagnostics.candidate_count == 4
     # The selected plan is the fastest valid one.
     valid = [c for c in diagnostics.candidates if c.status == "valid"]
     assert diagnostics.selected_makespan_us == min(c.makespan_us for c in valid)
@@ -191,6 +192,52 @@ def test_pressurefit_uses_timing_relief_when_static_boundary_is_impossible():
         for task in annotated.tasks[1:3]
         for trig in task.prefetch_after
     )
+    run(annotated)
+
+
+def test_packed_fifo_clamps_prefetch_fire_to_pressure():
+    """Deadline packing must not fire a prefetch into boundaries whose
+    modeled bytes leave no room for the transfer's destination."""
+    from dataflow_sim.policies.pressurefit import _emit_chain
+
+    bare = TaskChain(
+        initial_memory=[
+            # `hog` pins boundaries -1..1 (anchors at every gap), leaving no
+            # room for x's 30 bytes before boundary 2.
+            Object(id="hog", size=90, location="device", type="other"),
+            Object(id="x", size=30, location="host", type="other"),
+        ],
+        tasks=[
+            Task(id="t0", inputs=["hog"], outputs=[], runtime=10),
+            Task(id="t1", inputs=["hog"], outputs=[], runtime=10),
+            Task(id="t2", inputs=["hog"], outputs=[], runtime=10),
+            Task(id="t3", inputs=[], outputs=[], runtime=10),
+            Task(id="t4", inputs=["x"], outputs=[], runtime=10),
+        ],
+        device_capacity=100,
+        bandwidth_h2d=1,
+        bandwidth_d2h=1,
+    )
+    facts = _build_facts(bare)
+    intervals = _initial_residency(facts, initial_device=set())
+    _reduce_to_fit(facts, intervals, bare.device_capacity)
+    assert intervals["x"] == [(3, 3)]
+
+    unclamped = _emit_chain(bare, facts, intervals, pack_inbound=True)
+    assert "x" in [t.obj_id for t in unclamped.tasks[0].prefetch_after]
+
+    annotated = _emit_chain(
+        bare, facts, intervals, pack_inbound=True, clamp_inbound=True,
+    )
+    prefetch_by_task = {
+        task.id: [trig.obj_id for trig in task.prefetch_after]
+        for task in annotated.tasks
+    }
+    # Deadline packing alone fires x on t0 (tau=30, deadline=40), but
+    # boundaries 0..1 hold 90/100 bytes; the clamp slides the trigger to t2.
+    assert prefetch_by_task["t0"] == []
+    assert prefetch_by_task["t1"] == []
+    assert "x" in prefetch_by_task["t2"]
     run(annotated)
 
 

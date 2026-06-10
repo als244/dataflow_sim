@@ -55,7 +55,7 @@ def test_simulate_exposes_pressurefit_diagnostics():
     body = simulate(SimulationParams.model_validate(_payload()))
     diagnostics = body["policy_diagnostics"]
 
-    assert diagnostics["candidate_count"] == 3
+    assert diagnostics["candidate_count"] == 4
     assert diagnostics["selected_candidate"]
     assert any(c["selected"] for c in diagnostics["candidates"])
 

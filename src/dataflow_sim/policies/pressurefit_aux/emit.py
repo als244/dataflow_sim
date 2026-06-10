@@ -6,6 +6,7 @@ from dataclasses import replace
 from dataflow_sim.policies.pressurefit_aux.core import (
     _Facts,
     _fire_task_for_interval,
+    _pool_size,
 )
 from dataflow_sim.policies.pressurefit_aux.inbound_schedules import (
     _PrefetchJob,
@@ -23,6 +24,8 @@ def _emit_chain(
     *,
     pack_inbound: bool = True,
     respect_interval_start: bool = False,
+    clamp_inbound: bool = False,
+    extra_pressure: list[int] | None = None,
 ) -> TaskChain:
     releases: list[list[str]] = [[] for _ in range(facts.n)]
     offloads: list[list[str]] = [[] for _ in range(facts.n)]
@@ -81,7 +84,18 @@ def _emit_chain(
             else:
                 releases[fire_task].append(oid)
 
-    prefetches, prefetch_order = _assign_prefetch_jobs(prefetch_jobs, facts)
+    pool = (
+        _pool_size(facts, intervals)
+        if clamp_inbound and pack_inbound and bare.device_capacity is not None
+        else None
+    )
+    prefetches, prefetch_order = _assign_prefetch_jobs(
+        prefetch_jobs,
+        facts,
+        pool=pool,
+        cap=bare.device_capacity,
+        extra_pressure=extra_pressure,
+    )
     for i, oids in enumerate(unscheduled_prefetches):
         if oids:
             prefetches[i].extend(oids)

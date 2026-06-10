@@ -224,6 +224,7 @@ def _candidate_rows(
             "pack_inbound": candidate.pack_inbound,
             "extend_inbound": candidate.extend_inbound,
             "respect_interval_start": candidate.respect_interval_start,
+            "clamp_inbound": candidate.clamp_inbound,
             "error": candidate.error or "",
         })
     return rows
@@ -246,6 +247,7 @@ def _candidate_error_row(
         "pack_inbound": "",
         "extend_inbound": "",
         "respect_interval_start": "",
+        "clamp_inbound": "",
         "error": f"{type(error).__name__}: {error}",
     }
 
@@ -427,6 +429,7 @@ def _write_candidate_csv(path: Path, rows: list[SweepRow]) -> int:
         "pack_inbound",
         "extend_inbound",
         "respect_interval_start",
+        "clamp_inbound",
         "error",
     ]
     candidate_rows.sort(key=lambda row: (

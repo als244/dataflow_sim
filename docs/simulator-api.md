@@ -194,7 +194,7 @@ Canonical list of every selectable policy. Each entry is `(name, fn)`:
 | `roundtrip_planner` | auto | Constructive offload/prefetch round-trip packing |
 | `max_reduce` | auto | Analytic top-down: start at MAX residency, evict under cap pressure |
 | `min_grow` | auto | MIN-seeded over-shrink + beam search using the simulator as cost oracle |
-| `pressurefit` | auto | Pressure-fit interval planning; fastest of three verified inbound schedules |
+| `pressurefit` | auto | Pressure-fit interval planning; fastest of four verified inbound schedules |
 
 Each `fn` accepts a bare `TaskChain` (with `device_capacity` already set) and returns the annotated chain. Adapters in `get_all_policies()` paper over per-policy kwarg differences. Use this when iterating across all policies — adding a new policy means only updating this function.
 
@@ -203,7 +203,7 @@ Individual policy entry points (each module's `apply_<stem>_policy`) are also re
 PressureFit also exposes `plan_pressurefit_policy(...) -> (TaskChain, PressureFitDiagnostics)`.
 Use `apply_pressurefit_policy(...)` when you only need the annotated chain; use
 `plan_pressurefit_policy(...)` when you want per-schedule timings and which of
-the three inbound schedules was selected.
+the four inbound schedules was selected.
 
 ---
 

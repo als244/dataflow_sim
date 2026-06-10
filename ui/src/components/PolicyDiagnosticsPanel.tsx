@@ -8,6 +8,7 @@ export interface PressureFitCandidateDiagnostic {
   pack_inbound: boolean;
   extend_inbound: boolean;
   respect_interval_start: boolean;
+  clamp_inbound: boolean;
 }
 
 export interface PressureFitDiagnostics {
@@ -38,6 +39,7 @@ function fmtWall(s: number): string {
 function scheduleKnobs(c: PressureFitCandidateDiagnostic): string {
   const knobs: string[] = [];
   if (c.pack_inbound) knobs.push("packed");
+  if (c.clamp_inbound) knobs.push("pressure-clamped");
   if (c.extend_inbound) knobs.push("extend-inbound");
   if (c.respect_interval_start) knobs.push("interval-entry");
   return knobs.join(", ") || "latest-safe";

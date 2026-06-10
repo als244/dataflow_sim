@@ -152,26 +152,31 @@ class _PressureReducer:
         *,
         allow_timing_relief: bool,
     ) -> list[_SplitOption]:
-        out: list[_SplitOption] = []
         ivs = self.intervals.get(oid)
         if not ivs:
-            return out
+            return []
         p = self.facts.producer.get(oid, -1)
-        for idx, (a, b) in enumerate(ivs):
-            if not (_effective_a(a, p) <= boundary <= b):
-                continue
-            split_edges = self._split_edges_for_interval(
-                oid, a, b, boundary, allow_timing_relief=allow_timing_relief,
-            )
-            if split_edges is None:
-                continue
-            left_end, right_start = split_edges
-            option = self._ranked_split_option(
-                oid, idx, a, b, left_end, right_start,
-            )
-            if option is not None:
-                out.append(option)
-        return out
+        # Intervals are disjoint and ordered, and coverage windows
+        # [effective_a, b] never overlap, so at most one interval can cover
+        # `boundary`: the last one whose start `a` is <= boundary + 1.
+        idx = bisect_right(ivs, boundary + 1, key=lambda iv: iv[0]) - 1
+        if idx < 0:
+            return []
+        a, b = ivs[idx]
+        if not (_effective_a(a, p) <= boundary <= b):
+            return []
+        split_edges = self._split_edges_for_interval(
+            oid, a, b, boundary, allow_timing_relief=allow_timing_relief,
+        )
+        if split_edges is None:
+            return []
+        left_end, right_start = split_edges
+        option = self._ranked_split_option(
+            oid, idx, a, b, left_end, right_start,
+        )
+        if option is None:
+            return []
+        return [option]
 
     def _split_edges_for_interval(
         self,

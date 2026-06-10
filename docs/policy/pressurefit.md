@@ -3,7 +3,7 @@
 PressureFit is a standalone policy for linear `TaskChain`s. It plans device
 residency as intervals over task boundaries, removes optional residency where
 modeled byte pressure exceeds capacity, emits release/offload/prefetch triggers
-under each of three inbound schedules, verifies each annotated chain with the
+under each of four inbound schedules, verifies each annotated chain with the
 simulator, and returns the fastest valid one.
 
 The short version is:
@@ -11,7 +11,8 @@ The short version is:
 ```text
 one seed interval set
     -> deterministic pressure reduction
-    -> three inbound schedules (packed-fifo, interval-entry, latest-safe)
+    -> four inbound schedules (packed-fifo, packed-fit,
+                               interval-entry, latest-safe)
     -> trigger emission per schedule
     -> simulator verification / bounded repair
     -> fastest valid plan
@@ -20,7 +21,7 @@ one seed interval set
 Residency planning is shared and deterministic. The only branching in the
 policy is the inbound schedule: the best moment to fire a prefetch depends on
 inbound-FIFO congestion vs. memory pressure, which the analytic model cannot
-rank without replay, so the policy derives all three trigger placements and
+rank without replay, so the policy derives all four trigger placements and
 lets the simulator pick.
 
 Public entry point:
@@ -110,7 +111,7 @@ contains the precise definitions and ranking rules.
 - **Pressure-fit interval set:** the output of pressure reduction, before
   trigger emission turns interval entries/exits into annotations.
 - **Inbound schedule:** one rule for turning prefetched interval entries into
-  `prefetch_after` triggers. PressureFit derives three.
+  `prefetch_after` triggers. PressureFit derives four.
 
 ## Algorithm Summary
 
@@ -119,11 +120,13 @@ The planner flow is:
 1. **Build reference facts.** Compute ideal compute-stream times, object sizes,
    producers, uses, mutators, initial locations, final locations, and each next
    task's device output reservation.
-2. **Choose initial residency and build the seed.** Select which host-source
-   objects start on device (appendix: Initial Residency), then build one seed
-   interval set from liveness anchors.
-3. **For each of the three inbound schedules:**
-   a. copy the seed and run pressure reduction;
+2. **Choose initial residency, build the seed, reduce once.** Select which
+   host-source objects start on device (appendix: Initial Residency), build one
+   seed interval set from liveness anchors, and run pressure reduction once —
+   every schedule starts from the same pressure-fit interval set, so the base
+   reduction is shared and each schedule works on a copy.
+3. **For each of the four inbound schedules:**
+   a. copy the shared pressure-fit interval set;
    b. for the interval-entry schedule, extend inbound interval starts earlier
       where strict pressure still fits;
    c. emit release, offload, prefetch, and initial-copy annotations;
@@ -136,7 +139,7 @@ The planner flow is:
 The simulator never sees the analytic model. It sees only the annotated
 `TaskChain` produced by this pipeline.
 
-## The Three Inbound Schedules
+## The Four Inbound Schedules
 
 After pressure reduction, every non-initial, non-produced interval entry
 becomes an inbound prefetch. All schedules start from the same inbound job for
@@ -156,20 +159,38 @@ is emitted as `prefetch_after` on that task.
 | Schedule | Exact placement rule | When it wins |
 |---|---|---|
 | `packed-fifo` | Treat all inbound jobs as one FIFO queue. Sort jobs from latest deadline to earliest deadline, then pack them backward so each job finishes before its consumer deadline and before the next later-packed inbound job. If no such trigger exists inside the job window, use `earliest`. | Inbound queue congestion is the main risk: multiple transfers would otherwise pile up near their consumers. Empirically the most common winner. |
+| `packed-fit` | Packed FIFO with a pressure clamp. Firing on task `t` materializes destination bytes at boundaries `[t, a - 2]` that the interval model counts only from `a - 1`; the clamp slides each trigger later until every newly covered boundary still satisfies the strict capacity inequality, and commits accepted coverage so later-packed jobs see it. | Aggressive packing would over-commit bytes: tight caps where early arrivals strangle output reservations, and long chains where unclamped packing diverges in repair. The only packed schedule that is valid on every measured config. |
 | `interval-entry` | First run the lead-time extension pass (below), which moves interval entries earlier where strict capacity allows. Then place each inbound independently at the latest `fire` such that `task_end(fire) + inbound_runtime <= deadline`, tightened so the trigger is no later than the task immediately before the planned interval entry. | Transfers need lead time the unmodified intervals don't provide. |
 | `latest-safe` | Place each inbound independently at the latest `fire` in `[earliest, latest]` such that `task_end(fire) + inbound_runtime <= deadline`, assuming the inbound FIFO is otherwise idle. If none exists, use `latest`. | Memory pressure matters more than inbound congestion. The most conservative arrivals; the schedule that most often survives extreme cap tightness. |
 
+`packed-fifo` and `packed-fit` are deliberate complements: unclamped packing
+exploits the simulator's deferred destination allocation (a queued transfer
+costs nothing until it starts, so early enqueues get event-driven backpressure
+for free), while the clamp prevents the failure mode where an early transfer
+*does* start and then strangles a later output reservation. Neither dominates
+the other empirically, so both are derived.
+
+A queue-aware middle ground was prototyped and rejected (2026-06): charging a
+packed job's bytes from its estimated FIFO start (`max(enqueue, stream
+cursor)`) instead of its trigger boundary interpolates between the two
+variants rather than dominating either — on a 262-config grid it recovered
+unclamped packing's congestion wins but reintroduced its repair divergence on
+long tight chains (erroring on every 3,000+-task probe the strict clamp
+solves) and gave up the strict clamp's conservative-rescuer wins. The strict
+charge-from-trigger rule is what makes `packed-fit` the schedule that never
+overcommits.
+
 All schedules rely on simulator verification; a schedule that looks valid
 analytically can be rejected or repaired when FIFO timing creates real
-pressure. The three schedules' plans usually agree at loose caps and diverge
-under contention; the policy simply replays all three and keeps the fastest
+pressure. The schedules' plans usually agree at loose caps and diverge
+under contention; the policy simply replays all of them and keeps the fastest
 valid one (ties go to the table order above).
 
 ## Properties
 
 - **General:** decisions are made from schema-level facts, not semantic object
   categories.
-- **Fast:** three deterministic plans and three simulator replays; there is no
+- **Fast:** four deterministic plans and four simulator replays; there is no
   search over residency plans.
 - **Conservative first:** strict pressure reduction is preferred; timing relief
   is used only when strict reduction cannot make progress.
@@ -201,7 +222,7 @@ writes one row per config and schedule.
   inbound stream placement rather than local interval pressure reduction.
 - Physical verification repairs feasibility contradictions; it is not a general
   makespan optimizer.
-- All three schedules aim to finish each transfer by its consumer's ideal
+- All four schedules aim to finish each transfer by its consumer's ideal
   start. A chain whose only feasible plan deliberately fires a prefetch at the
   consumer's immediate predecessor and stalls through it (delaying the transfer
   to preserve a predecessor's output reservation) is reported infeasible even
@@ -219,7 +240,7 @@ sets), a slack-reserve pressure variant, a latest-trigger schedule, and
 size. A 286-config measurement (canonical llama3-8B grid on H100/RTX_5090 plus
 an optimizer/grad-accum grid, all candidates evaluated) showed:
 
-- the three retained schedules achieved the full portfolio's best makespan on
+- the three schedules retained at that time achieved the full portfolio's best makespan on
   ~89% of feasible configs and covered every config some candidate solved;
 - the removed candidates' wins were almost all under 2% (worst case ~10% on two
   tight-cap tiny-seqlen configs, won by initial-protection seeds);
@@ -313,7 +334,7 @@ emit_triggers(intervals, schedule):
 
 ### Implementation Module Map
 
-- `pressurefit.py`: public entry points, the three schedule specs, simulator
+- `pressurefit.py`: public entry points, the four schedule specs, simulator
   verification, fastest-valid selection;
 - `pressurefit_aux/types.py`: the schedule-spec and interval-set types;
 - `pressurefit_aux/core.py`: shared facts, interval accounting, and boundary

@@ -7,21 +7,23 @@ Standalone planner built around deterministic greedy pressure reduction:
   3. cut optional non-anchor residency gaps until every boundary satisfies
      the capacity inequality (pressure reduction);
   4. emit release/offload/prefetch triggers from the reduced intervals under
-     each of three inbound schedules (packed-fifo, interval-entry,
+     each of four inbound schedules (packed-fifo, packed-fit, interval-entry,
      latest-safe);
   5. verify each annotated chain with the simulator, translating bounded
      capacity contradictions back into boundary pressure and re-reducing;
   6. return the fastest valid annotated chain.
 
-The three inbound schedules are the policy's only branching: residency
+The four inbound schedules are the policy's only branching: residency
 planning is shared and deterministic, but the best moment to fire a prefetch
 depends on FIFO congestion vs. memory pressure, which the analytic model
 cannot rank without replay. Packed-fifo coordinates transfers backward from
-their deadlines (best under inbound congestion), interval-entry extends
-interval entries earlier when strict pressure allows (best when lead time is
-scarce), and latest-safe places each transfer independently as late as
-possible (most conservative arrivals; the variant that survives extreme
-pressure).
+their deadlines (best under inbound congestion), packed-fit adds a pressure
+clamp so packing never fires a trigger into boundaries whose modeled bytes
+leave no room for the destination (best at tight caps and on long chains),
+interval-entry extends interval entries earlier when strict pressure allows
+(best when lead time is scarce), and latest-safe places each transfer
+independently as late as possible (most conservative arrivals; the variant
+that survives extreme pressure).
 
 The policy is name-agnostic. It uses object source availability, size, uses,
 producer, and explicit mutation metadata.
@@ -63,10 +65,11 @@ from dataflow_sim.policies.pressurefit_aux.reducer import _reduce_to_fit
 from dataflow_sim.core.schema import TaskChain
 from dataflow_sim.engine.simulator import run as simulator_run
 
-# The three inbound schedules, in tie-break priority order: when two produce
+# The four inbound schedules, in tie-break priority order: when two produce
 # the same simulated makespan, the earlier entry is selected.
 _SCHEDULES: tuple[_ScheduleSpec, ...] = (
     _ScheduleSpec("packed-fifo", pack_inbound=True),
+    _ScheduleSpec("packed-fit", pack_inbound=True, clamp_inbound=True),
     _ScheduleSpec(
         "interval-entry",
         extend_inbound=True,
@@ -103,7 +106,7 @@ def plan_pressurefit_policy(
     """Return an annotated chain and per-schedule planning diagnostics.
 
     The algorithm spine is:
-      facts -> seed intervals -> shared pressure reduction -> three inbound
+      facts -> seed intervals -> shared pressure reduction -> four inbound
       schedules -> fastest valid annotated chain.
     """
     planning_start = time.perf_counter()
@@ -118,9 +121,13 @@ def plan_pressurefit_policy(
     )
     facts = _build_facts(bare)
     seed = _initial_residency(facts, initial_device)
+    # All schedules start from the same pressure-fit interval set (same seed,
+    # zero extra pressure), so reduce once and hand each schedule a copy.
+    base_fit = _copy_intervals(seed)
+    _reduce_to_fit(facts, base_fit, bare.device_capacity)
 
     results, candidate_diagnostics, first_error = _evaluate_schedules(
-        bare, facts, seed,
+        bare, facts, base_fit,
     )
 
     if not results:
@@ -171,18 +178,26 @@ def _simulated_makespan_us(annotated: TaskChain) -> int:
 def _verify_schedule_plan(
     bare: TaskChain,
     facts: _Facts,
-    seed: _IntervalSet,
+    base_fit: _IntervalSet,
     spec: _ScheduleSpec,
 ) -> tuple[int, TaskChain]:
-    intervals = _copy_intervals(seed)
+    intervals = _copy_intervals(base_fit)
     extra_pressure = [0] * (facts.n + 1)
-    _reduce_intervals(bare, facts, intervals, spec, extra_pressure)
+    # `base_fit` is already pressure-fit with zero extra pressure; only the
+    # interval-entry schedule has per-schedule planning work left up front.
+    if spec.extend_inbound:
+        _extend_inbound_lead_time(
+            facts, intervals, bare.device_capacity, bare.bandwidth_h2d,
+            extra_pressure,
+        )
 
     for _ in range(_PHYSICAL_REPAIR_LIMIT):
         annotated = _emit_chain(
             bare, facts, intervals,
             pack_inbound=spec.pack_inbound,
             respect_interval_start=spec.respect_interval_start,
+            clamp_inbound=spec.clamp_inbound,
+            extra_pressure=extra_pressure,
         )
         try:
             return _simulated_makespan_us(annotated), annotated
@@ -198,6 +213,8 @@ def _verify_schedule_plan(
         bare, facts, intervals,
         pack_inbound=spec.pack_inbound,
         respect_interval_start=spec.respect_interval_start,
+        clamp_inbound=spec.clamp_inbound,
+        extra_pressure=extra_pressure,
     )
     return _simulated_makespan_us(annotated), annotated
 
@@ -205,7 +222,7 @@ def _verify_schedule_plan(
 def _evaluate_schedules(
     bare: TaskChain,
     facts: _Facts,
-    seed: _IntervalSet,
+    base_fit: _IntervalSet,
 ) -> tuple[list[_CandidateResult], list[PressureFitCandidateDiagnostic], Exception | None]:
     results: list[_CandidateResult] = []
     diagnostics: list[PressureFitCandidateDiagnostic] = []
@@ -214,7 +231,7 @@ def _evaluate_schedules(
     for spec in _SCHEDULES:
         t0 = time.perf_counter()
         try:
-            makespan, annotated = _verify_schedule_plan(bare, facts, seed, spec)
+            makespan, annotated = _verify_schedule_plan(bare, facts, base_fit, spec)
             wall = time.perf_counter() - t0
             results.append(_CandidateResult(makespan, annotated, spec.name))
             diagnostics.append(_candidate_diagnostic(

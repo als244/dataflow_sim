@@ -20,6 +20,11 @@ class _PrefetchJob:
     deadline: int
     tau: int
     first_use: int
+    # Interval entry boundary `a`. The analytic model counts the object's
+    # bytes from boundary `a - 1`; firing the trigger on an earlier task
+    # materializes bytes at boundaries the model never charged.
+    entry_a: int
+    size: int
 
 
 def _extend_inbound_lead_time(
@@ -193,18 +198,42 @@ def _prefetch_job(
         deadline=facts.task_start[first_use],
         tau=tau,
         first_use=first_use,
+        entry_a=a,
+        size=facts.sizes[oid],
     )
 
 
 def _assign_prefetch_jobs(
     jobs: list[_PrefetchJob],
     facts: _Facts,
+    *,
+    pool: list[int] | None = None,
+    cap: int | None = None,
+    extra_pressure: list[int] | None = None,
 ) -> tuple[list[list[str]], list[dict[str, int]]]:
-    """Pack inbound jobs backward from their deadlines as one FIFO queue."""
+    """Pack inbound jobs backward from their deadlines as one FIFO queue.
+
+    When `pool` and `cap` are given, packing is pressure-aware: a job may
+    not fire earlier than device pressure allows. Firing on task `t`
+    materializes destination bytes at boundaries `[t, entry_a - 2]` that the
+    interval model counts only from `entry_a - 1`; the clamp slides the
+    trigger later until every newly covered boundary still satisfies the
+    strict capacity inequality, and commits the accepted coverage to `pool`
+    so subsequent jobs see it.
+
+    The clamp deliberately charges from the trigger boundary, not from a
+    queue-aware estimate of the actual transfer start. A queue-aware variant
+    (charge from `max(enqueue, stream cursor)`) was measured and rejected:
+    it interpolates between unclamped packing and this clamp — inheriting
+    unclamped packing's repair divergence on long tight chains while losing
+    this clamp's conservative-rescuer wins — instead of dominating either.
+    """
     prefetches: list[list[str]] = [[] for _ in range(facts.n)]
     prefetch_order: list[dict[str, int]] = [dict() for _ in range(facts.n)]
     if not jobs:
         return prefetches, prefetch_order
+    if extra_pressure is None:
+        extra_pressure = [0] * (facts.n + 1)
 
     next_start = math.inf
     assignments: list[tuple[int, _PrefetchJob]] = []
@@ -220,6 +249,10 @@ def _assign_prefetch_jobs(
                 break
         else:
             fire = job.earliest
+        if pool is not None and cap is not None:
+            fire = _pressure_clamped_fire(
+                job, fire, pool, cap, extra_pressure, facts,
+            )
         assignments.append((fire, job))
         next_start = max(facts.task_end[fire], desired_start)
 
@@ -227,3 +260,32 @@ def _assign_prefetch_jobs(
         prefetches[fire].append(job.oid)
         prefetch_order[fire][job.oid] = job.first_use
     return prefetches, prefetch_order
+
+
+def _pressure_clamped_fire(
+    job: _PrefetchJob,
+    fire: int,
+    pool: list[int],
+    cap: int,
+    extra_pressure: list[int],
+    facts: _Facts,
+) -> int:
+    """Slide `fire` later until its newly covered boundaries fit the cap."""
+    model_entry = job.entry_a - 1
+    if fire >= model_entry:
+        return fire
+    clamped = fire
+    for x in range(model_entry - 1, fire - 1, -1):
+        idx = x + 1
+        if (
+            pool[idx]
+            + job.size
+            + facts.next_outputs[idx]
+            + extra_pressure[idx]
+            > cap
+        ):
+            clamped = x + 1
+            break
+    for x in range(clamped, model_entry):
+        pool[x + 1] += job.size
+    return clamped

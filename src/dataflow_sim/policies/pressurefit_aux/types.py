@@ -16,6 +16,9 @@ class _ScheduleSpec:
     pack_inbound: bool = False
     extend_inbound: bool = False
     respect_interval_start: bool = False
+    # Pressure-clamped packing: a packed job may not fire earlier than the
+    # strict boundary model allows (see _pressure_clamped_fire).
+    clamp_inbound: bool = False
 
 
 _IntervalSet = dict[str, list[tuple[int, int]]]
