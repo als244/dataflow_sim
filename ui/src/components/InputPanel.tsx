@@ -85,7 +85,7 @@ export const DEFAULT_PARAMS: SimulationParams = {
   policy: "pressurefit",
   window_size: 2,
   device_capacity_gb: null,
-  recompute: false,
+  recompute: true,
 };
 
 export const POLICY_OPTIONS: { value: Policy; label: string; hint: string }[] = [
@@ -411,7 +411,7 @@ export function InputPanel({ params, setParams, onSubmit, onReset, locked, statu
               />
             </label>
             <label className="form-field form-field-checkbox">
-              <span className="form-field-label">recompute activations</span>
+              <span className="form-field-label">Allow Recompute</span>
               <input
                 type="checkbox"
                 checked={params.recompute}

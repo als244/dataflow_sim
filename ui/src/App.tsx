@@ -21,6 +21,7 @@ import {
   PolicyDiagnosticsPanel,
   type PressureFitDiagnostics,
 } from "./components/PolicyDiagnosticsPanel";
+import { MemorySweepPanel } from "./components/MemorySweepPanel";
 import type { EventLog } from "./types";
 import "./App.css";
 
@@ -309,11 +310,11 @@ export default function App() {
         presets={presets}
       />
 
+      <MemorySweepPanel params={params} />
+
       {log ? (
         <>
           <SummaryPanel summary={summary} />
-
-          <PolicyDiagnosticsPanel diagnostics={policyDiagnostics} />
 
           <details className="panel collapsible-panel">
             <summary className="collapsible-summary">Compute Block Breakdown</summary>
@@ -392,6 +393,8 @@ export default function App() {
           <AnnotatedPlanPanel chain={chain} />
 
           <ComparePoliciesPanel params={params} policies={POLICY_OPTIONS} />
+
+          <PolicyDiagnosticsPanel diagnostics={policyDiagnostics} />
         </>
       ) : (
         <div className="panel empty-panel">

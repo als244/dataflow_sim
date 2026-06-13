@@ -120,7 +120,7 @@ function Section({ title, rows, total_us }: { title: string; rows: SubOpTimingRo
                 <td className="num">{fmtFlops(flopsTotal)}</td>
                 <td className={effFlopsClass}>{fmtFlops(effFlopsTotal)}</td>
                 <td className="num">{fmtBytes(r.bytes * r.count)}</td>
-                <td className="num">{r.math_us === null ? "—" : r.math_us.toLocaleString()}</td>
+                <td className="num">{r.math_us === null ? "—" : (r.math_us * r.count).toLocaleString()}</td>
                 <td className="num">{(r.mem_us * r.count).toLocaleString()}</td>
                 <td className="num">{r.total_us.toLocaleString()}</td>
                 <td>{isMemKind ? <span className="dim">—</span> : boundChip}</td>

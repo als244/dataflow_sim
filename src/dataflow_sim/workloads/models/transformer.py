@@ -99,7 +99,7 @@ class SubOpTiming:
                                    # use for section-level effective-TFLOPS so
                                    # the result doesn't accumulate ceil errors
     total_us: int
-    bound_by: SubOpKind            # always "memory" for memory-bound sub-ops
+    bound_by: SubOpKind            # exact binding term; always "memory" for memory sub-ops
     effective_tflops: float | None # None for memory-bound; uses effective_flops
                                    # and the un-rounded binding time so pure
                                    # matmul-bound ops show exactly peak × eff
@@ -590,7 +590,7 @@ def time_subop(subop: SubOp, hw: HardwareSpec) -> SubOpTiming:
         per_call_us = max(math_us, mem_us)
         per_call_us_exact = max(math_us_exact, mem_us_exact)
         total_us = per_call_us * subop.count
-        bound_by: SubOpKind = "memory" if mem_us > math_us else "compute"
+        bound_by: SubOpKind = "memory" if mem_us_exact > math_us_exact else "compute"
         # Effective TFLOPS uses the un-rounded binding seconds so a pure
         # compute-bound matmul shows exactly peak × eff (no ceil bias).
         binding_seconds = max(math_seconds, mem_seconds)

@@ -104,11 +104,13 @@ function fmtScaledTime(us: number, unit: TooltipTimeUnit): string {
   });
 }
 
-function fmtTimeRange(startUs: number, endUs: number): string {
+function fmtDurationAndRange(startUs: number, endUs: number): string {
   const unit = chooseTooltipTimeUnit(startUs, endUs);
+  const duration = fmtScaledTime(Math.max(0, endUs - startUs), unit);
   const start = fmtScaledTime(startUs, unit);
   const end = fmtScaledTime(endUs, unit);
-  return start === end ? `${start} ${unit.label}` : `${start}-${end} ${unit.label}`;
+  const range = start === end ? `${start}` : `${start}-${end}`;
+  return `${duration} ${unit.label}, ${range} ${unit.label}`;
 }
 
 function niceTickStep(durationUs: number, plotWidthPx: number): number {
@@ -318,7 +320,7 @@ export function ComputeTimeline({
                   }}
                   onMouseEnter={() => onHoverTask(iv.task_id)}
                   onMouseLeave={() => onHoverTask(null)}
-                  title={`${displayLabel(iv)} [${fmtTimeRange(iv.start, iv.end)}]`}
+                  title={`${displayLabel(iv)} [${fmtDurationAndRange(iv.start, iv.end)}]`}
                 >
                   <span className="bar-label">{displayLabel(iv)}</span>
                 </div>

@@ -388,6 +388,15 @@ def test_per_call_us_exact_unrounded(h100):
     assert t.per_call_us == math.ceil(t.per_call_us_exact)
 
 
+def test_bound_by_uses_exact_time_not_ceil_tie(h100):
+    """Rounded µs can tie even when the roofline term does not."""
+    s = SubOp(name="rounded_tie", kind="compute", flops=707_000_000,
+              bytes=3_240_000, eff_name="matmul", count=1)
+    t = time_subop(s, h100)
+    assert t.math_us == t.mem_us == 2
+    assert t.bound_by == "memory"
+
+
 def test_compute_subop_timing_memory_bound(h100):
     """Small flops, huge bytes → memory dominates."""
     s = SubOp(name="streaming", kind="compute", flops=1000, bytes=10**10,
