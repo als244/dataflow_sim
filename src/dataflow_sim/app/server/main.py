@@ -22,6 +22,7 @@ from dataflow_sim.policies.pressurefit import (
     apply_pressurefit_policy,
     plan_pressurefit_policy,
 )
+from dataflow_sim.planning.recompute import plan_with_recompute
 from dataflow_sim.engine.simulator import run as sim_run
 from dataflow_sim.core.schema import EventLog, TaskChain
 from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS, HardwareSpec
@@ -88,6 +89,10 @@ class SimulationParams(BaseModel):
     policy: Policy = "pressurefit"
     window_size: int = Field(2, ge=1, le=32)
     device_capacity_gb: float | None = Field(None, gt=0)
+    # When true, layer activations may be recomputed instead of kept/offloaded;
+    # an evidence-directed loop picks which, scored by the simulator. Off => no
+    # recompute (every layer saves its full activation, current behavior).
+    recompute: bool = False
 
 
 @app.get("/api/health")
@@ -151,6 +156,12 @@ def _apply_policy(params: SimulationParams, bare, cap_bytes: int | None) -> Task
     raise ValueError(f"unknown policy: {params.policy!r}")
 
 
+# Interactive bound on the recompute-selection refinement loop. The loop's
+# baseline + seed evaluations are unbudgeted, so a very large chain can still
+# exceed this; it caps the exploratory portion for UI responsiveness.
+RECOMPUTE_MAX_WALL_S = 30.0
+
+
 def _run_config(
     params: SimulationParams,
     spec: TransformerSpec,
@@ -162,7 +173,9 @@ def _run_config(
     bare = workload.chain
     breakdown = workload.metadata["breakdown"]
     diagnostics = None
-    if params.policy == "pressurefit":
+    if params.recompute:
+        chain, diagnostics = _plan_with_recompute(params, spec, hw, cfg, cap_bytes)
+    elif params.policy == "pressurefit":
         chain, diagnostics = plan_pressurefit_policy(
             bare, device_capacity=cap_bytes,
         )
@@ -175,6 +188,41 @@ def _run_config(
         sim_run(chain, snapshots=snapshots, memory_trace=not snapshots),
         diagnostics,
     )
+
+
+def _plan_with_recompute(
+    params: SimulationParams,
+    spec: TransformerSpec,
+    hw: HardwareSpec,
+    cfg: TrainingConfig,
+    cap_bytes: int | None,
+) -> tuple[TaskChain, PressureFitDiagnostics | None]:
+    """Select per-layer recompute levels (evidence loop), then return the
+    annotated chain for the chosen levels under the requested policy."""
+    base = build_transformer_training_workload(spec, hw, cfg)
+    rewrites = base.metadata["recompute_rewrites"]
+
+    def build_variant(levels) -> TaskChain:
+        chain = build_transformer_training_workload(
+            spec, hw, cfg, recompute=dict(levels),
+        ).chain
+        return replace(chain, device_capacity=cap_bytes) if cap_bytes is not None else chain
+
+    result = plan_with_recompute(
+        build_variant,
+        rewrites,
+        lambda b: _apply_policy(params, b, cap_bytes),
+        max_wall_s=RECOMPUTE_MAX_WALL_S,
+    )
+    # Re-derive PressureFit candidate diagnostics on the chosen variant so the
+    # UI panel still works. Deterministic — yields the same chain the loop
+    # selected. Other policies don't produce diagnostics (None, as without
+    # recompute).
+    if params.policy == "pressurefit":
+        return plan_pressurefit_policy(
+            build_variant(result.levels), device_capacity=cap_bytes,
+        )
+    return result.chain, None
 
 
 def _compute_summary(

@@ -442,7 +442,7 @@ def test_build_transformer_training_workload_llama3_h100(models, h100, cfg):
     # Breakdown structure
     assert set(breakdown.keys()) == {"fwd", "bwd", "head", "optimizer", "totals_us"}
     assert set(breakdown["totals_us"].keys()) == {
-        "layer_fwd", "layer_bwd", "head", "optimizer_step",
+        "layer_fwd", "layer_bwd", "head", "optimizer_step", "layer_recompute",
     }
     assert breakdown["optimizer"] == []
     assert breakdown["totals_us"]["optimizer_step"] == 0

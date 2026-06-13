@@ -50,3 +50,4 @@ pytest
 - [docs/transformer-recipe.md](docs/transformer-recipe.md) — how the example app maps transformer training onto the simulator
 - [docs/policy/README.md](docs/policy/README.md) — the six built-in scheduling policies and which to use
 - [docs/policy/pressurefit.md](docs/policy/pressurefit.md) — ***PressureFit***: An automatic policy that determines initial object placement and annotates task chains with release, offload, and prefetch triggers.
+- [docs/recompute.md](docs/recompute.md) — activation recomputation: chain variants, the stall/backlog report, and evidence-directed selection layered above the policies.

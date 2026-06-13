@@ -39,6 +39,7 @@ export interface SimulationParams {
   policy: Policy;
   window_size: number;
   device_capacity_gb: number | null;
+  recompute: boolean;
 }
 
 export interface Presets {
@@ -84,6 +85,7 @@ export const DEFAULT_PARAMS: SimulationParams = {
   policy: "pressurefit",
   window_size: 2,
   device_capacity_gb: null,
+  recompute: false,
 };
 
 export const POLICY_OPTIONS: { value: Policy; label: string; hint: string }[] = [
@@ -406,6 +408,17 @@ export function InputPanel({ params, setParams, onSubmit, onReset, locked, statu
                   const v = Number(text);
                   if (Number.isFinite(v)) setParams({ ...params, device_capacity_gb: v });
                 }}
+              />
+            </label>
+            <label className="form-field form-field-checkbox">
+              <span className="form-field-label">recompute activations</span>
+              <input
+                type="checkbox"
+                checked={params.recompute}
+                onChange={(e) => setParams({
+                  ...params,
+                  recompute: e.target.checked,
+                })}
               />
             </label>
           </div>

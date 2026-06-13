@@ -647,6 +647,27 @@ def layer_fwd_microseconds(spec: TransformerSpec, hw: HardwareSpec,
     return max(1, sum(t.total_us for t in layer_fwd_breakdown(spec, hw, cfg)))
 
 
+# Sub-ops skipped when recomputing a layer's activations: the down
+# projections feed the saved residual handoff (`y_i`), which is never
+# discarded, so they are not re-executed; `x_gather` only reassembles that
+# same output.
+_RECOMPUTE_SKIP_SUBOPS = frozenset({
+    "shared_mlp_down",
+    "routed_mlp_down_one_expert",
+    "x_gather",
+})
+
+
+def layer_recompute_microseconds(spec: TransformerSpec, hw: HardwareSpec,
+                                 cfg: TrainingConfig) -> int:
+    """Runtime of re-running a layer's forward compute minus the final down
+    projection(s), used when the layer's saved activations are recomputed."""
+    return max(1, sum(
+        t.total_us for t in layer_fwd_breakdown(spec, hw, cfg)
+        if t.name not in _RECOMPUTE_SKIP_SUBOPS
+    ))
+
+
 def layer_bwd_microseconds(spec: TransformerSpec, hw: HardwareSpec,
                            cfg: TrainingConfig) -> int:
     return max(1, sum(t.total_us for t in layer_bwd_breakdown(spec, hw, cfg)))

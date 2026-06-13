@@ -60,6 +60,21 @@ def test_simulate_exposes_pressurefit_diagnostics():
     assert any(c["selected"] for c in diagnostics["candidates"])
 
 
+def test_simulate_recompute_toggle_off_matches_default_and_can_change_makespan():
+    # A tight cap where recompute relieves transfer pressure.
+    base = _payload(seqlen=4096, num_seqs=2, device_capacity_gb=0.05)
+    off = simulate(SimulationParams.model_validate({**base, "recompute": False}))
+    on = simulate(SimulationParams.model_validate({**base, "recompute": True}))
+    omitted = simulate(SimulationParams.model_validate(base))
+
+    # Default is off: omitting the field reproduces recompute=False exactly.
+    assert omitted["summary"]["makespan_us"] == off["summary"]["makespan_us"]
+    # Recompute never loses (it seeds the no-recompute plan) and here helps.
+    assert on["summary"]["makespan_us"] <= off["summary"]["makespan_us"]
+    # PressureFit diagnostics still surface under recompute.
+    assert on["policy_diagnostics"]["candidate_count"] == 4
+
+
 def test_simulate_omits_policy_diagnostics_for_other_policies():
     body = simulate(
         SimulationParams.model_validate(_payload(policy="max_reduce"))

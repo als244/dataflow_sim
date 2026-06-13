@@ -113,6 +113,8 @@ function initialParams(): SimulationParams {
       out.policy = policy as Policy;
     }
   }
+  const rc = url.get("recompute");
+  if (rc !== null) out.recompute = rc === "true";
   const ws = url.get("window_size");
   if (ws !== null) {
     const n = Number(ws);
@@ -142,6 +144,7 @@ function syncUrl(params: SimulationParams): void {
   url.searchParams.set("final_model_state_on_host", params.final_model_state_on_host ? "true" : "false");
   url.searchParams.set("policy", params.policy);
   url.searchParams.delete("pressurefit_mode");
+  url.searchParams.set("recompute", params.recompute ? "true" : "false");
   url.searchParams.set("window_size", String(params.window_size));
   url.searchParams.set(
     "device_capacity_gb",

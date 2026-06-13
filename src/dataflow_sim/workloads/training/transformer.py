@@ -14,6 +14,17 @@ Task graph (per training step k, accumulation round j, layer index i):
 
 where upstream = dy_head for i=L-1 else dy_{i+1}.
 
+When a layer instance (k, j, i) is marked for recomputation, the saved
+activation is not produced by the forward pass; the recompute slot
+re-produces it from the layer's input right before backward:
+
+    f_k_j_i    = (deps=[in_act, W_i],          out=[y_k_j_i])
+    r_k_j_i    = (deps=[in_act, W_i],          out=[A_k_j_i], runtime=R)
+
+where in_act = input_k_j for i=0 else y_k_j_{i-1}. The layer input's
+liveness therefore extends from the forward pass to the recompute slot;
+planners handle its residency like any other object.
+
 The first accumulation round in a step produces `dW_k_i`; later accumulation
 rounds in that same step consume and mutate it. If an optimizer mode is
 enabled, the chain appends one post-accumulation optimizer task per layer in
@@ -29,11 +40,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from typing import Mapping
+
 from dataflow_sim.core.schema import Object, OutputAlloc, Task, TaskChain
 from dataflow_sim.workloads.common.hardware import (
     HardwareSpec,
     gbs_to_bytes_per_microsecond,
 )
+from dataflow_sim.workloads.common.recompute import RecomputeOption, RecomputeRewrite
 from dataflow_sim.workloads.common.workload import Workload
 from dataflow_sim.workloads.models.transformer import TransformerSpec
 from dataflow_sim.workloads.training.optimizers import OptimizerMode
@@ -68,6 +82,8 @@ def build_layerwise_training_chain(
     grad_accum_rounds: int = 1,
     num_steps: int = 1,
     final_model_state_on_host: bool = False,
+    recompute: frozenset[tuple[int, int, int]] = frozenset(),
+    recompute_runtime: int = 0,
 ) -> TaskChain:
     """Build the structural skeleton of an L-layer training chain.
 
@@ -144,22 +160,24 @@ def build_layerwise_training_chain(
                     if i == 0
                     else layer_round_id("y", k, j, i - 1)
                 )
+                f_outputs = [
+                    OutputAlloc(
+                        id=layer_round_id("y", k, j, i),
+                        size=layer_output_size,
+                        type="activation",
+                    ),
+                ]
+                if (k, j, i) not in recompute:
+                    f_outputs.insert(0, OutputAlloc(
+                        id=layer_round_id("A", k, j, i),
+                        size=activation_size,
+                        type="activation",
+                    ))
                 tasks.append(
                     Task(
                         id=layer_round_id("f", k, j, i),
                         inputs=[in_act, f"W_{i}"],
-                        outputs=[
-                            OutputAlloc(
-                                id=layer_round_id("A", k, j, i),
-                                size=activation_size,
-                                type="activation",
-                            ),
-                            OutputAlloc(
-                                id=layer_round_id("y", k, j, i),
-                                size=layer_output_size,
-                                type="activation",
-                            ),
-                        ],
+                        outputs=f_outputs,
                         runtime=fwd_runtime,
                     )
                 )
@@ -203,14 +221,35 @@ def build_layerwise_training_chain(
                     if i == L - 1
                     else layer_round_id("dy", k, j, i + 1)
                 )
-                tasks.append(
-                    Task(
-                        id=layer_round_id("r", k, j, i),
-                        inputs=[layer_round_id("A", k, j, i), f"W_{i}"],
-                        outputs=[],
-                        runtime=0,
+                if (k, j, i) in recompute:
+                    r_in_act = (
+                        input_id(k, j)
+                        if i == 0
+                        else layer_round_id("y", k, j, i - 1)
                     )
-                )
+                    tasks.append(
+                        Task(
+                            id=layer_round_id("r", k, j, i),
+                            inputs=[r_in_act, f"W_{i}"],
+                            outputs=[
+                                OutputAlloc(
+                                    id=layer_round_id("A", k, j, i),
+                                    size=activation_size,
+                                    type="activation",
+                                ),
+                            ],
+                            runtime=recompute_runtime,
+                        )
+                    )
+                else:
+                    tasks.append(
+                        Task(
+                            id=layer_round_id("r", k, j, i),
+                            inputs=[layer_round_id("A", k, j, i), f"W_{i}"],
+                            outputs=[],
+                            runtime=0,
+                        )
+                    )
 
                 grad_id = step_grad_id(k, i)
                 b_inputs = [upstream, layer_round_id("A", k, j, i), f"W_{i}"]
@@ -275,13 +314,20 @@ def build_transformer_training_workload(
     spec: TransformerSpec,
     hw: HardwareSpec,
     cfg: TrainingConfig,
+    recompute: Mapping[str, int] | None = None,
 ) -> Workload:
     """Build a bare training chain from transformer model dimensions +
     hardware specs + training params.
 
     The returned chain is bare: it has task topology, object sizes, runtimes,
     and bandwidths, but no policy annotations. Metadata includes the
-    per-sub-op breakdown used by the web UI and analysis scripts.
+    per-sub-op breakdown used by the web UI and analysis scripts, plus the
+    recompute rewrite table (`metadata["recompute_rewrites"]`) declaring the
+    discrete recompute options per saved-activation object.
+
+    `recompute` maps saved-activation object ids (e.g. "A_0_0_5") to a
+    chosen option level. Level 0 (the default) saves the full activation;
+    level 1 saves nothing and re-produces it in the layer's recompute slot.
     """
     # Local import to avoid hard dependency at module load.
     from dataflow_sim.workloads.models.transformer import (
@@ -295,6 +341,7 @@ def build_transformer_training_workload(
         layer_fwd_breakdown,
         layer_fwd_microseconds,
         layer_output_bytes,
+        layer_recompute_microseconds,
         layer_weight_bytes,
         optimizer_state_bytes_per_layer,
         optimizer_step_breakdown,
@@ -306,13 +353,42 @@ def build_transformer_training_workload(
     head_us = head_microseconds(spec, hw, cfg)
     opt_us = optimizer_step_microseconds(spec, hw, cfg)
     opt_state_bytes = optimizer_state_bytes_per_layer(spec, cfg.optimizer)
+    act_bytes = activation_bytes(spec, cfg)
+    recompute_us = layer_recompute_microseconds(spec, hw, cfg)
     bw_link = gbs_to_bytes_per_microsecond(hw.interconnect_bw_gbs)
+
+    options = (
+        RecomputeOption(level=0, saved_bytes=act_bytes, recompute_us=0, label="save-full"),
+        RecomputeOption(level=1, saved_bytes=0, recompute_us=recompute_us, label="recompute-full"),
+    )
+    rewrites: list[RecomputeRewrite] = []
+    recompute_instances: set[tuple[int, int, int]] = set()
+    levels = dict(recompute or {})
+    for k in range(cfg.num_steps):
+        for j in range(cfg.grad_accum_rounds):
+            for i in range(spec.n_layers):
+                obj_id = f"A_{k}_{j}_{i}"
+                rewrites.append(RecomputeRewrite(
+                    object_id=obj_id,
+                    f_task_id=f"f_{k}_{j}_{i}",
+                    r_task_id=f"r_{k}_{j}_{i}",
+                    options=options,
+                ))
+                level = levels.pop(obj_id, 0)
+                if level not in (0, 1):
+                    raise ValueError(
+                        f"unsupported recompute level {level} for {obj_id!r}"
+                    )
+                if level == 1:
+                    recompute_instances.add((k, j, i))
+    if levels:
+        raise ValueError(f"unknown recompute object ids: {sorted(levels)}")
 
     bare = build_layerwise_training_chain(
         spec.n_layers,
         input_size=input_bytes(spec, cfg),
         weight_size=layer_weight_bytes(spec),
-        activation_size=activation_bytes(spec, cfg),
+        activation_size=act_bytes,
         layer_output_size=layer_output_bytes(spec, cfg),
         grad_size=layer_output_bytes(spec, cfg),
         head_weight_size=head_weight_bytes(spec),
@@ -326,6 +402,8 @@ def build_transformer_training_workload(
         grad_accum_rounds=cfg.grad_accum_rounds,
         num_steps=cfg.num_steps,
         final_model_state_on_host=cfg.final_model_state_on_host,
+        recompute=frozenset(recompute_instances),
+        recompute_runtime=recompute_us,
     )
     breakdown = {
         "fwd": [t.asdict() for t in layer_fwd_breakdown(spec, hw, cfg)],
@@ -337,6 +415,10 @@ def build_transformer_training_workload(
             "layer_bwd": bwd_us,
             "head": head_us,
             "optimizer_step": opt_us,
+            "layer_recompute": recompute_us,
         },
     }
-    return Workload(chain=bare, metadata={"breakdown": breakdown})
+    return Workload(chain=bare, metadata={
+        "breakdown": breakdown,
+        "recompute_rewrites": rewrites,
+    })
