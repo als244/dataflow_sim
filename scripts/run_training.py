@@ -3,10 +3,10 @@
 into the UI. Also dumps the generated chain JSON to examples/training_L{L}.json.
 
 Usage:
-    python scripts/run_training.py [L=3] [--bw-h2d N] [--bw-d2h N]
+    python scripts/run_training.py [L=3] [--bw-from-slow N] [--bw-to-slow N]
 
 By default both bandwidths are 8 (bytes/time-unit), which keeps the L=3 demo
-stall-free. Lowering --bw-h2d (e.g. to 1) is the easy way to show compute stalls
+stall-free. Lowering --bw-from-slow (e.g. to 1) is the easy way to show compute stalls
 on the timeline: prefetches arrive too late and b_i waits for A_i to land.
 """
 from __future__ import annotations
@@ -26,14 +26,14 @@ from dataflow_sim.workloads.training.transformer import build_layerwise_training
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("L", nargs="?", type=int, default=3)
-    p.add_argument("--bw-h2d", type=int, default=8, dest="bw_h2d")
-    p.add_argument("--bw-d2h", type=int, default=8, dest="bw_d2h")
+    p.add_argument("--bw-from-slow", type=int, default=8, dest="bw_from_slow")
+    p.add_argument("--bw-to-slow", type=int, default=8, dest="bw_to_slow")
     args = p.parse_args()
 
     bare = build_layerwise_training_chain(
         args.L,
-        bandwidth_h2d=args.bw_h2d,
-        bandwidth_d2h=args.bw_d2h,
+        bandwidth_from_slow=args.bw_from_slow,
+        bandwidth_to_slow=args.bw_to_slow,
     )
     chain = apply_pressurefit_policy(bare)
     chain_path = REPO / f"examples/training_L{args.L}.json"
@@ -55,8 +55,8 @@ def main() -> int:
             stalls.append((prev.task_id, cur.task_id, cur.start - prev.end))
 
     print(f"L:        {args.L}")
-    print(f"bw h2d:   {args.bw_h2d}")
-    print(f"bw d2h:   {args.bw_d2h}")
+    print(f"bw from-slow:   {args.bw_from_slow}")
+    print(f"bw to-slow: {args.bw_to_slow}")
     print(f"tasks:    {len(chain.tasks)}")
     print(f"events:   {len(log.events)}")
     duration = max((iv.end for iv in log.task_intervals), default=0)

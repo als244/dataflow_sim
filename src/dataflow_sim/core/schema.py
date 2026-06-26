@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 
-Location = Literal["host", "device"]
+Location = Literal["backing", "fast"]
 ObjectType = Literal["weight", "activation", "gradient", "optimizer", "other"]
 MemoryState = Literal[
     "live",              # readable / consumable
@@ -22,7 +22,7 @@ MemoryState = Literal[
 class Object:
     id: str
     size: int
-    location: Location = "device"
+    location: Location = "fast"
     type: ObjectType = "other"
 
 
@@ -30,7 +30,7 @@ class Object:
 class OutputAlloc:
     id: str
     size: int
-    location: Location = "device"
+    location: Location = "fast"
     type: ObjectType = "other"
 
 
@@ -49,8 +49,8 @@ class Task:
 
     `inputs` are read-only by default — a task does not modify the byte
     contents of an input UNLESS that input's id also appears in
-    `mutates_inputs`. Mutated inputs need a write-back (offload to host)
-    after the mutation so the host copy reflects the update; planners
+    `mutates_inputs`. Mutated inputs need a write-back (offload to backing)
+    after the mutation so the backing copy reflects the update; planners
     must NOT release a mutated input via a bare release (which would
     discard the update) — they must offload it.
 
@@ -75,17 +75,17 @@ class TaskChain:
     initial_memory: list[Object]
     tasks: list[Task]
     # Optional terminal placement constraints, keyed by object id.
-    # Example: {"W_0": "host"} means the latest bytes for W_0 must be on
-    # host when the chain finishes. Objects omitted here are disposable after
+    # Example: {"W_0": "backing"} means the latest bytes for W_0 must be on
+    # backing when the chain finishes. Objects omitted here are disposable after
     # their final use unless later tasks require them.
     final_locations: dict[str, Location] = field(default_factory=dict)
     # Optional per-location capacity ceilings. None = unlimited.
-    device_capacity: int | None = None
-    host_capacity: int | None = None
+    fast_memory_capacity: int | None = None
+    backing_memory_capacity: int | None = None
     # Bytes per time unit on each transfer stream. Per-trigger `runtime` overrides.
     # Required if any trigger relies on bandwidth-derived runtime.
-    bandwidth_h2d: int | None = None
-    bandwidth_d2h: int | None = None
+    bandwidth_from_slow: int | None = None
+    bandwidth_to_slow: int | None = None
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "TaskChain":
@@ -93,7 +93,7 @@ class TaskChain:
             return Object(
                 id=o["id"],
                 size=int(o["size"]),
-                location=o.get("location", "device"),
+                location=o.get("location", "fast"),
                 type=o.get("type", "other"),
             )
 
@@ -101,7 +101,7 @@ class TaskChain:
             return OutputAlloc(
                 id=o["id"],
                 size=int(o["size"]),
-                location=o.get("location", "device"),
+                location=o.get("location", "fast"),
                 type=o.get("type", "other"),
             )
 
@@ -126,10 +126,10 @@ class TaskChain:
                 for t in d.get("tasks", [])
             ],
             final_locations=dict(d.get("final_locations", {})),
-            device_capacity=d.get("device_capacity"),
-            host_capacity=d.get("host_capacity"),
-            bandwidth_h2d=d.get("bandwidth_h2d"),
-            bandwidth_d2h=d.get("bandwidth_d2h"),
+            fast_memory_capacity=d.get("fast_memory_capacity"),
+            backing_memory_capacity=d.get("backing_memory_capacity"),
+            bandwidth_from_slow=d.get("bandwidth_from_slow"),
+            bandwidth_to_slow=d.get("bandwidth_to_slow"),
         )
 
     @staticmethod
@@ -178,13 +178,13 @@ EventKind = Literal[
     "transfer_start",
     "transfer_end",
     # A trigger fired but couldn't enqueue immediately because its source
-    # is still being produced (e.g. a prefetch whose host source is still
+    # is still being produced (e.g. a prefetch whose backing source is still
     # being offloaded). The transfer will be auto-enqueued when the source
     # becomes live; a subsequent `transfer_enqueue` event marks that moment.
     "transfer_deferred",
 ]
 
-TransferDirection = Literal["h2d", "d2h"]
+TransferDirection = Literal["from_slow", "to_slow"]
 
 
 @dataclass(frozen=True)
@@ -209,21 +209,21 @@ class TaskInterval:
 
 @dataclass(frozen=True)
 class MemoryTracePoint:
-    """Compact device-memory sample for UI plotting.
+    """Compact fast-memory sample for UI plotting.
 
-    The keys in `device_bytes_by_band` match the memory timeline bands:
+    The keys in `fast_bytes_by_band` match the memory timeline bands:
     object types for live/reserved bytes plus inbound/outbound transfer states.
     It intentionally omits object ids and reference-stream data.
     """
     t: int
-    device_bytes_by_band: dict[str, int]
+    fast_bytes_by_band: dict[str, int]
 
 
 @dataclass(frozen=True)
 class EventLog:
     task_intervals: list[TaskInterval]
     events: list[Event]
-    peak_device_bytes: int = 0
+    peak_fast_memory_bytes: int = 0
     memory_trace: list[MemoryTracePoint] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

@@ -1,9 +1,9 @@
 """Tests for the belady_reactive auto-policy.
 
 Working envelope:
-  L=3: device_capacity >= 500 or None
-  L=5: device_capacity >= 500 or None
-  L=10: device_capacity >= 500 or None
+  L=3: fast_memory_capacity >= 500 or None
+  L=5: fast_memory_capacity >= 500 or None
+  L=10: fast_memory_capacity >= 500 or None
 """
 from dataclasses import replace
 
@@ -54,8 +54,8 @@ def test_initial_placement_must_place_T1_inputs():
     ideal = _compute_ideal_starts(bare)
     uses = _compute_uses(bare, ideal)
     # T_1 = f_0; inputs are input, W_0
-    placement = _initial_placement(bare, device_capacity=2000, uses=uses, sizes=sizes)
-    assert "W_0" in placement  # input is already device-resident, so excluded
+    placement = _initial_placement(bare, fast_memory_capacity=2000, uses=uses, sizes=sizes)
+    assert "W_0" in placement  # input is already compute-resident, so excluded
 
 
 def test_initial_placement_raises_when_widest_T1_too_big():
@@ -63,11 +63,11 @@ def test_initial_placement_raises_when_widest_T1_too_big():
     sizes = _object_sizes(bare)
     ideal = _compute_ideal_starts(bare)
     uses = _compute_uses(bare, ideal)
-    # T_1 needs input(16) + W_0(64) on device + outputs A_0(32) + y_0(32) reserved = 144
-    # Initial pool also has input already on device (16 bytes)
+    # T_1 needs input(16) + W_0(64) on compute + outputs A_0(32) + y_0(32) reserved = 144
+    # Initial pool also has input already on compute (16 bytes)
     # If capacity is 30, can't fit even input
     with pytest.raises(ValueError, match="widest-task infeasibility"):
-        _initial_placement(bare, device_capacity=30, uses=uses, sizes=sizes)
+        _initial_placement(bare, fast_memory_capacity=30, uses=uses, sizes=sizes)
 
 
 # ---------- End-to-end / working envelope ----------
@@ -75,7 +75,7 @@ def test_initial_placement_raises_when_widest_T1_too_big():
 @pytest.mark.parametrize("cap", [None, 1200, 1000, 800, 600, 500])
 def test_auto_policy_L3_works_at_loose_caps(cap):
     bare = build_bare_training_chain(L=3)
-    annotated = apply_auto_policy(bare, device_capacity=cap)
+    annotated = apply_auto_policy(bare, fast_memory_capacity=cap)
     log = run(annotated)  # must not raise
     # All compute tasks should appear in intervals
     compute_ids = {iv.task_id for iv in log.task_intervals if iv.track == "compute"}
@@ -87,7 +87,7 @@ def test_auto_policy_L3_works_at_loose_caps(cap):
 def test_auto_policy_L5_works_at_v2_envelope(cap):
     """belady_reactive extends L=5 down to cap=500."""
     bare = build_bare_training_chain(L=5)
-    annotated = apply_auto_policy(bare, device_capacity=cap)
+    annotated = apply_auto_policy(bare, fast_memory_capacity=cap)
     log = run(annotated)
     compute_ids = {iv.task_id for iv in log.task_intervals if iv.track == "compute"}
     assert "b_0" in compute_ids
@@ -97,7 +97,7 @@ def test_auto_policy_L5_works_at_v2_envelope(cap):
 def test_auto_policy_L10_works_at_v2_envelope(cap):
     """belady_reactive extends L=10 down to cap=500 (was unlimited-only in the early prototype)."""
     bare = build_bare_training_chain(L=10)
-    annotated = apply_auto_policy(bare, device_capacity=cap)
+    annotated = apply_auto_policy(bare, fast_memory_capacity=cap)
     log = run(annotated)
     compute_ids = {iv.task_id for iv in log.task_intervals if iv.track == "compute"}
     assert "b_0" in compute_ids
@@ -108,7 +108,7 @@ def test_phase5_recovers_l10_cap600():
     overshoots capacity at some prefetches; Phase 5 shifts the prefetch
     earlier until the simulator accepts."""
     bare = build_bare_training_chain(L=10)
-    annotated = apply_auto_policy(bare, device_capacity=600)
+    annotated = apply_auto_policy(bare, fast_memory_capacity=600)
     log = run(annotated)
     makespan = max(iv.end for iv in log.task_intervals)
     # Should be a valid run (no exceptions); makespan within reasonable bound.
@@ -157,7 +157,7 @@ def test_initial_placement_leaves_slack_for_widest_task():
     ideal = _compute_ideal_starts(bare)
     uses = _compute_uses(bare, ideal)
     # At cap=400 (which is < 2 × widest 224), slack should keep initial small.
-    placement = _initial_placement(bare, device_capacity=400, uses=uses, sizes=sizes)
+    placement = _initial_placement(bare, fast_memory_capacity=400, uses=uses, sizes=sizes)
     initial_bytes = 16 + sum(sizes[oid] for oid in placement)  # input + placements
     # widest = 224, so cap - widest = 176. Initial pool (after T_1 outputs reserved
     # = 64) should fit in 400 - 224 = 176 bytes free. With must_place W_0 (64)
@@ -168,7 +168,7 @@ def test_initial_placement_leaves_slack_for_widest_task():
 def test_auto_policy_L3_zero_stalls_at_unlimited():
     """At unlimited capacity, both policies should be stall-free."""
     bare = build_bare_training_chain(L=3)
-    annotated = apply_auto_policy(bare, device_capacity=None)
+    annotated = apply_auto_policy(bare, fast_memory_capacity=None)
     log = run(annotated)
     compute = sorted(
         [iv for iv in log.task_intervals if iv.track == "compute"],
@@ -183,22 +183,22 @@ def test_auto_policy_L3_unlimited_emits_no_transfers_without_final_locations():
     """At unlimited capacity and with no terminal placement constraints, the
     policy should not emit transfers for disposable mutated intermediates."""
     bare = build_bare_training_chain(L=3)
-    annotated = apply_auto_policy(bare, device_capacity=None)
+    annotated = apply_auto_policy(bare, fast_memory_capacity=None)
     n_pre = sum(len(t.prefetch_after) for t in annotated.tasks)
     n_off = sum(len(t.offload_after) for t in annotated.tasks)
     assert n_pre == 0
     assert n_off == 0
 
 
-def test_auto_policy_L3_unlimited_honors_final_host_locations():
-    """A final-host constraint, not object type, creates required writebacks."""
+def test_auto_policy_L3_unlimited_honors_final_backing_locations():
+    """A final-backing constraint, not object type, creates required writebacks."""
     bare0 = build_bare_training_chain(L=3)
     final_locations = {
-        o.id: "host" for o in bare0.initial_memory
-        if o.location == "host" and o.type == "gradient"
+        o.id: "backing" for o in bare0.initial_memory
+        if o.location == "backing" and o.type == "gradient"
     }
     bare = replace(bare0, final_locations=final_locations)
-    annotated = apply_auto_policy(bare, device_capacity=None)
+    annotated = apply_auto_policy(bare, fast_memory_capacity=None)
     n_pre = sum(len(t.prefetch_after) for t in annotated.tasks)
     assert n_pre == 0
 
@@ -214,33 +214,33 @@ def test_auto_policy_L3_unlimited_honors_final_host_locations():
 def test_auto_policy_emits_releases_at_tight_cap():
     """At a tight-but-feasible cap, the policy should emit at least some triggers."""
     bare = build_bare_training_chain(L=3)
-    annotated = apply_auto_policy(bare, device_capacity=800)
+    annotated = apply_auto_policy(bare, fast_memory_capacity=800)
     n_rel = sum(len(t.releases_after) for t in annotated.tasks)
     assert n_rel >= 1
 
 
 # ---------- equivalence at generous capacity ----------
 
-def test_v2_releases_w_instead_of_offloading_when_host_copy_exists():
-    """W_i is host-initial and never mutated (workload contract). When the
-    planner needs to free its device bytes between fwd-use and bwd-use, it
-    should RELEASE (instant, no d2h cost) — NOT offload — because the host
+def test_v2_releases_w_instead_of_offloading_when_backing_copy_exists():
+    """W_i is backing-initial and never mutated (workload contract). When the
+    planner needs to free its compute bytes between fwd-use and bwd-use, it
+    should RELEASE (instant, no to_slow cost) — NOT offload — because the backing
     copy is byte-identical. Pre-fix belady_reactive always offloaded weights with a
-    future use, wasting d2h bandwidth on a write-back to identical data."""
+    future use, wasting to_slow bandwidth on a write-back to identical data."""
     bare = build_bare_training_chain(L=5)
-    annotated = apply_auto_policy(bare, device_capacity=600)
-    # Collect every per-task d2h trigger by object.
+    annotated = apply_auto_policy(bare, fast_memory_capacity=600)
+    # Collect every per-task to_slow trigger by object.
     offloaded_objs = set()
     for task in annotated.tasks:
         for trig in task.offload_after:
             offloaded_objs.add(trig.obj_id)
     # No W_i should be offloaded — releases handle them.
     w_offloads = {o for o in offloaded_objs if o.startswith("W_")}
-    assert not w_offloads, f"belady_reactive wastefully offloaded weights with host copies: {sorted(w_offloads)}"
+    assert not w_offloads, f"belady_reactive wastefully offloaded weights with backing copies: {sorted(w_offloads)}"
 
 
 def test_smart_initial_placement_defers_to_leave_room_for_outputs():
-    """The smart initial placement should DEFER host objects whose
+    """The smart initial placement should DEFER backing objects whose
     pre-placement would push pessimistic-bps over cap at some boundary,
     leaving room for task outputs (activations) that accumulate over
     forward. Regression for: the old greedy fill would pre-place every
@@ -254,25 +254,25 @@ def test_smart_initial_placement_defers_to_leave_room_for_outputs():
         L=5, input_size=50, weight_size=100, activation_size=200,
         grad_size=100, head_weight_size=100,
         fwd_runtime=10, head_runtime=10, bwd_runtime=20,
-        bandwidth_h2d=50, bandwidth_d2h=50,
+        bandwidth_from_slow=50, bandwidth_to_slow=50,
     )
     sizes = _object_sizes(bare)
     uses_by_task = _object_uses_by_task_idx(bare, _compute_ideal_starts(bare))
 
-    # At loose cap, smart init places everything host with a use.
+    # At loose cap, smart init places everything backing with a use.
     loose = _smart_initial_placement(bare, 100_000, sizes, uses_by_task)
-    all_host_with_use = {
+    all_backing_with_use = {
         o.id for o in bare.initial_memory
-        if o.location == "host" and uses_by_task.get(o.id)
+        if o.location == "backing" and uses_by_task.get(o.id)
     }
-    assert loose == all_host_with_use
+    assert loose == all_backing_with_use
 
     # At tight cap where SUM of weights+grads alone fits but adding
-    # activations would overflow, smart init defers the host objects whose
+    # activations would overflow, smart init defers the backing objects whose
     # first-use is LATEST (backward grads, head, dW_head). At least one of
     # {W_head, dW_head, dW_4, dW_3, dW_2, dW_1, dW_0} must be deferred.
     tight = _smart_initial_placement(bare, 1200, sizes, uses_by_task)
-    deferred = all_host_with_use - tight
+    deferred = all_backing_with_use - tight
     late_use_objs = {"W_head", "dW_head"} | {f"dW_{i}" for i in range(5)}
     assert deferred & late_use_objs, (
         f"smart init didn't defer any backward-only object at tight cap; "
@@ -289,11 +289,11 @@ def test_smart_initial_placement_at_loose_cap_eliminates_forward_stalls():
         L=5, input_size=50, weight_size=100, activation_size=200,
         grad_size=100, head_weight_size=100,
         fwd_runtime=10, head_runtime=10, bwd_runtime=20,
-        bandwidth_h2d=50, bandwidth_d2h=50,
+        bandwidth_from_slow=50, bandwidth_to_slow=50,
     )
     # Cap that comfortably holds: 5 W + 5 A + y + input + reserved next-task
     # outputs + a couple of dW prefetches during forward.
-    annotated = apply_auto_policy(bare, device_capacity=2500)
+    annotated = apply_auto_policy(bare, fast_memory_capacity=2500)
     log = run(annotated)
     f_compute = sorted(
         [iv for iv in log.task_intervals
@@ -310,64 +310,64 @@ def test_smart_initial_placement_at_loose_cap_eliminates_forward_stalls():
         )
 
 
-def test_auto_writes_back_final_host_objects():
-    """Objects listed in final_locations must end on host with live bytes."""
+def test_auto_writes_back_final_backing_objects():
+    """Objects listed in final_locations must end on backing with live bytes."""
     bare0 = build_bare_training_chain(L=5)
     final_locations = {
-        o.id: "host" for o in bare0.initial_memory
-        if o.location == "host" and o.type == "gradient"
+        o.id: "backing" for o in bare0.initial_memory
+        if o.location == "backing" and o.type == "gradient"
     }
     bare = replace(bare0, final_locations=final_locations)
-    annotated = apply_auto_policy(bare, device_capacity=None)
+    annotated = apply_auto_policy(bare, fast_memory_capacity=None)
     log = run(annotated)
     final = log.events[-1].snapshot
     for g in final_locations:
-        host_entry = next(
-            (m for m in final.memory if m.id == g and m.location == "host"),
+        backing_entry = next(
+            (m for m in final.memory if m.id == g and m.location == "backing"),
             None,
         )
-        assert host_entry is not None, f"gradient {g!r} not on host at end"
-        assert host_entry.state == "live", (
-            f"{g!r} state={host_entry.state}, want 'live'"
+        assert backing_entry is not None, f"gradient {g!r} not on backing at end"
+        assert backing_entry.state == "live", (
+            f"{g!r} state={backing_entry.state}, want 'live'"
         )
 
 
 def test_activation_offload_fires_eagerly_at_production():
-    """When belady_reactive decides an activation (no host source) must be offloaded,
+    """When belady_reactive decides an activation (no backing source) must be offloaded,
     it should pick the EARLIEST safe boundary (right after production) so
-    the d2h fires while the stream would otherwise be idle. Previously belady_reactive
+    the to_slow fires while the stream would otherwise be idle. Previously belady_reactive
     used 'latest boundary that still meets deadline', which delayed A_0's
-    offload by tens of ms even though d2h was sitting idle the whole time."""
+    offload by tens of ms even though to_slow was sitting idle the whole time."""
     # Tight cap that forces activation offloads.
     bare = build_bare_training_chain(
         L=8, input_size=50, weight_size=100, activation_size=500,
         grad_size=100, head_weight_size=100,
         fwd_runtime=10, head_runtime=10, bwd_runtime=20,
-        bandwidth_h2d=50, bandwidth_d2h=50,
+        bandwidth_from_slow=50, bandwidth_to_slow=50,
     )
     # Cap chosen so A_0 MUST be offloaded — the assertion below otherwise
     # no-ops (was a defensive skip pre-restructure). At cap=2000 the L=8
-    # backward-needed activations cycle off-device during forward.
-    annotated = apply_auto_policy(bare, device_capacity=2000)
+    # backward-needed activations cycle off-compute during forward.
+    annotated = apply_auto_policy(bare, fast_memory_capacity=2000)
     log = run(annotated)
     f_0 = next(iv for iv in log.task_intervals if iv.task_id == "f_0")
-    # Look for A_0's d2h start.
-    a0_d2h = next(
+    # Look for A_0's to_slow start.
+    a0_to_slow = next(
         (iv for iv in log.task_intervals
-         if iv.track == "d2h" and iv.task_id.split(":", 1)[1].startswith("A_0")),
+         if iv.track == "to_slow" and iv.task_id.split(":", 1)[1].startswith("A_0")),
         None,
     )
-    assert a0_d2h is not None, (
+    assert a0_to_slow is not None, (
         "A_0 wasn't offloaded at cap=1600; tighten further or check policy "
-        "behaviour — the eagerness assertion below needs a real d2h to inspect"
+        "behaviour — the eagerness assertion below needs a real to_slow to inspect"
     )
     # A_0 must start within ONE compute task of production (not "as late as
     # the deadline allows", which would be many tasks later).
     fwd_runtime = f_0.end - f_0.start
-    delay = a0_d2h.start - f_0.end
+    delay = a0_to_slow.start - f_0.end
     assert delay < fwd_runtime, (
-        f"A_0 d2h delayed by {delay} units after production (f_0 ends at "
-        f"{f_0.end}); expected < {fwd_runtime} (one task) since d2h is "
+        f"A_0 to_slow delayed by {delay} units after production (f_0 ends at "
+        f"{f_0.end}); expected < {fwd_runtime} (one task) since to_slow is "
         f"idle and earliest-safe boundary should be picked"
     )
 
@@ -378,8 +378,8 @@ def test_auto_at_least_as_fast_as_sliding_window_at_unlimited_cap():
     sliding-window's tail-end `dW_*` offloads extend the makespan past the
     last compute task end)."""
     bare = build_bare_training_chain(L=3)
-    sliding = apply_sliding_window_policy(bare, window_size=2, device_capacity=None)
-    auto = apply_auto_policy(bare, device_capacity=None)
+    sliding = apply_sliding_window_policy(bare, window_size=2, fast_memory_capacity=None)
+    auto = apply_auto_policy(bare, fast_memory_capacity=None)
     sliding_dur = max(iv.end for iv in run(sliding).task_intervals)
     auto_dur = max(iv.end for iv in run(auto).task_intervals)
     assert auto_dur <= sliding_dur, f"auto={auto_dur} > sliding={sliding_dur}"

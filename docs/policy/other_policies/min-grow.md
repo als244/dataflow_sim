@@ -11,12 +11,12 @@ Implementation: [`src/dataflow_sim/policies/min_grow.py`](../../../src/dataflow_
 **Algorithm direction: MAX → shrink** (starts from "everything kept resident as long as possible", reduces via simulator-scored beam search). The dual MIN → grow direction was considered and tested; MAX → shrink converges faster for both loose-cap (MAX is immediately optimal) and tight-cap configs (the natural shape of optimal plans is "MAX minus a few targeted evictions").
 
 Four stages:
-- **Phase A0 — Analytic pre-pass**: starting from MAX, greedily evict objects (Belady-first, static-peak as tiebreaker) by static-cap reduction alone until `static_peak ≤ cap`. Pure analytic — no simulator. Critical for scaling: for L=32 transformer with 30+GB host-init and 20GB cap, simulator-driven shrink from MAX is too slow (would burn entire time budget).
+- **Phase A0 — Analytic pre-pass**: starting from MAX, greedily evict objects (Belady-first, static-peak as tiebreaker) by static-cap reduction alone until `static_peak ≤ cap`. Pure analytic — no simulator. Critical for scaling: for L=32 transformer with 30+GB backing-init and 20GB cap, simulator-driven shrink from MAX is too slow (would burn entire time budget).
 - **Phase A1 — Simulator-driven over-shrink**: from the static-feasible plan, iteratively try Belady-ranked further shrinks. Accept best NON-WORSE shrink per step (allows walking through plateaus where one un-pre-placement doesn't help but two-together do). Stops after `patience=6` consecutive non-improving steps. Captures the "shrinking initial objects can reduce makespan via reduced output-reservation contention" effect that analytic shrink misses.
 - **Phase A2 — Beam search**: from over-shrink's plan, beam-explore both reductions AND extensions (re-pre-place where cap allows). Refines for local makespan improvements.
 - **Phase B — Schedule derivation**: deterministic emission of `releases_after` / `offload_after` / `prefetch_after` triggers. Two key insights:
-  1. **Smart prefetch placement**: fire on the latest task whose end gives the h2d enough lead time, walking past zero-runtime tasks (recompute slots) that would cause guaranteed stalls.
-  2. **Earliest-possible offload**: for an interval `[a, b)`, the exit trigger fires right after the last use within the interval (not at boundary `b`). E.g., an activation produced by `f_i` and immediately offloaded — trigger goes on `f_i`, not `f_{i+1}`, so the d2h starts as soon as possible.
+  1. **Smart prefetch placement**: fire on the latest task whose end gives the from_slow enough lead time, walking past zero-runtime tasks (recompute slots) that would cause guaranteed stalls.
+  2. **Earliest-possible offload**: for an interval `[a, b)`, the exit trigger fires right after the last use within the interval (not at boundary `b`). E.g., an activation produced by `f_i` and immediately offloaded — trigger goes on `f_i`, not `f_{i+1}`, so the to_slow starts as soon as possible.
 
 `min_grow` does not model stream congestion or in-flight transit analytically. The simulator already models both correctly; `min_grow` trusts its makespan verdict. This is the central design choice that distinguishes `min_grow` from `max_reduce`.
 
@@ -28,9 +28,9 @@ Four stages:
 
 - Path-dependent reduce → the heuristic key locally evicts the "wrong" object and the cascade can't recover.
 - EDF over-extension at loose caps → analytic model overestimates contention.
-- D2H tail mis-modeling → analytic model underestimates transit-driven pool pressure.
+- to-slow tail mis-modeling → analytic model underestimates transit-driven pool pressure.
 - No global stream-load awareness → heuristic key is per-object, not whole-schedule.
-- Uncoordinated writebacks → analytic model doesn't see d2h FIFO competition.
+- Uncoordinated writebacks → analytic model doesn't see to_slow FIFO competition.
 
 The pattern is: any analytic model `max_reduce` builds is approximate, and the approximation errors compound. The simulator is the only ground truth for makespan, and the simulator is **cheap** (~500ms–2s per L=32 replay). Use it directly.
 
@@ -40,7 +40,7 @@ The problem formulation, hardness analysis, and the case for "plan + schedule se
 
 ## 3. Problem recap (brief)
 
-Per [problem.md](../../problem.md): given a DAG of compute tasks on a single compute stream + two FIFO transfer streams (H2D, D2H) + a hard byte cap, decide what's resident when, to minimize makespan. The training workload's compute DAG is a chain `f_1, ..., f_L, head, b_L, ..., b_1` (`2L+1` active tasks; recompute tasks `r_i` are zero-cost and ignored).
+Per [problem.md](../../problem.md): given a DAG of compute tasks on a single compute stream + two FIFO transfer streams (from-slow, to-slow) + a hard byte cap, decide what's resident when, to minimize makespan. The training workload's compute DAG is a chain `f_1, ..., f_L, head, b_L, ..., b_1` (`2L+1` active tasks; recompute tasks `r_i` are zero-cost and ignored).
 
 ### 3.1 Input format (min_grow's input)
 
@@ -51,7 +51,7 @@ min_grow's public entry point is `apply_min_grow_policy(bare: TaskChain) -> Task
 class Object:                            # appears in TaskChain.initial_memory
     id: str
     size: int                            # bytes
-    location: Location                   # "host" | "device" — defines what's pre-placed
+    location: Location                   # "backing" | "fast" — defines what's pre-placed
     type: ObjectType                     # "weight" | "activation" | "gradient" | "optimizer" | "other"
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ class OutputAlloc:                       # appears in Task.outputs
 class Task:
     id: str
     inputs: list[str]                    # obj ids read by this task (read-only unless in mutates_inputs)
-    outputs: list[OutputAlloc]           # fresh objects produced on-device by this task
+    outputs: list[OutputAlloc]           # fresh objects produced on-compute by this task
     runtime: int                         # ticks; deterministic
     releases_after: list[str]            # EMPTY on input — min_grow fills this
     offload_after: list[TransferTrigger] # EMPTY on input — min_grow fills this
@@ -75,14 +75,14 @@ class Task:
 
 @dataclass(frozen=True)
 class TaskChain:
-    initial_memory: list[Object]         # objects whose `location == "host"` are host-init;
-                                         # objects whose `location == "device"` are pre-placed.
-                                         # On a BARE chain, all entries are host-init (no pre-placement).
+    initial_memory: list[Object]         # objects whose `location == "backing"` are backing-init;
+                                         # objects whose `location == "fast"` are pre-placed.
+                                         # On a BARE chain, all entries are backing-init (no pre-placement).
     tasks: list[Task]
-    device_capacity: int | None          # hard byte cap on the device pool; None = unlimited
-    host_capacity: int | None
-    bandwidth_h2d: int | None            # bytes per tick; required for min_grow
-    bandwidth_d2h: int | None            # bytes per tick; required for min_grow
+    fast_memory_capacity: int | None          # hard byte cap on the compute pool; None = unlimited
+    backing_memory_capacity: int | None
+    bandwidth_from_slow: int | None            # bytes per tick; required for min_grow
+    bandwidth_to_slow: int | None            # bytes per tick; required for min_grow
 ```
 
 **Object id space**: every `obj_id` referenced by `task.inputs`, `task.mutates_inputs`, or in a `TransferTrigger` must exist either in `TaskChain.initial_memory` or as some prior task's `outputs[i].id`. Schema validation is upstream — min_grow assumes well-formed input.
@@ -93,7 +93,7 @@ class TaskChain:
 
 min_grow returns an **annotated** `TaskChain` of the same shape. The fields min_grow may modify:
 
-- `initial_memory`: min_grow may append `Object(id=..., size=..., location="device", type=...)` entries to pre-place host-init objects on device. Existing host-init entries (with `location == "host"`) are preserved.
+- `initial_memory`: min_grow may append `Object(id=..., size=..., location="fast", type=...)` entries to pre-place backing-init objects on compute. Existing backing-init entries (with `location == "backing"`) are preserved.
 - For each task `t` in `tasks`: min_grow populates `t.releases_after`, `t.offload_after`, `t.prefetch_after` based on the chosen plan.
 
 min_grow does NOT modify: task ids, task ordering, `inputs`, `outputs`, `runtime`, `mutates_inputs`, capacity fields, or bandwidth fields.
@@ -104,7 +104,7 @@ min_grow does NOT modify: task ids, task ordering, `inputs`, `outputs`, `runtime
 - No mutated input is bare-released (would lose the update); mutated objects always exit residency via `offload_after`.
 - Returned chain is feasible to simulate: `simulator.run(returned_chain)` completes without error. (Stalls are allowed; outright cap violations or unfulfilled prefetches are not.)
 
-**Output failure mode**: if no feasible plan exists (e.g., forced footprint exceeds `device_capacity` at some boundary), min_grow raises `ValueError("infeasible: <reason>")` — same convention as max_reduce.
+**Output failure mode**: if no feasible plan exists (e.g., forced footprint exceeds `fast_memory_capacity` at some boundary), min_grow raises `ValueError("infeasible: <reason>")` — same convention as max_reduce.
 
 ### 3.3 Forced facts (not subject to min_grow's optimization)
 
@@ -114,11 +114,11 @@ For every task `t`:
 - `t.runtime` is fixed; task order is fixed.
 
 End-of-step:
-- Every mutated host-resident object (any `o` whose id appears in some `t.mutates_inputs` and which has a host source) must be written back via `offload_after` before the final task ends, so the host copy reflects the mutation.
+- Every mutated backing-resident object (any `o` whose id appears in some `t.mutates_inputs` and which has a backing source) must be written back via `offload_after` before the final task ends, so the backing copy reflects the mutation.
 
 ### 3.4 Decisions (the min_grow search space)
 
-- Which host-initial objects to pre-place (append to `initial_memory` with `location="device"`).
+- Which backing-initial objects to pre-place (append to `initial_memory` with `location="fast"`).
 - For each non-forced object-interval, whether to keep the object resident across it or let it leave the pool.
 - For each resulting transfer (prefetch or offload), which task's trigger list to attach to (and thus its position in the FIFO).
 
@@ -149,7 +149,7 @@ class Interval:
 
 **An object's residency at boundary k** = `∃ (a, b) ∈ intervals[o]: a ≤ k < b`. (Note: `< b`, so an interval `(a, b)` means resident at boundaries `a, a+1, ..., b-1` but NOT at boundary `b`. The transition to non-residency happens AT boundary `b`.)
 
-**"Residency" here means pool occupancy** — the object's bytes count against the cap at boundaries in `[a, b)`. It does NOT mean "the h2d has completed and the object is consumable". The h2d for a prefetched interval fires at task `a`'s end (boundary `a`) and may take many ticks to complete; during that time the object is in pool (counts against cap) but not yet usable. If a compute task tries to consume an object whose h2d is still in flight, the simulator stalls that task until h2d completes. Stalls are normal — min_grow minimizes them by extending intervals leftward (smaller `a`) so the prefetch fires earlier and runs in parallel with more compute. See §5.2.1 and §7.
+**"Residency" here means pool occupancy** — the object's bytes count against the cap at boundaries in `[a, b)`. It does NOT mean "the from_slow has completed and the object is consumable". The from_slow for a prefetched interval fires at task `a`'s end (boundary `a`) and may take many ticks to complete; during that time the object is in pool (counts against cap) but not yet usable. If a compute task tries to consume an object whose from_slow is still in flight, the simulator stalls that task until from_slow completes. Stalls are normal — min_grow minimizes them by extending intervals leftward (smaller `a`) so the prefetch fires earlier and runs in parallel with more compute. See §5.2.1 and §7.
 
 **Pre-placement** = an object with `a = -1` in some interval.
 
@@ -166,7 +166,7 @@ Per-boundary bitmaps over `|objects| × |boundaries|` bits are equivalent inform
 
 ### Mutation tracking in the plan
 
-The plan doesn't store mutation state per se — mutation is a fact about the workload (`task.mutates_inputs`), not the plan. When Phase B emits triggers, it determines whether an object is "host-equivalent" (releasable) by checking: has any task in the object's residency intervals so far mutated it? If yes, it's "dirty" and must be offloaded (writeback); if no and it has a host source, it can be released.
+The plan doesn't store mutation state per se — mutation is a fact about the workload (`task.mutates_inputs`), not the plan. When Phase B emits triggers, it determines whether an object is "backing-equivalent" (releasable) by checking: has any task in the object's residency intervals so far mutated it? If yes, it's "dirty" and must be offloaded (writeback); if no and it has a backing source, it can be released.
 
 ---
 
@@ -193,36 +193,36 @@ For each interval `(a, b) ∈ intervals[o]`:
 
 1. **Entry handling** (object becomes resident at boundary `a`):
    - If `a == -1`: pre-place — add `o` to `initial_memory`. No trigger needed.
-   - If `a > -1`: a prefetch must complete by boundary `a`. The prefetch trigger goes on the task whose end is "as late as possible while still leaving enough room for the h2d to complete by boundary `a`'s start time". See §5.2.1 below for the exact rule.
+   - If `a > -1`: a prefetch must complete by boundary `a`. The prefetch trigger goes on the task whose end is "as late as possible while still leaving enough room for the from_slow to complete by boundary `a`'s start time". See §5.2.1 below for the exact rule.
 
 2. **Exit handling** (object leaves residency at boundary `b`; i.e., not in any interval at `b`):
    - If `b == n` (object alive at end of step) AND `o` was mutated in any task in `[a, b)`: emit `offload_after` on task `b-1` (writeback).
-   - If `b == n` AND `o` was not mutated AND `o` has a host source: emit `releases_after` on task `b-1`.
-   - If `b == n` AND `o` is an intermediate (no host source, not mutated, not used again): emit `releases_after` on task `b-1` (it's dead).
-   - If `b < n` (object will be needed again later via another interval): emit `offload_after` (if mutated since `a`, or no host source) or `releases_after` (if host-source and not mutated). On task `b-1`.
+   - If `b == n` AND `o` was not mutated AND `o` has a backing source: emit `releases_after` on task `b-1`.
+   - If `b == n` AND `o` is an intermediate (no backing source, not mutated, not used again): emit `releases_after` on task `b-1` (it's dead).
+   - If `b < n` (object will be needed again later via another interval): emit `offload_after` (if mutated since `a`, or no backing source) or `releases_after` (if backing-source and not mutated). On task `b-1`.
 
 3. **Intra-interval triggers**: none. Within `[a, b)` the object is resident and untouched by triggers (compute tasks may still mutate it, but that doesn't change the plan).
 
 **5.2.1 — Plan intervals are pool-occupancy intervals**
 
-The plan's intervals describe **pool occupancy**, not "h2d-completed-by" boundaries. An interval `(a, b)` for object `o` means: `o` counts against the cap at boundaries `a, a+1, ..., b-1`. Phase B's job is to emit triggers so the simulator achieves this occupancy pattern; whether the h2d behind it actually finishes "in time" for the consuming task is the simulator's concern, not the plan's.
+The plan's intervals describe **pool occupancy**, not "from_slow-completed-by" boundaries. An interval `(a, b)` for object `o` means: `o` counts against the cap at boundaries `a, a+1, ..., b-1`. Phase B's job is to emit triggers so the simulator achieves this occupancy pattern; whether the from_slow behind it actually finishes "in time" for the consuming task is the simulator's concern, not the plan's.
 
 **Trigger placement rule (deterministic)**:
 
 For each interval `(a, b) ∈ intervals[o]`:
 - **Entry trigger**:
-  - `a == -1` → pre-place `o` (append to `initial_memory` with `location="device"`). No prefetch trigger.
-  - `o` is produced by task `a` (i.e., `o.id ∈ tasks[a].outputs`) → no entry trigger. The output is created on-device by the task; pool entry is implicit at task `a`'s end.
-  - Otherwise (`o` has a host source and needs h2d) → append `TransferTrigger(o.id)` to `tasks[a].prefetch_after`. The trigger fires at task `a`'s end (boundary `a`), the prefetch enqueues, and the object enters pool at boundary `a` per the simulator's "device entry created at transfer start" semantic.
+  - `a == -1` → pre-place `o` (append to `initial_memory` with `location="fast"`). No prefetch trigger.
+  - `o` is produced by task `a` (i.e., `o.id ∈ tasks[a].outputs`) → no entry trigger. The output is created on-compute by the task; pool entry is implicit at task `a`'s end.
+  - Otherwise (`o` has a backing source and needs from_slow) → append `TransferTrigger(o.id)` to `tasks[a].prefetch_after`. The trigger fires at task `a`'s end (boundary `a`), the prefetch enqueues, and the object enters pool at boundary `a` per the simulator's "compute entry created at transfer start" semantic.
 - **Exit trigger**: as described in §5.2 (release or offload on `tasks[b-1]`).
 
 **Why this is enough**:
 
-That's the whole rule. No deadline calculation. No "is the prefetch going to make it in time" check. If the h2d doesn't complete by the consuming task's start, the simulator stalls the task — that's normal behavior, not an error.
+That's the whole rule. No deadline calculation. No "is the prefetch going to make it in time" check. If the from_slow doesn't complete by the consuming task's start, the simulator stalls the task — that's normal behavior, not an error.
 
-min_grow's mechanism for AVOIDING stalls is at the plan-search level: **extend intervals leftward** (smaller `a`) to fire the prefetch earlier and give the h2d more time to overlap with compute. For a non-pre-placed object first used at task `t`, the MIN-plan interval `[t-1, t]` means the prefetch fires at task `t-1`'s end with zero compute to hide behind — task `t` will stall for the full h2d duration. The extension `[t-k, t]` fires the prefetch `k-1` tasks earlier, hiding the h2d behind `k-1` tasks of compute. If `Σ runtime over those k-1 tasks ≥ h2d_duration`, no stall.
+min_grow's mechanism for AVOIDING stalls is at the plan-search level: **extend intervals leftward** (smaller `a`) to fire the prefetch earlier and give the from_slow more time to overlap with compute. For a non-pre-placed object first used at task `t`, the MIN-plan interval `[t-1, t]` means the prefetch fires at task `t-1`'s end with zero compute to hide behind — task `t` will stall for the full from_slow duration. The extension `[t-k, t]` fires the prefetch `k-1` tasks earlier, hiding the from_slow behind `k-1` tasks of compute. If `Σ runtime over those k-1 tasks ≥ from_slow_duration`, no stall.
 
-The beam search evaluates these extensions via simulator replay. An extension that fully hides the h2d reduces makespan (good); an extension that adds pool pressure causing other transfers to defer increases makespan (bad). The simulator's verdict is the deciding signal.
+The beam search evaluates these extensions via simulator replay. An extension that fully hides the from_slow reduces makespan (good); an extension that adds pool pressure causing other transfers to defer increases makespan (bad). The simulator's verdict is the deciding signal.
 
 **No schedule-infeasibility from trigger placement**: the only infeasibility min_grow raises is `respects_static_cap(MIN_plan) == False` (forced footprint exceeds cap at some boundary — the chain can't run at all). Every other plan, including ones the simulator will stall on, is a legal candidate.
 
@@ -231,10 +231,10 @@ The beam search evaluates these extensions via simulator replay. An extension th
 The simulator's FIFO order = the temporal order in which triggers fire (which equals the temporal order of attached tasks' end times). Phase B doesn't reorder across tasks: the natural ordering induced by trigger-task-id is what the simulator sees.
 
 For multiple triggers attached to the same task (list order = FIFO order within that task's enqueue burst), Phase B sorts:
-- `prefetch_after` by "first-use boundary of the prefetched object" ascending (EDF on h2d).
+- `prefetch_after` by "first-use boundary of the prefetched object" ascending (EDF on from_slow).
 - `offload_after` by "interval entry boundary" ascending (oldest exits first).
 
-Per-stream EDF is **provably optimal** for the within-stream scheduling sub-problem given fixed deadlines (Liu & Layland 1973). It is **not** globally optimal — the plan itself can be suboptimal, and joint h2d/d2h optimization is beyond EDF — but it's the right baseline.
+Per-stream EDF is **provably optimal** for the within-stream scheduling sub-problem given fixed deadlines (Liu & Layland 1973). It is **not** globally optimal — the plan itself can be suboptimal, and joint from_slow/to_slow optimization is beyond EDF — but it's the right baseline.
 
 ---
 
@@ -281,11 +281,11 @@ function v5_plan_search(bare_chain) -> Plan:
 
 - `respects_static_cap(plan)`: at every boundary `k`, sum of sizes of objects whose plan-interval contains `k` ≤ cap. Pure analytic; cheap (`O(|objects| · n)`). Does NOT model in-flight transit (deliberate — see §7). This is the ONLY feasibility gate min_grow applies; if a plan passes this, it's a legal candidate even if the simulator will stall on it.
 
-- `score(plan)`: derive triggers (Phase B), run `simulator.run(..., snapshots=False)`, and return makespan = `max(iv.end for iv in event_log.task_intervals)` plus `event_log.peak_device_bytes`. One lightweight simulator replay per call. Always returns a finite makespan for plans that pass `respects_static_cap` (stalls just inflate the makespan; they don't fail the simulation). The later pending-outbound stall repair pass may still use full snapshots because it inspects per-object memory state.
+- `score(plan)`: derive triggers (Phase B), run `simulator.run(..., snapshots=False)`, and return makespan = `max(iv.end for iv in event_log.task_intervals)` plus `event_log.peak_fast_memory_bytes`. One lightweight simulator replay per call. Always returns a finite makespan for plans that pass `respects_static_cap` (stalls just inflate the makespan; they don't fail the simulation). The later pending-outbound stall repair pass may still use full snapshots because it inspects per-object memory state.
 
 - `enumerate_extensions(plan)`: for each object `o` and each gap in `intervals[o]`, generate the extension that fills that gap (merge intervals). Also: if no interval starts at `-1`, generate pre-placement of `o`. Total candidates ≈ `O(|objects| · (uses per object))` ≈ `O(|objects| · L)` for the chain.
 
-- `top_k_by_analytic_bound(candidates, K)`: rank by `compute_time + max(h2d_bytes_total / bw_h2d, d2h_bytes_total / bw_d2h)`. Loose upper bound on makespan; used only for prioritizing which candidates to spend simulator budget on. The actual score is from simulator, so analytic looseness doesn't affect correctness — only which candidates we evaluate first.
+- `top_k_by_analytic_bound(candidates, K)`: rank by `compute_time + max(from_slow_bytes_total / bw_from_slow, to_slow_bytes_total / bw_to_slow)`. Loose upper bound on makespan; used only for prioritizing which candidates to spend simulator budget on. The actual score is from simulator, so analytic looseness doesn't affect correctness — only which candidates we evaluate first.
 
 **Parameters** (knobs, not architectural):
 - `K_beam` = 3 (initial)
@@ -305,30 +305,30 @@ function derive_schedule(plan, bare_chain) -> TaskChain:
         for (a, b) in ivs:
             # Entry trigger (see §5.2.1)
             if a == -1:
-                initial_memory.append(make_device_object(o))   # pre-place
+                initial_memory.append(make_compute_object(o))   # pre-place
             elif o.id in {alloc.id for alloc in bare_chain.tasks[a].outputs}:
                 pass   # o is produced by task a; no entry trigger needed
             else:
-                # host-source object, needs h2d. Trigger fires at task a's end;
-                # the simulator handles h2d execution and any stall it causes.
+                # backing-source object, needs from_slow. Trigger fires at task a's end;
+                # the simulator handles from_slow execution and any stall it causes.
                 triggers[a].prefetches.append(TransferTrigger(o.id))
 
             # Exit trigger
             if b == n: continue   # end-of-step handling below
             mutated_in_interval = any(o.id in bare_chain.tasks[t].mutates_inputs
                                        for t in range(a + 1, b))
-            if has_host_source(o) and not mutated_in_interval:
+            if has_backing_source(o) and not mutated_in_interval:
                 triggers[b - 1].releases.append(o.id)
             else:
                 triggers[b - 1].offloads.append(TransferTrigger(o.id))
 
-    # End-of-step writebacks for mutated host-resident objects
+    # End-of-step writebacks for mutated backing-resident objects
     for o, ivs in plan.intervals.items():
         last_iv = ivs[-1]
         if last_iv.b == n and is_dirty_at_end(o, plan, bare_chain):
             triggers[n - 1].offloads.append(TransferTrigger(o.id))
 
-    # Sort each task's trigger lists for in-task FIFO order (EDF on h2d, FIFO on d2h)
+    # Sort each task's trigger lists for in-task FIFO order (EDF on from_slow, FIFO on to_slow)
     for t_id, tset in triggers.items():
         tset.prefetches.sort(key=lambda tt: first_use_boundary(tt.obj_id, plan))
         tset.offloads.sort(key=lambda tt: original_entry_boundary(tt.obj_id, plan))
@@ -342,14 +342,14 @@ This is fully deterministic given a plan. No search, no heuristics with knobs, n
 
 ## 7. Treatment of stream congestion and transfer chaining
 
-**Transfer chaining (offload completion frees bytes → unblocks deferred prefetch)**: the simulator handles this natively. When a prefetch can't fit (its bytes would push pool > cap), the simulator marks it deferred and re-checks each time the pool shrinks (a release or d2h completion). min_grow emits the prefetch trigger at a task end — what happens after that point is the simulator's job. min_grow does not try to "plan around" the deferral because the deferral itself is correct behavior: the prefetch fires at the earliest legal moment.
+**Transfer chaining (offload completion frees bytes → unblocks deferred prefetch)**: the simulator handles this natively. When a prefetch can't fit (its bytes would push pool > cap), the simulator marks it deferred and re-checks each time the pool shrinks (a release or to_slow completion). min_grow emits the prefetch trigger at a task end — what happens after that point is the simulator's job. min_grow does not try to "plan around" the deferral because the deferral itself is correct behavior: the prefetch fires at the earliest legal moment.
 
 The consequence of deferral on makespan is observed as a stalled compute task downstream (the task that needs the deferred object waits). The simulator's drain loop accounts for this stall; the makespan it returns reflects it; min_grow's beam search penalizes the plan via score and prunes it.
 
-**Stream congestion (FIFO depth, transit time, h2d/d2h competition for cap)**: min_grow does NOT model any of this analytically. The only analytic check min_grow makes is `respects_static_cap`, which sums sizes at task boundaries assuming all transfers have completed. This is a necessary-but-not-sufficient feasibility check — plans that pass might still be congestion-stalled at simulation time.
+**Stream congestion (FIFO depth, transit time, from_slow/to_slow competition for cap)**: min_grow does NOT model any of this analytically. The only analytic check min_grow makes is `respects_static_cap`, which sums sizes at task boundaries assuming all transfers have completed. This is a necessary-but-not-sufficient feasibility check — plans that pass might still be congestion-stalled at simulation time.
 
 This is the deliberate central design choice of min_grow. The reasoning:
-- max_reduce has 5 known bugs that all trace to inaccurate analytic congestion modeling (`_compute_d2h_tails`, `stream_cost` ranking, EDF lookahead extension).
+- max_reduce has 5 known bugs that all trace to inaccurate analytic congestion modeling (`_compute_to_slow_tails`, `stream_cost` ranking, EDF lookahead extension).
 - The simulator already models congestion correctly (FIFO, deferral, transit).
 - One simulator replay costs less than a tenth of a second to a few seconds — affordable as the cost oracle.
 - Trusting the simulator's verdict eliminates an entire class of "analytic model disagrees with reality" bugs.
@@ -358,14 +358,14 @@ The trade-off is that min_grow cannot prove a plan optimal without trying it; th
 
 **What about feasibility of the analytic pre-filter?** `respects_static_cap` can FALSELY accept a plan that simulation-stalls due to transit. That's fine — the simulator will reveal it as poor makespan. `respects_static_cap` is purely a pre-filter to skip "obviously infeasible" plans (sum-of-sizes > cap at some boundary), not a positive guarantee of feasibility.
 
-**Why not also use the static cap check more aggressively (e.g., model d2h tails)?** Because max_reduce tried that exact thing and it was over-conservative (rejected configs that sliding handled). The principled simulator-only approach is more robust.
+**Why not also use the static cap check more aggressively (e.g., model to_slow tails)?** Because max_reduce tried that exact thing and it was over-conservative (rejected configs that sliding handled). The principled simulator-only approach is more robust.
 
 ---
 
 ## 8. Worked example (L=2 transformer, tight cap)
 
 Workload: `tasks = [f_1, f_2, head, b_2, b_1]` (5 active tasks). Objects:
-- Host-init: `input, W_1, W_2, head_W`
+- Backing-init: `input, W_1, W_2, head_W`
 - Produced: `A_1, A_2, y_1, y_2, dy_2, dy_1`
 - Pre-allocated (mutated): `dW_1, dW_2, head_dW`
 
@@ -380,23 +380,23 @@ Workload: `tasks = [f_1, f_2, head, b_2, b_1]` (5 active tasks). Objects:
 
 **MIN plan** (forced residency only) for `W_1`: intervals `[(-1, 1), (3, 4)]` — resident at boundaries `-1, 0` for `f_1`'s use, gone at boundaries `1, 2, 3`, back resident at `3, 4` for `b_1`'s use. Same shape for `W_2`: `[(-1, 2), (2, 4)]` (used at `f_2` and `b_2`; these intervals are adjacent, so they merge to `[(-1, 4)]`).
 
-**An extension candidate**: merge `W_1`'s two intervals into `[(-1, 4)]`. This makes `W_1` continuously resident — saving one h2d (re-prefetch of `W_1` before `b_1`), at the cost of `size[W_1]` bytes on device across boundaries 1, 2, 3.
+**An extension candidate**: merge `W_1`'s two intervals into `[(-1, 4)]`. This makes `W_1` continuously resident — saving one from_slow (re-prefetch of `W_1` before `b_1`), at the cost of `size[W_1]` bytes on compute across boundaries 1, 2, 3.
 
 If cap allows the extra `size[W_1]` bytes at those boundaries, the extension is feasible. Phase A evaluates: derive triggers (no re-prefetch trigger for `W_1`), run simulator, compare makespan. If makespan dropped, keep the extension.
 
 **A trigger placement example**: for `W_2` in MIN plan with intervals `[(-1, 2), (2, 4)]`, the gap is empty (intervals are adjacent at boundary 2). No trigger needed at the boundary — `W_2` is continuously resident through boundary 2 (no exit/entry). The two intervals collapse to one in practice.
 
-**A schedule-infeasibility example**: suppose Phase A proposes "pre-place `A_2` from `-1`" as an extension. But `A_2` is produced by `f_2` (not host-init) — there's no h2d for `A_2`. The "pre-place" extension is invalid for non-host-init objects; `enumerate_extensions` filters these out.
+**A schedule-infeasibility example**: suppose Phase A proposes "pre-place `A_2` from `-1`" as an extension. But `A_2` is produced by `f_2` (not backing-init) — there's no from_slow for `A_2`. The "pre-place" extension is invalid for non-backing-init objects; `enumerate_extensions` filters these out.
 
 ---
 
 ## 9. Edge cases
 
 - **Forced footprint exceeds cap at some boundary**: `respects_static_cap(MIN_plan)` returns False. min_grow raises `ValueError("infeasible: forced footprint exceeds cap at boundary k")`. This is the ONLY way min_grow raises — the chain literally cannot run, even with perfect JIT. No recompute fallback in scope.
-- **MIN plan runs with stalls**: this is the COMMON case, not an error. The simulator stalls compute tasks when their inputs aren't h2d-ready. Stall time is reflected in makespan. Beam search extends intervals leftward to reduce stalls.
-- **Object with no host source and not produced on-device**: shouldn't happen in well-formed workload. If it does, schema validation should catch upstream of min_grow.
+- **MIN plan runs with stalls**: this is the COMMON case, not an error. The simulator stalls compute tasks when their inputs aren't from_slow-ready. Stall time is reflected in makespan. Beam search extends intervals leftward to reduce stalls.
+- **Object with no backing source and not produced on-compute**: shouldn't happen in well-formed workload. If it does, schema validation should catch upstream of min_grow.
 - **Object mutated multiple times across intervals**: the "is dirty" check is per-interval (any task in `(a, b)` that mutates `o`). If dirty in interval 1 and clean in interval 2 (no further mutation), interval 1's exit is offload, interval 2's exit is release — distinct decisions.
-- **End-of-step writeback for mutated host-resident objects**: even if the final interval ends at `n` (object stays resident to end), if it was mutated, an offload trigger is added at task `n-1` (the last task) so the d2h is enqueued before step end. The simulator's drain ensures completion before the step terminates.
+- **End-of-step writeback for mutated backing-resident objects**: even if the final interval ends at `n` (object stays resident to end), if it was mutated, an offload trigger is added at task `n-1` (the last task) so the to_slow is enqueued before step end. The simulator's drain ensures completion before the step terminates.
 - **Empty beam after pre-filter**: no valid extensions exist (every extension would exceed cap somewhere). Return current best (might be MIN itself).
 - **Simulator returns makespan worse after extension**: extension added pool pressure that caused other transfers to defer, ultimately costing more than it saved. Beam search rejects via the diminishing-returns check.
 
@@ -410,9 +410,9 @@ If cap allows the extra `size[W_1]` bytes at those boundaries, the extension is 
 | Direction | Reduce (evict) | Grow (extend) |
 | Cost signal | Static heuristic 5-tuple key | Simulator replay |
 | Beam width | 1 (greedy single-pass) | K_beam (default 3) |
-| Stream congestion model | Analytic (`_compute_d2h_tails`, `stream_cost`) | None — simulator handles |
+| Stream congestion model | Analytic (`_compute_to_slow_tails`, `stream_cost`) | None — simulator handles |
 | EDF extension | Phase 3 "lookahead" extends prefetch intervals | No extension; EDF inferred from plan |
-| D2H scheduling | Implicit, triggered by exit boundaries | Same, EDF-sorted within task |
+| to-slow scheduling | Implicit, triggered by exit boundaries | Same, EDF-sorted within task |
 | Trigger placement | Computed during Phase 2 of reduce | Computed in Phase B after plan finalizes |
 | Path-dependence | Yes (issue #1) | No (beam keeps top-K) |
 | Loose-cap regression | Yes (issue #2) | No (no extension to over-apply) |
@@ -476,4 +476,4 @@ Run `scripts/compare_policies.py` with min_grow added:
 - General DAG topology — chain-first; DAG extension is future work on same plan representation.
 - CP-SAT verification oracle ([problem.md](../../problem.md) §7.3) — parallel workstream for bounding gap to provable optimum; not blocking min_grow.
 - Warm-start from prior policies — held in reserve as fallback.
-- Joint h2d/d2h optimization (EDF per-stream is optimal given fixed deadlines, but joint scheduling could shave more — out of scope).
+- Joint from_slow/to_slow optimization (EDF per-stream is optimal given fixed deadlines, but joint scheduling could shave more — out of scope).

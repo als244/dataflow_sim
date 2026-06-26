@@ -2,9 +2,9 @@
 
 Activation recomputation trades compute-stream time for memory and transfer
 relief: instead of saving a layer's activations (keeping them resident or
-round-tripping them over PCIe), the chain re-produces them in the layer's
+round-tripping them over tier-link), the chain re-produces them in the layer's
 recompute slot right before backward. Recompute and offload are competing
-rematerialization channels for the same bytes, and which is cheaper depends
+ways to regenerate the same bytes, and which is cheaper depends
 on the whole schedule — model shape, sequence length, hardware ratios, and
 memory capacity — so the choice is made per configuration, by measurement.
 

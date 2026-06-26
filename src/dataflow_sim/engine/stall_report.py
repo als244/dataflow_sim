@@ -2,7 +2,7 @@
 
 The report answers, from the simulator's ground truth, where a plan's time
 went: how much compute stalled, whether each stall waited on an inbound
-transfer (and for which object) or on device capacity, how busy each
+transfer (and for which object) or on compute capacity, how busy each
 transfer stream was, and when each stream had enqueued work waiting behind
 it (backlog). Layered planners — e.g. recompute selection — consume this
 instead of re-deriving pressure from any analytic model.
@@ -22,11 +22,11 @@ class StallReport:
     makespan_us: int
     compute_busy_us: int
     stall_us: int                      # total compute idle between tasks
-    input_wait_us: int                 # stalls ending exactly at an input's h2d arrival
-    capacity_wait_us: int              # stalls ending exactly at a d2h completion
+    input_wait_us: int                 # stalls ending exactly at an input's from_slow arrival
+    capacity_wait_us: int              # stalls ending exactly at a to_slow completion
     other_wait_us: int                 # stalls with no attributable transfer event
     stall_by_object: dict[str, int]    # input-wait blame per object id
-    stream_busy_us: dict[str, int]     # {"h2d": ..., "d2h": ...}
+    stream_busy_us: dict[str, int]     # {"from_slow": ..., "to_slow": ...}
     backlog_us: dict[str, int]         # time each stream had waiting work
     backlog_windows: dict[str, list[tuple[int, int]]]
     transfer_backlog_overlap: dict[str, int] = field(default_factory=dict)
@@ -35,7 +35,7 @@ class StallReport:
 
 
 def _transfer_obj(task_id: str) -> str:
-    # "h2d:OBJ" or "h2d:OBJ#2" -> "OBJ"
+    # "from_slow:OBJ" or "from_slow:OBJ#2" -> "OBJ"
     obj = task_id.split(":", 1)[1]
     return obj.split("#", 1)[0]
 
@@ -70,14 +70,14 @@ def _overlap(a0: int, a1: int, windows: list[tuple[int, int]]) -> int:
 def build_stall_report(chain: TaskChain, log: EventLog) -> StallReport:
     compute = [iv for iv in log.task_intervals if iv.track == "compute"]
     transfers = {
-        "h2d": [iv for iv in log.task_intervals if iv.track == "h2d"],
-        "d2h": [iv for iv in log.task_intervals if iv.track == "d2h"],
+        "from_slow": [iv for iv in log.task_intervals if iv.track == "from_slow"],
+        "to_slow": [iv for iv in log.task_intervals if iv.track == "to_slow"],
     }
     makespan = max((iv.end for iv in log.task_intervals), default=0)
     compute_busy = sum(iv.end - iv.start for iv in compute)
 
     # Transfer arrival times by direction: (end_time -> object ids ending then)
-    ends_at: dict[str, dict[int, set[str]]] = {"h2d": {}, "d2h": {}}
+    ends_at: dict[str, dict[int, set[str]]] = {"from_slow": {}, "to_slow": {}}
     for direction, ivs in transfers.items():
         for iv in ivs:
             ends_at[direction].setdefault(iv.end, set()).add(_transfer_obj(iv.task_id))
@@ -94,14 +94,14 @@ def build_stall_report(chain: TaskChain, log: EventLog) -> StallReport:
             continue
         stall_us += gap
         task = tasks_by_id.get(iv.task_id)
-        arrived = ends_at["h2d"].get(iv.start, set())
+        arrived = ends_at["from_slow"].get(iv.start, set())
         blocking = sorted(arrived & set(task.inputs)) if task else []
         if blocking:
             input_wait += gap
             share = gap // len(blocking)
             for oid in blocking:
                 stall_by_object[oid] = stall_by_object.get(oid, 0) + share
-        elif iv.start in ends_at["d2h"]:
+        elif iv.start in ends_at["to_slow"]:
             capacity_wait += gap
         else:
             other_wait += gap
@@ -110,16 +110,16 @@ def build_stall_report(chain: TaskChain, log: EventLog) -> StallReport:
     # for the first transfers, t=0 has no trigger -> use its own start) until
     # it begins on the stream. Triggers are matched to transfer instances in
     # order per (direction, object).
-    trigger_times: dict[str, dict[str, list[int]]] = {"h2d": {}, "d2h": {}}
+    trigger_times: dict[str, dict[str, list[int]]] = {"from_slow": {}, "to_slow": {}}
     compute_end_by_task = {iv.task_id: iv.end for iv in compute}
     for t in chain.tasks:
         t_end = compute_end_by_task.get(t.id)
         if t_end is None:
             continue
         for trig in t.prefetch_after:
-            trigger_times["h2d"].setdefault(trig.obj_id, []).append(t_end)
+            trigger_times["from_slow"].setdefault(trig.obj_id, []).append(t_end)
         for trig in t.offload_after:
-            trigger_times["d2h"].setdefault(trig.obj_id, []).append(t_end)
+            trigger_times["to_slow"].setdefault(trig.obj_id, []).append(t_end)
 
     backlog_windows: dict[str, list[tuple[int, int]]] = {}
     backlog_us: dict[str, int] = {}

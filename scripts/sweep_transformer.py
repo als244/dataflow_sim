@@ -56,13 +56,13 @@ def sweep(model: str, budget: float):
             bare = build_transformer_training_workload(spec, hw, cfg).chain
             for cap_gb in caps_gb:
                 cap = int(cap_gb * 1e9)
-                bare_cap = replace(bare, device_capacity=cap)
-                sw_ms, _, sw_err = _safe("sliding", apply_sliding_window_policy, bare, window_size=2, device_capacity=cap)
+                bare_cap = replace(bare, fast_memory_capacity=cap)
+                sw_ms, _, sw_err = _safe("sliding", apply_sliding_window_policy, bare, window_size=2, fast_memory_capacity=cap)
                 v2_ms, _, v2_err = _safe("v2", apply_belady_reactive_policy, bare_cap)
                 v4_ms, _, v4_err = _safe("v4", apply_max_reduce_policy, bare_cap)
                 v5_ms, v5_t, v5_err = _safe("v5", apply_min_grow_policy, bare_cap, time_budget_s=budget)
                 pressurefit_ms, pressurefit_t, pressurefit_err = _safe(
-                    "pressurefit", apply_pressurefit_policy, bare, device_capacity=cap,
+                    "pressurefit", apply_pressurefit_policy, bare, fast_memory_capacity=cap,
                 )
 
                 cells = {

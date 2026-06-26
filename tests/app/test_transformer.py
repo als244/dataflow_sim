@@ -6,11 +6,14 @@ import math
 import pytest
 
 from dataflow_sim.engine.simulator import run as sim_run
+from dataflow_sim.workloads.dataflow import realize_dataflow_program
 from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS, HardwareSpec
 from dataflow_sim.workloads.training.optimizers import adamw_step_bytes, muon_step_flops_bytes
 from dataflow_sim.workloads.models.presets import load_model_presets
 from dataflow_sim.workloads.training.transformer import (
     TrainingConfig,
+    build_example_heterogeneous_transformer_program,
+    build_heterogeneous_transformer_training_program,
     build_layerwise_training_chain,
     build_transformer_training_workload,
 )
@@ -418,7 +421,7 @@ def test_memory_subop_timing(h100):
     assert t.math_us is None
     assert t.effective_tflops is None
     assert t.bound_by == "memory"
-    expected_seconds = 10**9 / (h100.gpu_membw_gbs * 1e9 * h100.mem_eff)
+    expected_seconds = 10**9 / (h100.fast_memory_bw_gbs * 1e9 * h100.mem_eff)
     expected_us = max(1, math.ceil(expected_seconds * 1e6))
     assert t.total_us == expected_us
 
@@ -449,10 +452,16 @@ def test_build_transformer_training_workload_llama3_h100(models, h100, cfg):
     assert all(rt == f_runtimes[0] for rt in f_runtimes)  # identical across layers
 
     # Breakdown structure
-    assert set(breakdown.keys()) == {"fwd", "bwd", "head", "optimizer", "totals_us"}
+    assert set(breakdown.keys()) == {
+        "compute_blocks", "fwd", "bwd", "head", "optimizer", "totals_us",
+    }
     assert set(breakdown["totals_us"].keys()) == {
         "layer_fwd", "layer_bwd", "head", "optimizer_step", "layer_recompute",
     }
+    block_by_key = {block["key"]: block for block in breakdown["compute_blocks"]}
+    assert block_by_key["layer_forward"]["instance_count"] == models["llama3_8B"].n_layers
+    assert block_by_key["layer_backward"]["instance_count"] == models["llama3_8B"].n_layers
+    assert block_by_key["head"]["instance_count"] == 1
     assert breakdown["optimizer"] == []
     assert breakdown["totals_us"]["optimizer_step"] == 0
     assert breakdown["totals_us"]["layer_fwd"] == layer_fwd_microseconds(
@@ -478,8 +487,8 @@ def test_grad_accum_rounds_namespace_per_round_objects():
         "f_0_1_0", "f_0_1_1", "head_0_1", "r_0_1_1", "b_0_1_1", "r_0_1_0", "b_0_1_0",
     ]
     initial_by_id = {o.id: o for o in bare.initial_memory}
-    assert initial_by_id["input_0_0"].location == "device"
-    assert initial_by_id["input_0_1"].location == "host"
+    assert initial_by_id["input_0_0"].location == "fast"
+    assert initial_by_id["input_0_1"].location == "backing"
     assert "dW_0" not in initial_by_id
 
     outputs = {out.id for task in bare.tasks for out in task.outputs}
@@ -524,7 +533,7 @@ def test_optimizer_step_appended_after_accumulation_rounds():
 
     assert [t.id for t in bare.tasks[-2:]] == ["step_0_0", "step_0_1"]
     initial_by_id = {o.id: o for o in bare.initial_memory}
-    assert initial_by_id["O_0"].location == "host"
+    assert initial_by_id["O_0"].location == "backing"
     assert initial_by_id["O_0"].type == "optimizer"
     assert initial_by_id["O_0"].size == 128
 
@@ -540,11 +549,11 @@ def test_optimizer_step_appended_after_accumulation_rounds():
         weight_size=64,
         optimizer_state_size=128,
         optimizer_runtime=7,
-        final_model_state_on_host=True,
+        final_model_state_on_backing=True,
     )
     assert finalized.final_locations == {
-        "W_0": "host", "O_0": "host",
-        "W_1": "host", "O_1": "host",
+        "W_0": "backing", "O_0": "backing",
+        "W_1": "backing", "O_1": "backing",
     }
 
 
@@ -574,7 +583,7 @@ def test_transformer_optimizer_adds_state_and_step_tasks(models, h100, cfg):
         seqlen=cfg.seqlen,
         num_seqs=cfg.num_seqs,
         optimizer="adamw",
-        final_model_state_on_host=True,
+        final_model_state_on_backing=True,
     )
     spec = models["llama3_8B"]
     workload = build_transformer_training_workload(spec, h100, opt_cfg)
@@ -590,14 +599,68 @@ def test_transformer_optimizer_adds_state_and_step_tasks(models, h100, cfg):
     assert initial_by_id["O_0"].size == optimizer_state_bytes_per_layer(spec, "adamw")
     assert initial_by_id["O_0"].type == "optimizer"
     assert bare.final_locations == {}
-    assert finalized.final_locations["W_0"] == "host"
-    assert finalized.final_locations["O_0"] == "host"
+    assert finalized.final_locations["W_0"] == "backing"
+    assert finalized.final_locations["O_0"] == "backing"
     assert "dW_0" not in finalized.final_locations
     assert bare.tasks[-1].runtime == optimizer_step_microseconds(spec, h100, opt_cfg)
     assert breakdown["optimizer"][0]["name"] == "adamw_step"
     assert breakdown["totals_us"]["optimizer_step"] == optimizer_step_microseconds(
         spec, h100, opt_cfg
     )
+
+
+def test_transformer_workload_exposes_token_metrics(models, h100, cfg):
+    workload = build_transformer_training_workload(models["nanogpt_124M"], h100, cfg)
+
+    metrics = workload.metadata["metrics"]
+    assert metrics["primary_unit"] == "tokens"
+    assert metrics["primary_count"] == cfg.seqlen * cfg.num_seqs
+    assert workload.metadata["preview"]["metrics"] == metrics
+
+
+def test_heterogeneous_transformer_program_has_shared_and_special_blocks(models, h100):
+    cfg = TrainingConfig(seqlen=128, num_seqs=1)
+    dense = TransformerSpec(
+        vocab_size=32_000,
+        n_layers=1,
+        d_model=512,
+        head_dim=64,
+        n_heads=8,
+        n_kv_heads=8,
+        expert_dim=2_048,
+        num_shared_experts=1,
+        num_routed_experts=0,
+        top_k=0,
+        qk_norm=True,
+    )
+    moe = TransformerSpec(
+        vocab_size=32_000,
+        n_layers=1,
+        d_model=512,
+        head_dim=64,
+        n_heads=8,
+        n_kv_heads=8,
+        expert_dim=1_536,
+        num_shared_experts=1,
+        num_routed_experts=8,
+        top_k=2,
+        qk_norm=True,
+    )
+    program = build_heterogeneous_transformer_training_program(
+        [dense, dense, moe, dense],
+        cfg,
+    )
+    hetero = build_example_heterogeneous_transformer_program(cfg)
+    hetero_workload = realize_dataflow_program(program, h100)
+
+    keys = {block.key for block in program.compute_blocks}
+    assert any("dense" in key and key.endswith("_forward") for key in keys)
+    assert any("moe" in key and key.endswith("_forward") for key in keys)
+    assert program.metrics is not None
+    assert program.metrics.primary_unit == "tokens"
+    assert hetero.metadata["kind"] == "training.transformer.heterogeneous"
+    assert hetero_workload.metadata["metrics"]["primary_unit"] == "tokens"
+    assert any(block["instance_count"] == 3 for block in hetero_workload.metadata["compute_blocks"])
 
 
 def test_head_subops_order_and_kinds(models, cfg):
@@ -680,7 +743,7 @@ def test_transformer_chain_is_runnable_with_policy(models, h100, cfg):
     from dataflow_sim.policies.belady_reactive import apply_belady_reactive_policy
     spec = models["nanogpt_124M"]
     bare = build_transformer_training_workload(spec, h100, cfg).chain
-    chain = apply_belady_reactive_policy(bare, device_capacity=None)
+    chain = apply_belady_reactive_policy(bare, fast_memory_capacity=None)
     log = sim_run(chain)
     # Every bare task produces a compute interval; policies may add transfer
     # intervals around those tasks.
@@ -702,7 +765,7 @@ def test_all_presets_load():
 def test_hardware_preset_defaults():
     h = HARDWARE_PRESETS["H100"]
     assert h.peak_tflops == 989
-    assert h.gpu_membw_gbs == 3000
+    assert h.fast_memory_bw_gbs == 3000
     assert h.mem_eff == 0.9
     r = HARDWARE_PRESETS["RTX_5090"]
     assert r.peak_tflops == 210

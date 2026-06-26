@@ -9,10 +9,10 @@ optimizer state. Per-task `runtime` is a roofline estimate produced by
 decomposing each block into compute and memory-bound **sub-ops**, timing each
 against a `HardwareSpec`, and summing. `Object` sizes come from the same
 dimensional math. The chain starts persistent weights and optimizer state on
-host and the first input on device; per-step gradients are produced by the
-backward pass rather than loaded from host. A policy
+backing and the first input on compute; per-step gradients are produced by the
+backward pass rather than loaded from backing. A policy
 (`sliding_window`, `max_reduce`, `min_grow`, etc.) decorates the bare chain
-with `TransferTrigger`s and an initial device pool before `simulator.run(...)`
+with `TransferTrigger`s and an initial compute pool before `simulator.run(...)`
 executes it.
 
 ## Object inventory
@@ -31,20 +31,20 @@ the object produced by the first round.
 
 ### `input_<k>_<j>` — first-layer residual-stream input
 - Dimensions: `[num_seqs, seqlen, d]`. Bytes: `T * d * 2`.
-- Lifetime: declared in `initial_memory`; `input_0_0` starts on device and
-  the rest start on host. Consumed only by `f_<k>_<j>_0`, then releasable.
+- Lifetime: declared in `initial_memory`; `input_0_0` starts on compute and
+  the rest start on backing. Consumed only by `f_<k>_<j>_0`, then releasable.
 
 ### `W_i` (`i = 0..L-1`) — per-layer weight bank
 - Dimensions: opaque bundle of `params_per_layer(spec) = d * (hd*(2*nh + 2*nkv)
   + 3*edim*(ns + nr))` parameters. Counts **all** experts including unused
   routed ones — the bank does not shrink with `tk`.
 - Bytes: `params_per_layer(spec) * 2`.
-- Lifetime: starts on host; referenced by `f_<k>_<j>_<i>`,
+- Lifetime: starts on backing; referenced by `f_<k>_<j>_<i>`,
   `r_<k>_<j>_<i>`, and `b_<k>_<j>_<i>` across all steps. If an optimizer
   tail is enabled, `step_<k>_<i>` mutates it. If
-  `TrainingConfig.final_model_state_on_host=True`,
-  `final_locations[W_i] = "host"` asks the policy to return the updated bytes
-  to host by chain end.
+  `TrainingConfig.final_model_state_on_backing=True`,
+  `final_locations[W_i] = "backing"` asks the policy to return the updated bytes
+  to backing by chain end.
 
 ### `A_<k>_<j>_<i>` — saved activation for layer `i`
 - Dimensions: `[num_seqs, seqlen, hd*(2*nh + 2*nkv) + 2*d + 2*(ns + tk)*edim]`.
@@ -62,7 +62,7 @@ the object produced by the first round.
 
 ### `W_head` — head projection weights
 - Dimensions: `[d, vocab_size]`. Bytes: `d * vocab_size * 2`.
-- Lifetime: starts on host; referenced by every `head_<k>_<j>`.
+- Lifetime: starts on backing; referenced by every `head_<k>_<j>`.
 
 ### `dy_head_<k>_<j>` and `dy_<k>_<j>_<i>` — backward residual-stream gradients
 - Dimensions: `[num_seqs, seqlen, d]` (same shape as `y_i`). Bytes: `T * d * 2`.
@@ -86,10 +86,10 @@ the object produced by the first round.
 - Bytes: `2 * layer_weight_bytes(spec)` for AdamW, representing two
   state tensors; `layer_weight_bytes(spec)` for Muon, representing one
   momentum tensor.
-- Lifetime: starts on host, is consumed and mutated by `step_<k>_<i>` in
-  each training step. If `TrainingConfig.final_model_state_on_host=True`,
-  `final_locations[O_i] = "host"` asks the policy to return the updated bytes
-  to host by chain end.
+- Lifetime: starts on backing, is consumed and mutated by `step_<k>_<i>` in
+  each training step. If `TrainingConfig.final_model_state_on_backing=True`,
+  `final_locations[O_i] = "backing"` asks the policy to return the updated bytes
+  to backing by chain end.
 
 ### MoE-only `x_scatter` / `x_gather` / `dy_scatter` / `dy_gather`
 When `nr > 0` and `tk > 0`, the per-layer sub-op stream gains scatter/gather
@@ -114,8 +114,8 @@ that step. Each round's activations and residual gradients are distinct;
 `dW_k_i` is shared only within step `k`. Persistent `W_i` and `O_i` carry
 state across steps. By default, omitted terminal placement means the final
 updated model state is disposable after its last simulated use. Set
-`TrainingConfig.final_model_state_on_host=True` to add
-`final_locations[W_i] = "host"` and `final_locations[O_i] = "host"` for each
+`TrainingConfig.final_model_state_on_backing=True` to add
+`final_locations[W_i] = "backing"` and `final_locations[O_i] = "backing"` for each
 optimizer-backed layer.
 
 | Task    | inputs                                        | outputs                          | runtime              |
@@ -124,7 +124,7 @@ optimizer-backed layer.
 | `f_k_j_i>0` | `y_k_j_{i-1}`, `W_i`                    | `A_k_j_i`, `y_k_j_i`             | same                 |
 | `head_k_0`  | `y_k_0_{L-1}`, `W_head`                 | `dy_head_k_0`, `dW_head_k`       | `head_microseconds(...)` |
 | `head_k_j>0` | `y_k_j_{L-1}`, `W_head`, `dW_head_k` (mutated) | `dy_head_k_j`             | same                 |
-| `r_k_j_i`   | `A_k_j_i`, `W_i`                        | — (touch-only, `runtime=0`)      | 0; a recompute hook  |
+| `r_k_j_i`   | `input_k_j` for `i=0`, else `y_k_j_{i-1}`; `W_i` | — (touch-only, `runtime=0`)      | 0; a recompute hook  |
 | `b_k_0_i`   | upstream `dy`, `A_k_0_i`, `W_i`         | `dy_k_0_i`, `dW_k_i`             | `layer_bwd_microseconds(...)` |
 | `b_k_j>0_i` | upstream `dy`, `A_k_j_i`, `W_i`, `dW_k_i` (mutated) | `dy_k_j_i`              | same                 |
 | `step_k_i` | `dW_k_i`, `W_i` (mutated), `O_i` (mutated) | —                              | `optimizer_step_microseconds(...)` |
@@ -134,8 +134,9 @@ per-task scalar in µs (1 tick = 1 µs).
 
 ### Recompute tasks (`r_i`)
 Each backward step is preceded by a zero-runtime `r_i` task whose only job is
-to declare `inputs=[A_i, W_i]` — that pins both objects co-resident with the
-upcoming `b_i` without overlapping a compute slot. The task is created in
+to declare the layer input (`input` for layer 0, otherwise the previous
+layer output) and `W_i` as dependencies before the upcoming backward task
+uses `A_i`. The task is created in
 `src/dataflow_sim/workloads/training/transformer.py` (the backward loop in
 `build_layerwise_training_chain`) and currently has `runtime=0`.
 
@@ -150,7 +151,7 @@ parameter through `build_transformer_training_workload` alongside the existing
 `runtime` for each task is the sum of `time_subop(s, hw).total_us` over the
 sub-ops from `forward_subops`, `backward_subops`, and `head_subops`. Each
 `SubOp` is compute-bound (rooflined against `peak_tflops * <eff_name>_eff`)
-or memory-bound (rooflined against `gpu_membw_gbs * mem_eff`); per-call time
+or memory-bound (rooflined against `fast_memory_bw_gbs * mem_eff`); per-call time
 is `max(math_us, mem_us)` and totals scale by `count` (used for "one matmul
 per expert"). `attn_bwd` declares `effective_flops = 4×` while doing
 `flops = 5×` so the effective-TFLOPS metric isolates the flash-attention
@@ -291,7 +292,7 @@ log before compaction.
 For very large chains, the app runs the final simulation with
 `snapshots=False`. In that mode, makespan, peak memory, utilization metrics, and
 all compute/transfer intervals are still exact. The app also requests the
-simulator's compact `memory_trace`, so the GPU memory plot remains available.
+simulator's compact `memory_trace`, so the fast-memory plot remains available.
 Only per-event object-level memory contents and reference streams are omitted so
 the response does not spend minutes constructing data that the UI would heavily
 downsample.
@@ -305,11 +306,12 @@ downsample.
   like `datatypes` and `is_causal` in the JSON are ignored — bf16 and causal
   attention are hardcoded.
 - **`HARDWARE_PRESETS`** — name→`HardwareSpec` with the parameters that drive
-  every sub-op time: `peak_tflops` (compute roof), `gpu_membw_gbs` (HBM
-  roof), `interconnect_bw_gbs` (host↔device link, becomes the chain's
-  `bandwidth_h2d` / `bandwidth_d2h`), and the four efficiency knobs
+  every sub-op time: `peak_tflops` (compute roof), `fast_memory_bw_gbs` (HBM
+  roof), `from_slow_bw_gbs` / `to_slow_bw_gbs` (backing↔compute transfer
+  links, becoming the chain's `bandwidth_from_slow` / `bandwidth_to_slow`),
+  and the four efficiency knobs
   `matmul_eff`, `attn_fwd_eff`, `attn_bwd_eff`, `mem_eff`. Shipped:
-  `H100` (989 TFLOPS / 3 TB/s / 50 GB/s PCIe-class link) and `RTX_5090`
+  `H100` (989 TFLOPS / 3 TB/s / 50 GB/s tier-link) and `RTX_5090`
   (210 TFLOPS / 1.5 TB/s / 30 GB/s).
 
 ## End-to-end three paths
@@ -325,14 +327,17 @@ downsample.
    `(num_seqs, seqlen)` and writes a results table.
    `scripts/compare_policies.py` reuses one bare chain and runs each
    registered policy against it for an apples-to-apples comparison.
-3. **Webapp.** The UI POSTs a model+hardware+training-config selection to
-   `POST /api/simulate`. The server builds the bare chain via
-   `build_transformer_training_workload`, applies the user-selected policy, runs the
-   simulator, and returns `{log, breakdown, summary, chain,
-   policy_diagnostics}`. The React frontend renders the event log as a
-   Gantt-style trace alongside the per-sub-op roofline table. For PressureFit,
-   `policy_diagnostics` reports candidate timings and the selected candidate;
-   for other policies it is `null`.
+3. **Webapp.** The UI first creates a workload selection: either a transformer
+   training preset/form or uploaded `DataflowProgram` JSON. `POST
+   /api/workloads/preview` sends `{workload, hardware}` and returns the
+   normalized schema, bare chain, workload stats, and hardware-resolved compute
+   block breakdown. `POST /api/simulate` then sends `{workload, hardware,
+   planner}`; the server realizes the workload into a bare chain, applies the
+   selected policy, runs the simulator, and returns `{log, breakdown, summary,
+   chain, workload_preview, policy_diagnostics}`. The React frontend renders the
+   event log as a Gantt-style trace alongside the compute block breakdown. For
+   PressureFit, `policy_diagnostics` reports candidate timings and the selected
+   candidate; for other policies it is `null`.
 
 ## See also
 - `docs/workload-recipe.md` — the general workload-construction API

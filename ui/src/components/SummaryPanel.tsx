@@ -3,13 +3,16 @@ export interface Summary {
   total_flops: number;
   total_effective_flops: number;
   tokens_per_second: number;
+  primary_unit?: string | null;
+  primary_count?: number;
+  primary_rate_per_second?: number;
   effective_tflops: number;
   hardware_tflops: number;
-  peak_memory_gb: number;
+  peak_fast_memory_gb: number;
   idle_pct: number;
   recompute_pct: number;
-  ingress_util_pct: number;
-  egress_util_pct: number;
+  from_slow_util_pct: number;
+  to_slow_util_pct: number;
 }
 
 interface Props {
@@ -36,6 +39,13 @@ function fmtToks(t: number): string {
   return t.toFixed(0);
 }
 
+function fmtRate(t: number): string {
+  if (t >= 1e9) return `${(t / 1e9).toFixed(2)}B`;
+  if (t >= 1e6) return `${(t / 1e6).toFixed(2)}M`;
+  if (t >= 1e3) return `${(t / 1e3).toFixed(1)}k`;
+  return t.toFixed(0);
+}
+
 function fmtGb(g: number): string {
   if (g >= 100) return g.toFixed(0);
   if (g >= 10) return g.toFixed(1);
@@ -54,30 +64,36 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
 
 export function SummaryPanel({ summary }: Props) {
   if (!summary) return null;
+  const primaryUnit = summary.primary_unit;
+  const primaryRate = summary.primary_rate_per_second ?? 0;
   return (
     <div className="panel summary-panel">
       <div className="panel-header">
         <h3>Summary</h3>
       </div>
       <div className="summary-stats">
-        <Stat label="overall time" value={fmtTime(summary.makespan_us)} />
-        <Stat label="tok/sec" value={fmtToks(summary.tokens_per_second)} />
+        <Stat label="Overall Time" value={fmtTime(summary.makespan_us)} />
+        {primaryUnit ? (
+          <Stat label={`${primaryUnit}/sec`} value={fmtRate(primaryRate)} />
+        ) : (
+          <Stat label="tok/sec" value={fmtToks(summary.tokens_per_second)} />
+        )}
         <Stat
-          label="effective TFLOPS"
+          label="Effective TFLOPS"
           value={fmtTflops(summary.effective_tflops)}
         />
         <Stat
-          label="hardware TFLOPS"
+          label="Hardware TFLOPS"
           value={fmtTflops(summary.hardware_tflops)}
         />
         <Stat
-          label="peak memory (GB)"
-          value={fmtGb(summary.peak_memory_gb)}
+          label="Peak Fast Memory (GB)"
+          value={fmtGb(summary.peak_fast_memory_gb)}
         />
-        <Stat label="idle %" value={fmtPct(summary.idle_pct)} />
-        <Stat label="recompute %" value={fmtPct(summary.recompute_pct)} />
-        <Stat label="ingress util %" value={fmtPct(summary.ingress_util_pct)} />
-        <Stat label="egress util %" value={fmtPct(summary.egress_util_pct)} />
+        <Stat label="Idle %" value={fmtPct(summary.idle_pct)} />
+        <Stat label="Recompute %" value={fmtPct(summary.recompute_pct)} />
+        <Stat label="From-Slow Util %" value={fmtPct(summary.from_slow_util_pct)} />
+        <Stat label="To-Slow Util %" value={fmtPct(summary.to_slow_util_pct)} />
       </div>
     </div>
   );

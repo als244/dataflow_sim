@@ -3,12 +3,12 @@ auto-policy to make timing-aware planning decisions.
 
 Mirrors the simulator's state semantics:
 - Pool keyed by (obj_id, location), each entry has a state.
-- Two FIFO transfer streams (h2d, d2h) with per-direction bandwidth.
+- Two FIFO transfer streams (from_slow, to_slow) with per-direction bandwidth.
 - Compute lane (serial).
 
 But operates in "decide-and-record" mode: instead of executing triggers it
 finds in the task chain, the shadow exposes query primitives (predicted state
-at time t, predicted device usage at time t, etc.) and mutators (issue release
+at time t, predicted compute usage at time t, etc.) and mutators (issue release
 / offload / prefetch at a given task boundary). Each mutator updates the
 shadow state immediately so subsequent queries reflect the consequence.
 
@@ -49,7 +49,7 @@ class _Entry:
 class _Transfer:
     """A scheduled transfer on one of the streams."""
     obj_id: str
-    direction: Literal["h2d", "d2h"]
+    direction: Literal["from_slow", "to_slow"]
     src_size: int   # bytes (drives transfer time)
     runtime: int    # tau = ceil(src_size / bandwidth)
     enqueue_at: int # absolute time, == end-of-the-task-this-trigger-fires-on
@@ -72,15 +72,15 @@ class ShadowSimulator:
             shadow.advance_to(target_start)
             shadow.run_task(i, task, start_t=target_start)
 
-        annotated = shadow.to_annotated_chain(device_capacity, host_capacity)
+        annotated = shadow.to_annotated_chain(fast_memory_capacity, backing_memory_capacity)
     """
 
     def __init__(self, bare: TaskChain) -> None:
         self.chain = bare
-        self.bw_h2d = bare.bandwidth_h2d
-        self.bw_d2h = bare.bandwidth_d2h
-        self.device_capacity = bare.device_capacity
-        self.host_capacity = bare.host_capacity
+        self.bw_from_slow = bare.bandwidth_from_slow
+        self.bw_to_slow = bare.bandwidth_to_slow
+        self.fast_memory_capacity = bare.fast_memory_capacity
+        self.backing_memory_capacity = bare.backing_memory_capacity
 
         # Object metadata (collected from initial memory + outputs)
         self.sizes: dict[str, int] = {}
@@ -103,8 +103,8 @@ class ShadowSimulator:
             )
 
         # Stream schedules — list of pending+in-flight transfers, sorted by enqueue_at (FIFO)
-        self.sched_h2d: list[_Transfer] = []
-        self.sched_d2h: list[_Transfer] = []
+        self.sched_from_slow: list[_Transfer] = []
+        self.sched_to_slow: list[_Transfer] = []
 
         # Time bookkeeping
         self.compute_busy_until = 0
@@ -115,18 +115,18 @@ class ShadowSimulator:
             lambda: {"release": [], "offload": [], "prefetch": []}
         )
 
-        # Augmented initial-pool decisions (objects to add to device initially)
-        self.added_initial_device: set[str] = set()
+        # Augmented initial-pool decisions (objects to add to fast memory initially)
+        self.added_initial_compute: set[str] = set()
 
-        # Per-boundary device-pool snapshots. boundary_pool_size[k] = predicted
-        # device-pool size in bytes immediately AFTER task k's end-of-task
+        # Per-boundary compute-pool snapshots. boundary_pool_size[k] = predicted
+        # compute-pool size in bytes immediately AFTER task k's end-of-task
         # triggers have all fired (release, offload, prefetch). Only valid for
         # boundaries 0..last_snapshotted_iter (those that run_task has snapped).
         # Later iters' retroactive trigger placements at boundary q' <= last_snap
         # adjust bps[q'..last_snap]; future indices stay garbage until snapped.
         n = len(bare.tasks)
         initial_dev = sum(
-            obj.size for obj in bare.initial_memory if obj.location == "device"
+            obj.size for obj in bare.initial_memory if obj.location == "fast"
         )
         self.boundary_pool_size: list[int] = [initial_dev] * max(n, 1)
         self.last_snapshotted_iter: int = -1
@@ -142,36 +142,36 @@ class ShadowSimulator:
         task = self.chain.tasks[task_idx]
         return ideal_starts[task.id] + task.runtime
 
-    def current_device_usage(self) -> int:
-        return sum(e.size for (_, loc), e in self.pool.items() if loc == "device")
+    def current_compute_usage(self) -> int:
+        return sum(e.size for (_, loc), e in self.pool.items() if loc == "fast")
 
-    def current_host_usage(self) -> int:
-        return sum(e.size for (_, loc), e in self.pool.items() if loc == "host")
+    def current_backing_usage(self) -> int:
+        return sum(e.size for (_, loc), e in self.pool.items() if loc == "backing")
 
-    def predicted_device_usage_at(self, t: int) -> int:
-        """Device bytes used at time t, after processing all transfer
+    def predicted_compute_usage_at(self, t: int) -> int:
+        """Compute bytes used at time t, after processing all transfer
         completions with end_at <= t."""
-        usage = self.current_device_usage()
-        for tx in self.sched_d2h:
+        usage = self.current_compute_usage()
+        for tx in self.sched_to_slow:
             if tx.start_at <= t < tx.end_at:
-                continue  # outbound — still on device until end_at
+                continue  # outbound — still on compute until end_at
             if tx.end_at <= t:
-                # Transfer completed; source device entry removed
+                # Transfer completed; source compute entry removed
                 # (But only count if source is currently in pool — it is, since
                 # we don't remove until completion. The shadow.pool reflects
-                # the *current* state; transfers in sched_d2h are scheduled
+                # the *current* state; transfers in sched_to_slow are scheduled
                 # but not yet completed. So usage minus completing transfers.)
                 usage -= tx.src_size
-        # Also account for h2d transfers: their dest entries are already in
-        # pool (state pending_inbound or inbound) and counted in current_device_usage.
+        # Also account for from_slow transfers: their dest entries are already in
+        # pool (state pending_inbound or inbound) and counted in current_compute_usage.
         # Completion doesn't change usage (just flips state to live).
         return usage
 
-    def predicted_host_usage_at(self, t: int) -> int:
-        usage = self.current_host_usage()
-        # d2h transfers: their dest host entries are already in pool (pending_inbound)
+    def predicted_backing_usage_at(self, t: int) -> int:
+        usage = self.current_backing_usage()
+        # to_slow transfers: their dest backing entries are already in pool (pending_inbound)
         # — usage already includes them. Completion doesn't change usage.
-        # h2d transfers: don't add host entries.
+        # from_slow transfers: don't add backing entries.
         return usage
 
     def predicted_object_ready_t(self, obj_id: str, location: Location) -> int:
@@ -182,26 +182,26 @@ class ShadowSimulator:
         if entry.state == "live":
             return entry.appeared_at
         # In some transit state — find the relevant completion
-        relevant = self.sched_h2d if location == "device" else self.sched_d2h
+        relevant = self.sched_from_slow if location == "fast" else self.sched_to_slow
         for tx in relevant:
             if tx.obj_id == obj_id:
-                # For h2d: dest is device, completion makes it live
-                # For d2h: dest is host, completion makes it live
+                # For from_slow: dest is compute, completion makes it live
+                # For to_slow: dest is backing, completion makes it live
                 # Both apply.
-                if (location == "device" and tx.direction == "h2d") or \
-                   (location == "host" and tx.direction == "d2h"):
+                if (location == "fast" and tx.direction == "from_slow") or \
+                   (location == "backing" and tx.direction == "to_slow"):
                     return tx.end_at
         # No scheduled transfer; state is some non-live transient with no completion
         return INF
 
     def predicted_input_ready_t(self, obj_id: str) -> int:
-        """Earliest time obj_id is live on device. INF if it'll never get there
+        """Earliest time obj_id is live on compute. INF if it'll never get there
         without further policy action."""
-        return self.predicted_object_ready_t(obj_id, "device")
+        return self.predicted_object_ready_t(obj_id, "fast")
 
-    def stream_busy_until(self, direction: Literal["h2d", "d2h"]) -> int:
+    def stream_busy_until(self, direction: Literal["from_slow", "to_slow"]) -> int:
         """End time of the last scheduled transfer on this stream (or current_time)."""
-        sched = self.sched_h2d if direction == "h2d" else self.sched_d2h
+        sched = self.sched_from_slow if direction == "from_slow" else self.sched_to_slow
         if not sched:
             return self.current_time
         return max(tx.end_at for tx in sched)
@@ -212,23 +212,23 @@ class ShadowSimulator:
 
     # ---------- mutators ----------
 
-    def add_to_initial_device(self, obj_id: str) -> None:
-        """Promote a host-resident object to also be on device from t=0."""
-        if (obj_id, "device") in self.pool:
+    def add_to_initial_compute(self, obj_id: str) -> None:
+        """Promote a backing-resident object to also be on compute from t=0."""
+        if (obj_id, "fast") in self.pool:
             return
-        host_entry = self.pool.get((obj_id, "host"))
-        if host_entry is None:
-            raise ValueError(f"cannot add {obj_id!r} to initial device: no host entry")
-        self.pool[(obj_id, "device")] = _Entry(
-            obj_id=obj_id, location="device", size=host_entry.size,
-            state="live", type=host_entry.type, appeared_at=0,
+        backing_entry = self.pool.get((obj_id, "backing"))
+        if backing_entry is None:
+            raise ValueError(f"cannot add {obj_id!r} to initial compute: no backing entry")
+        self.pool[(obj_id, "fast")] = _Entry(
+            obj_id=obj_id, location="fast", size=backing_entry.size,
+            state="live", type=backing_entry.type, appeared_at=0,
         )
-        self.added_initial_device.add(obj_id)
+        self.added_initial_compute.add(obj_id)
 
     def issue_release(self, obj_id: str, at_boundary_idx: int, boundary_end_t: int) -> None:
         """Record a release trigger; updates shadow pool immediately (the
-        device entry is removed at boundary_end_t)."""
-        key = (obj_id, "device")
+        compute entry is removed at boundary_end_t)."""
+        key = (obj_id, "fast")
         if key not in self.pool:
             return  # already gone
         size = self.pool[key].size
@@ -243,40 +243,40 @@ class ShadowSimulator:
 
     def issue_offload(self, obj_id: str, at_boundary_idx: int, boundary_end_t: int) -> int:
         """Record an offload trigger. Returns the scheduled completion time."""
-        if self.bw_d2h is None:
-            raise ValueError("bandwidth_d2h required for offload triggers")
-        dev_entry = self.pool.get((obj_id, "device"))
+        if self.bw_to_slow is None:
+            raise ValueError("bandwidth_to_slow required for offload triggers")
+        dev_entry = self.pool.get((obj_id, "fast"))
         if dev_entry is None or dev_entry.state != "live":
             raise ValueError(
-                f"cannot offload {obj_id!r}: device state is "
+                f"cannot offload {obj_id!r}: compute state is "
                 f"{dev_entry.state if dev_entry else 'absent'}"
             )
         size = dev_entry.size
-        tau = max(1, math.ceil(size / self.bw_d2h))
-        # Insert into d2h schedule maintaining FIFO order by enqueue_at
-        self._insert_transfer(self.sched_d2h, _Transfer(
-            obj_id=obj_id, direction="d2h", src_size=size, runtime=tau,
+        tau = max(1, math.ceil(size / self.bw_to_slow))
+        # Insert into to_slow schedule maintaining FIFO order by enqueue_at
+        self._insert_transfer(self.sched_to_slow, _Transfer(
+            obj_id=obj_id, direction="to_slow", src_size=size, runtime=tau,
             enqueue_at=boundary_end_t, start_at=0, end_at=0,  # recomputed below
         ))
-        # Update source state: pending_outbound (occupies device until transfer end)
+        # Update source state: pending_outbound (occupies compute until transfer end)
         dev_entry.state = "pending_outbound"
-        # Update destination on host: overwrite mode if exists, else create
-        host_entry = self.pool.get((obj_id, "host"))
-        if host_entry is None:
-            self.pool[(obj_id, "host")] = _Entry(
-                obj_id=obj_id, location="host", size=size,
+        # Update destination on backing: overwrite mode if exists, else create
+        backing_entry = self.pool.get((obj_id, "backing"))
+        if backing_entry is None:
+            self.pool[(obj_id, "backing")] = _Entry(
+                obj_id=obj_id, location="backing", size=size,
                 state="pending_inbound", type=dev_entry.type, appeared_at=boundary_end_t,
             )
         else:
-            # Overwrite: existing host entry becomes pending_inbound (hidden until completion)
-            host_entry.state = "pending_inbound"
+            # Overwrite: existing backing entry becomes pending_inbound (hidden until completion)
+            backing_entry.state = "pending_inbound"
         self.annotations[at_boundary_idx]["offload"].append(obj_id)
         # Find the just-inserted transfer's ideal-time completion (in shadow's
         # FIFO accounting). Real exec may complete later due to actual-vs-ideal
         # drift; we account for this conservatively by also subtracting a
         # `drift_at_offload` from actual boundary times in the comparison.
         completion_t = boundary_end_t + tau
-        for tx in self.sched_d2h:
+        for tx in self.sched_to_slow:
             if tx.obj_id == obj_id and tx.enqueue_at == boundary_end_t:
                 completion_t = tx.end_at
                 break
@@ -299,33 +299,33 @@ class ShadowSimulator:
 
     def issue_prefetch(self, obj_id: str, at_boundary_idx: int, boundary_end_t: int) -> int:
         """Record a prefetch trigger. Returns the scheduled completion time."""
-        if self.bw_h2d is None:
-            raise ValueError("bandwidth_h2d required for prefetch triggers")
-        host_entry = self.pool.get((obj_id, "host"))
-        if host_entry is None or host_entry.state != "live":
+        if self.bw_from_slow is None:
+            raise ValueError("bandwidth_from_slow required for prefetch triggers")
+        backing_entry = self.pool.get((obj_id, "backing"))
+        if backing_entry is None or backing_entry.state != "live":
             raise ValueError(
-                f"cannot prefetch {obj_id!r}: host state is "
-                f"{host_entry.state if host_entry else 'absent'}"
+                f"cannot prefetch {obj_id!r}: backing state is "
+                f"{backing_entry.state if backing_entry else 'absent'}"
             )
-        if (obj_id, "device") in self.pool:
-            raise ValueError(f"cannot prefetch {obj_id!r}: device copy already exists")
-        size = host_entry.size
-        tau = max(1, math.ceil(size / self.bw_h2d))
-        self._insert_transfer(self.sched_h2d, _Transfer(
-            obj_id=obj_id, direction="h2d", src_size=size, runtime=tau,
+        if (obj_id, "fast") in self.pool:
+            raise ValueError(f"cannot prefetch {obj_id!r}: compute copy already exists")
+        size = backing_entry.size
+        tau = max(1, math.ceil(size / self.bw_from_slow))
+        self._insert_transfer(self.sched_from_slow, _Transfer(
+            obj_id=obj_id, direction="from_slow", src_size=size, runtime=tau,
             enqueue_at=boundary_end_t, start_at=0, end_at=0,
         ))
-        # Reserve device entry as pending_inbound
-        self.pool[(obj_id, "device")] = _Entry(
-            obj_id=obj_id, location="device", size=size,
-            state="pending_inbound", type=host_entry.type, appeared_at=boundary_end_t,
+        # Reserve compute entry as pending_inbound
+        self.pool[(obj_id, "fast")] = _Entry(
+            obj_id=obj_id, location="fast", size=size,
+            state="pending_inbound", type=backing_entry.type, appeared_at=boundary_end_t,
         )
         self.annotations[at_boundary_idx]["prefetch"].append(obj_id)
         # Increment bps for snapshotted boundaries at/after this one
         end = min(self.last_snapshotted_iter + 1, len(self.boundary_pool_size))
         for k in range(at_boundary_idx, end):
             self.boundary_pool_size[k] += size
-        for tx in self.sched_h2d:
+        for tx in self.sched_from_slow:
             if tx.obj_id == obj_id and tx.enqueue_at == boundary_end_t:
                 return tx.end_at
         return boundary_end_t + tau
@@ -352,24 +352,24 @@ class ShadowSimulator:
         """Process all scheduled transfer completions with end_at <= target_t.
         Updates pool state accordingly."""
         while True:
-            next_h = self.sched_h2d[0].end_at if self.sched_h2d else INF
-            next_d = self.sched_d2h[0].end_at if self.sched_d2h else INF
+            next_h = self.sched_from_slow[0].end_at if self.sched_from_slow else INF
+            next_d = self.sched_to_slow[0].end_at if self.sched_to_slow else INF
             next_t = min(next_h, next_d)
             if math.isinf(next_t) or next_t > target_t:
                 break
             if next_h <= next_d:
-                tx = self.sched_h2d.pop(0)
-                # h2d completion: device entry → live
-                key = (tx.obj_id, "device")
+                tx = self.sched_from_slow.pop(0)
+                # from_slow completion: compute entry → live
+                key = (tx.obj_id, "fast")
                 if key in self.pool:
                     self.pool[key].state = "live"
             else:
-                tx = self.sched_d2h.pop(0)
-                # d2h completion: source device entry removed; host entry → live
-                src_key = (tx.obj_id, "device")
+                tx = self.sched_to_slow.pop(0)
+                # to_slow completion: source compute entry removed; backing entry → live
+                src_key = (tx.obj_id, "fast")
                 if src_key in self.pool:
                     del self.pool[src_key]
-                dst_key = (tx.obj_id, "host")
+                dst_key = (tx.obj_id, "backing")
                 if dst_key in self.pool:
                     self.pool[dst_key].state = "live"
         self.current_time = target_t
@@ -395,10 +395,10 @@ class ShadowSimulator:
                 entry.state = "live"
         self.compute_busy_until = end_t
         self.current_time = end_t
-        # Snapshot device pool size at this boundary. Mark snapshotted so
+        # Snapshot compute pool size at this boundary. Mark snapshotted so
         # subsequent trigger placements can adjust this bps slot.
         if task_idx < len(self.boundary_pool_size):
-            self.boundary_pool_size[task_idx] = self.current_device_usage()
+            self.boundary_pool_size[task_idx] = self.current_compute_usage()
             self.actual_boundary_end[task_idx] = end_t
             self.last_snapshotted_iter = max(self.last_snapshotted_iter, task_idx)
 
@@ -406,16 +406,16 @@ class ShadowSimulator:
 
     def to_annotated_chain(self) -> TaskChain:
         """Build the final annotated TaskChain from the recorded annotations
-        plus initial-device augmentations."""
+        plus initial-compute augmentations."""
         from dataflow_sim.core.schema import Object, Task, TransferTrigger
 
         # Augmented initial memory
-        host_objs = {o.id: o for o in self.chain.initial_memory if o.location == "host"}
+        backing_objs = {o.id: o for o in self.chain.initial_memory if o.location == "backing"}
         new_initial = list(self.chain.initial_memory)
-        for oid in self.added_initial_device:
-            src = host_objs[oid]
+        for oid in self.added_initial_compute:
+            src = backing_objs[oid]
             new_initial.append(Object(
-                id=src.id, size=src.size, location="device", type=src.type,
+                id=src.id, size=src.size, location="fast", type=src.type,
             ))
 
         new_tasks: list[Task] = []
@@ -436,9 +436,9 @@ class ShadowSimulator:
         return TaskChain(
             initial_memory=new_initial,
             tasks=new_tasks,
-            bandwidth_h2d=self.chain.bandwidth_h2d,
-            bandwidth_d2h=self.chain.bandwidth_d2h,
+            bandwidth_from_slow=self.chain.bandwidth_from_slow,
+            bandwidth_to_slow=self.chain.bandwidth_to_slow,
             final_locations=self.chain.final_locations,
-            device_capacity=self.chain.device_capacity,
-            host_capacity=self.chain.host_capacity,
+            fast_memory_capacity=self.chain.fast_memory_capacity,
+            backing_memory_capacity=self.chain.backing_memory_capacity,
         )

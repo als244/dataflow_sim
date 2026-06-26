@@ -5,7 +5,7 @@ See docs/policy/other_policies/min-grow.md for the design doc. Two-phase pipelin
   Phase A — Plan search: start at MAX (every object resident from its
             earliest legal boundary to its last use), then iteratively
             SHRINK (introduce releases/offloads/prefetches) until the
-            simulator reports peak device memory <= cap. Each candidate
+            simulator reports peak fast memory <= cap. Each candidate
             shrink is scored by full simulator replay (makespan + peak).
 
   Phase B — Schedule derivation: given a finalized plan, deterministically
@@ -17,7 +17,7 @@ cap, beam search shrinks until cap-feasible; once feasible, prefers lowest
 makespan.
 
 The ONLY infeasibility min_grow raises is when even the MIN plan (forced
-residency at use) exceeds device_capacity at some boundary — the chain
+residency at use) exceeds fast_memory_capacity at some boundary — the chain
 literally cannot run.
 
 Boundary convention (matching the dataflow_sim simulator convention): boundary k = snapshot AFTER task k's
@@ -66,13 +66,13 @@ class _Facts:
     mutators_by_task: tuple[frozenset[str], ...]
     uses_by_obj: dict[str, tuple[int, ...]]
     mutator_tasks_of: dict[str, tuple[int, ...]]
-    host_init_ids: frozenset[str]
-    device_init_ids: frozenset[str]
+    backing_init_ids: frozenset[str]
+    compute_init_ids: frozenset[str]
     runtimes: tuple[int, ...]
     next_outputs_size: tuple[int, ...]        # bytes reserved by task k at start (length n+1)
     cap: int | None
-    bw_h2d: int | None
-    bw_d2h: int | None
+    bw_from_slow: int | None
+    bw_to_slow: int | None
 
 
 def _build_facts(bare: TaskChain) -> _Facts:
@@ -111,13 +111,13 @@ def _build_facts(bare: TaskChain) -> _Facts:
         mutators_by_task=mutators_by_task,
         uses_by_obj={k: tuple(sorted(v)) for k, v in uses.items()},
         mutator_tasks_of={k: tuple(sorted(v)) for k, v in muts.items()},
-        host_init_ids=frozenset(o.id for o in bare.initial_memory if o.location == "host"),
-        device_init_ids=frozenset(o.id for o in bare.initial_memory if o.location == "device"),
+        backing_init_ids=frozenset(o.id for o in bare.initial_memory if o.location == "backing"),
+        compute_init_ids=frozenset(o.id for o in bare.initial_memory if o.location == "fast"),
         runtimes=tuple(t.runtime for t in bare.tasks),
         next_outputs_size=next_outputs,
-        cap=bare.device_capacity,
-        bw_h2d=bare.bandwidth_h2d,
-        bw_d2h=bare.bandwidth_d2h,
+        cap=bare.fast_memory_capacity,
+        bw_from_slow=bare.bandwidth_from_slow,
+        bw_to_slow=bare.bandwidth_to_slow,
     )
 
 
@@ -132,7 +132,7 @@ def _min_plan(facts: _Facts) -> Plan:
       - input at task i  → interval [i-1, i)
       - output at task i → interval [i, i+1)
 
-    Adjacent / overlapping intervals are coalesced. Device-init objects
+    Adjacent / overlapping intervals are coalesced. Compute-init objects
     get an extra [-1, 0) so the plan reflects their initial residency.
     """
     raw: dict[str, list[Interval]] = defaultdict(list)
@@ -142,7 +142,7 @@ def _min_plan(facts: _Facts) -> Plan:
         for out in facts.outputs_by_task[i]:
             raw[out].append(Interval(i, i + 1))
 
-    for oid in facts.device_init_ids:
+    for oid in facts.compute_init_ids:
         raw[oid].append(Interval(-1, 0))
 
     out: dict[str, tuple[Interval, ...]] = {}
@@ -167,25 +167,25 @@ def _max_plan(facts: _Facts) -> Plan:
     earliest legal boundary to its last use's exit boundary.
 
     For each object o:
-      - earliest_a = -1 if o is host-init or device-init (pre-placed)
+      - earliest_a = -1 if o is backing-init or compute-init (pre-placed)
                    = producer(o) otherwise
       - last_b = max(b across all forced intervals in MIN) — i.e., the
                  boundary AT WHICH the object exits (= last_use task index)
       - MAX interval = (earliest_a, last_b)  (single interval)
 
-    Mutated host-init objects (e.g., dW_i) get exit at the mutator task,
+    Mutated backing-init objects (e.g., dW_i) get exit at the mutator task,
     so derive_schedule emits the offload trigger right after the mutation
     (not delayed to end-of-step). The user's "release/offload ASAP after
     last use" intuition is naturally satisfied by this construction.
 
-    Objects with zero uses get [-1, 0) (host/device-init) or are omitted
+    Objects with zero uses get [-1, 0) (backing/compute-init) or are omitted
     entirely (produced and never used — they'd be dead outputs).
     """
     min_p = _min_plan(facts)
     intervals: dict[str, tuple[Interval, ...]] = {}
     for oid, ivs in min_p.intervals.items():
         last_b = max(iv.b for iv in ivs)
-        is_pre_placeable = (oid in facts.host_init_ids) or (oid in facts.device_init_ids)
+        is_pre_placeable = (oid in facts.backing_init_ids) or (oid in facts.compute_init_ids)
         if is_pre_placeable:
             intervals[oid] = (Interval(-1, last_b),)
         else:
@@ -239,12 +239,12 @@ def _enumerate_extensions(plan: Plan, facts: _Facts) -> list[tuple[Plan, str, in
     """Inverse of reductions: grow residency. Returns (plan, oid, first_use)
     where first_use is the earliest task that uses the object (used for
     Belady-style ranking — pre-placing low-first-use objects helps makespan
-    most, since their h2d can't hide behind compute).
+    most, since their from_slow can't hide behind compute).
     """
     out: list[tuple[Plan, str, int]] = []
     for oid, ivs in plan.intervals.items():
         prod = facts.producer.get(oid, -1)
-        is_pre_placeable = (oid in facts.host_init_ids) or (oid in facts.device_init_ids)
+        is_pre_placeable = (oid in facts.backing_init_ids) or (oid in facts.compute_init_ids)
         uses = facts.uses_by_obj.get(oid, ())
         first_use = uses[0] if uses else facts.n + 1
 
@@ -390,12 +390,12 @@ def _forced_boundaries_in(oid: str, iv: Interval, facts: _Facts) -> list[int]:
     prod = facts.producer.get(oid, -1)
     if prod >= 0 and iv.a <= prod < iv.b:
         forced.add(prod)
-    # Device-init: initial state IS a forced boundary if iv covers -1.
-    # (No, actually if device_init, boundary -1 has the object regardless
+    # Compute-init: initial state IS a forced boundary if iv covers -1.
+    # (No, actually if compute_init, boundary -1 has the object regardless
     # of plan; but if we shrink to NOT include -1, we'd need an offload
     # at task 0 and re-prefetch later. That's allowed for min_grow search.)
-    # For simplicity treat -1 as forced for device-init iff first input use:
-    if oid in facts.device_init_ids and iv.a <= -1 < iv.b:
+    # For simplicity treat -1 as forced for compute-init iff first input use:
+    if oid in facts.compute_init_ids and iv.a <= -1 < iv.b:
         uses = facts.uses_by_obj.get(oid, ())
         if uses and uses[0] == 0:
             # First use is task 0 — we need -1 to be covered (no time to prefetch).
@@ -418,36 +418,36 @@ def _plan_key(plan: Plan) -> tuple:
 # ============================================================================
 
 def _analytic_cost(plan: Plan, facts: _Facts) -> tuple[int, int]:
-    """Return (h2d_bytes + d2h_bytes, static_peak) for ranking.
+    """Return (from_slow_bytes + to_slow_bytes, static_peak) for ranking.
 
-    Lower h2d+d2h = fewer transfers = better for makespan (loosely).
+    Lower from_slow+to_slow = fewer transfers = better for makespan (loosely).
     Lower static_peak = closer to cap-feasibility.
     """
-    h2d_bytes = 0
-    d2h_bytes = 0
+    from_slow_bytes = 0
+    to_slow_bytes = 0
     for oid, ivs in plan.intervals.items():
         prod = facts.producer.get(oid, -1)
-        is_host_src = oid in facts.host_init_ids
+        is_backing_src = oid in facts.backing_init_ids
         mut_tasks = facts.mutator_tasks_of.get(oid, ())
         for idx, iv in enumerate(ivs):
             if iv.a > -1 and iv.a != prod:
-                h2d_bytes += facts.sizes[oid]
+                from_slow_bytes += facts.sizes[oid]
             mutated_in = any(iv.a < mt <= iv.b for mt in mut_tasks)
             is_last = (idx == len(ivs) - 1)
             if iv.b < facts.n:
                 if mutated_in:
-                    d2h_bytes += facts.sizes[oid]
-                elif is_host_src:
+                    to_slow_bytes += facts.sizes[oid]
+                elif is_backing_src:
                     pass  # release
                 elif is_last:
                     pass  # release (dead)
                 else:
-                    d2h_bytes += facts.sizes[oid]  # preserve for re-prefetch
+                    to_slow_bytes += facts.sizes[oid]  # preserve for re-prefetch
             else:
-                if is_host_src and any(iv.a < mt <= facts.n for mt in mut_tasks):
-                    d2h_bytes += facts.sizes[oid]
+                if is_backing_src and any(iv.a < mt <= facts.n for mt in mut_tasks):
+                    to_slow_bytes += facts.sizes[oid]
     static_peak = _static_peak(plan, facts)
-    return h2d_bytes + d2h_bytes, static_peak
+    return from_slow_bytes + to_slow_bytes, static_peak
 
 
 # ============================================================================
@@ -477,21 +477,21 @@ def _derive_schedule(plan: Plan, bare: TaskChain, facts: _Facts) -> TaskChain:
 
     for oid, ivs in plan.intervals.items():
         prod = facts.producer.get(oid, -1)
-        is_host_src = oid in facts.host_init_ids
-        is_dev_src = oid in facts.device_init_ids
+        is_backing_src = oid in facts.backing_init_ids
+        is_dev_src = oid in facts.compute_init_ids
         mut_tasks = facts.mutator_tasks_of.get(oid, ())
 
         for idx, iv in enumerate(ivs):
             # Entry
             if iv.a == -1:
-                if is_host_src:
+                if is_backing_src:
                     pre_placed.add(oid)
             elif iv.a == prod:
                 pass
-            elif is_host_src or is_dev_src:
+            elif is_backing_src or is_dev_src:
                 if 0 <= iv.a < n:
                     # Smart prefetch placement: find latest task t <= iv.a
-                    # such that h2d fired at t.end has enough time to complete
+                    # such that from_slow fired at t.end has enough time to complete
                     # before the consuming task. Avoids attaching to
                     # zero-runtime tasks that would cause guaranteed stalls.
                     fire_task = _smart_prefetch_task(
@@ -511,7 +511,7 @@ def _derive_schedule(plan: Plan, bare: TaskChain, facts: _Facts) -> TaskChain:
             # Exit: fire trigger right after the last use within (iv.a, iv.b],
             # not at iv.b. Avoids delaying offloads/releases past the last use.
             # E.g., for A_0 produced at f_0 with interval [0, 1) and no use in
-            # (0, 1], trigger fires at task 0 (production task) so d2h starts
+            # (0, 1], trigger fires at task 0 (production task) so to_slow starts
             # immediately — not at task 1 which wastes a task's worth of time.
             if iv.b == n:
                 continue  # end-of-step handled below
@@ -530,7 +530,7 @@ def _derive_schedule(plan: Plan, bare: TaskChain, facts: _Facts) -> TaskChain:
             if mutated_in:
                 offloads[exit_task].append(oid)
                 offload_keys[exit_task][oid] = iv.a
-            elif is_host_src:
+            elif is_backing_src:
                 releases[exit_task].append(oid)
             elif is_last:
                 releases[exit_task].append(oid)
@@ -538,9 +538,9 @@ def _derive_schedule(plan: Plan, bare: TaskChain, facts: _Facts) -> TaskChain:
                 offloads[exit_task].append(oid)
                 offload_keys[exit_task][oid] = iv.a
 
-    # End-of-step writebacks for mutated host-source objects still resident at n
+    # End-of-step writebacks for mutated backing-source objects still resident at n
     for oid, ivs in plan.intervals.items():
-        if oid not in facts.host_init_ids:
+        if oid not in facts.backing_init_ids:
             continue
         last = ivs[-1]
         if last.b != n:
@@ -553,11 +553,11 @@ def _derive_schedule(plan: Plan, bare: TaskChain, facts: _Facts) -> TaskChain:
 
     # Elide same-task release+prefetch pairs of the same object: a release
     # followed by re-prefetch of the same id on the same task is wasteful
-    # (the bytes are freed then immediately re-acquired via h2d) — the only
-    # effect is paying h2d time for content that's already on host. The net
+    # (the bytes are freed then immediately re-acquired via from_slow) — the only
+    # effect is paying from_slow time for content that's already on backing. The net
     # pool effect is zero, so eliding both is strictly better. Same for
     # offload+prefetch pairs (offload then re-prefetch on same task — net no-op
-    # on the host copy but wastes a d2h+h2d round-trip).
+    # on the backing copy but wastes a to_slow+from_slow round-trip).
     for i in range(n):
         rel_set = set(releases[i])
         off_set = set(offloads[i])
@@ -582,11 +582,11 @@ def _derive_schedule(plan: Plan, bare: TaskChain, facts: _Facts) -> TaskChain:
         if releases[i]:
             releases[i] = list(dict.fromkeys(releases[i]))
 
-    host_objs = {o.id: o for o in bare.initial_memory if o.location == "host"}
+    backing_objs = {o.id: o for o in bare.initial_memory if o.location == "backing"}
     new_initial = list(bare.initial_memory)
     for oid in pre_placed:
-        src = host_objs[oid]
-        new_initial.append(Object(id=src.id, size=src.size, location="device", type=src.type))
+        src = backing_objs[oid]
+        new_initial.append(Object(id=src.id, size=src.size, location="fast", type=src.type))
 
     new_tasks: list[Task] = []
     for i, task in enumerate(bare.tasks):
@@ -625,9 +625,9 @@ def _smart_prefetch_task(
     earlier than the static cap check accounts for. We bound how far back
     we walk to limit this discrepancy.
     """
-    if facts.bw_h2d is None or facts.bw_h2d <= 0:
+    if facts.bw_from_slow is None or facts.bw_from_slow <= 0:
         return iv.a if 0 <= iv.a < facts.n else 0
-    D = max(1, math.ceil(facts.sizes[oid] / facts.bw_h2d))
+    D = max(1, math.ceil(facts.sizes[oid] / facts.bw_from_slow))
     use_task = _first_use_in_interval(facts, oid, iv)
     if not (0 <= use_task < facts.n):
         return iv.a if 0 <= iv.a < facts.n else 0
@@ -670,14 +670,14 @@ def _forward_output_accumulation(facts: _Facts) -> int:
 
     For each task t whose outputs are USED LATER (after some threshold gap),
     those outputs need pool space from production until they're either
-    offloaded OR consumed. The d2h stream can drain SOME of them in parallel
-    with forward compute, but if d2h is the bottleneck, residual accumulates.
+    offloaded OR consumed. The to_slow stream can drain SOME of them in parallel
+    with forward compute, but if to_slow is the bottleneck, residual accumulates.
 
     Returns: bytes that we expect to be IN POOL at end of forward
-    (= production - d2h_drained_during_forward).
+    (= production - to_slow_drained_during_forward).
     """
     n = facts.n
-    bw_d2h = facts.bw_d2h or 1
+    bw_to_slow = facts.bw_to_slow or 1
     # Long-lived output = produced AND last use is "much later" (threshold = n/4).
     # This excludes y_i (used in next task) but includes A_i (used in backward).
     threshold = max(1, n // 4)
@@ -693,8 +693,8 @@ def _forward_output_accumulation(facts: _Facts) -> int:
     latest_prod = max(p for p, _ in fwd_outputs)
     fwd_compute = sum(facts.runtimes[i] for i in range(earliest_prod, latest_prod + 1))
     total_bytes = sum(s for _, s in fwd_outputs)
-    d2h_capacity = fwd_compute * bw_d2h
-    return max(0, total_bytes - d2h_capacity)
+    to_slow_capacity = fwd_compute * bw_to_slow
+    return max(0, total_bytes - to_slow_capacity)
 
 
 def _lead_time_grow_from_min(facts: _Facts) -> Plan:
@@ -705,9 +705,9 @@ def _lead_time_grow_from_min(facts: _Facts) -> Plan:
     Rationale (from stall-analysis insight):
       - Forward stalls are dominated by insufficient_memory (pool can't fit
         output reservation). Caused by over-pre-placement.
-      - Backward stalls are dominated by dependency_missing (h2d queue
+      - Backward stalls are dominated by dependency_missing (from_slow queue
         congestion). Caused by under-pre-placement of critical-path objects.
-      - The trade-off is: each pre-placement saves a potential h2d stall
+      - The trade-off is: each pre-placement saves a potential from_slow stall
         (if lead_time < D(o)), but adds pool pressure throughout its
         residency.
 
@@ -733,7 +733,7 @@ def _lead_time_grow_from_min(facts: _Facts) -> Plan:
 
     # Pre-place set: walk tasks in order, accumulate sizes of NEW objects
     # referenced (inputs ∪ outputs). Stop when total > cap. Pre-place all
-    # host-init/device-init objects referenced in the prefix.
+    # backing-init/compute-init objects referenced in the prefix.
     #
     # Intuition: pre-place objects in the "warm prefix" — those that fit
     # along with the produced outputs during the first several tasks.
@@ -758,7 +758,7 @@ def _lead_time_grow_from_min(facts: _Facts) -> Plan:
         accumulated_oids.update(new_oids)
         accumulated_bytes += new_bytes
         for o in new_oids:
-            if o in facts.host_init_ids or o in facts.device_init_ids:
+            if o in facts.backing_init_ids or o in facts.compute_init_ids:
                 pre_place_set.add(o)
 
     # Apply pre-placements to the plan in lead-time-ascending order
@@ -795,7 +795,7 @@ def _find_pending_outbound_stalls(
     compute task stalls waiting for an input that's in pending_outbound state.
 
     These represent UNNECESSARY offload+re-prefetch round trips: the object
-    was on device, got offloaded, now compute waits for it to come back.
+    was on compute, got offloaded, now compute waits for it to come back.
     Strictly better to have kept it resident.
     """
     try:
@@ -821,7 +821,7 @@ def _find_pending_outbound_stalls(
         if snap is None:
             continue
         cur_task = next(t for t in annotated.tasks if t.id == cur.task_id)
-        dev_state = {m.id: m.state for m in snap.memory if m.location == 'device'}
+        dev_state = {m.id: m.state for m in snap.memory if m.location == 'compute'}
         for inp in cur_task.inputs:
             if dev_state.get(inp) == 'pending_outbound':
                 stalls.append((cur.task_id, inp))
@@ -838,7 +838,7 @@ def _repair_pending_outbound_stalls(
     For any split interval pair in the plan, try merging if cap-feasible
     and sim-confirmed to improve makespan. Catches BOTH:
       - pending_outbound stalls (offload + re-prefetch round trip)
-      - silent release+re-prefetch waste (host-init multi-use objects
+      - silent release+re-prefetch waste (backing-init multi-use objects
         where cap has headroom to keep them resident)
       - any other interval split that turns out to be unnecessary
 
@@ -856,7 +856,7 @@ def _repair_pending_outbound_stalls(
     while _time.monotonic() < time_budget_end:
         improved_this_iter = False
         # PRIORITY 1: pending_outbound stalls (most impactful — eliminates
-        # both d2h + h2d + the stall they cause). Try these first.
+        # both to_slow + from_slow + the stall they cause). Try these first.
         stalls = _find_pending_outbound_stalls(cur_plan, bare, facts)
         unique_oids = list(dict.fromkeys(o for _, o in stalls))
         for oid in unique_oids:
@@ -920,7 +920,7 @@ def _repair_pending_outbound_stalls(
 def _score_with_peak(
     plan: Plan, bare: TaskChain, facts: _Facts
 ) -> tuple[int, int] | None:
-    """Run simulator, return (makespan, peak_device_bytes), or None if the
+    """Run simulator, return (makespan, peak_fast_memory_bytes), or None if the
     simulator rejected the plan (cap violation).
     """
     try:
@@ -929,7 +929,7 @@ def _score_with_peak(
     except Exception:
         return None
     makespan = max(iv.end for iv in log.task_intervals)
-    return makespan, log.peak_device_bytes
+    return makespan, log.peak_fast_memory_bytes
 
 
 def _v5_plan_search(
@@ -1051,7 +1051,7 @@ def _v5_plan_search(
     # =====================================================================
     # Phase A1.5 — Stall repair: any pending_outbound stall is a strict
     # plan suboptimality (object was offloaded then needed back = wasted
-    # d2h+h2d round trip). Fix by merging the relevant intervals.
+    # to_slow+from_slow round trip). Fix by merging the relevant intervals.
     # =====================================================================
     if cap is not None and best_makespan < math.inf:
         repaired_plan, repaired_ms = _repair_pending_outbound_stalls(
@@ -1107,7 +1107,7 @@ def _v5_plan_search(
         # - Reductions: prefer evicting objects with LATEST next use (re-prefetch
         #   hides behind more compute).
         # - Extensions: prefer pre-placing objects with EARLIEST first use
-        #   (h2d most likely to stall otherwise).
+        #   (from_slow most likely to stall otherwise).
         red_cands.sort(key=lambda t: (-t[2], _static_peak(t[0], facts)))
         ext_cands.sort(key=lambda t: (t[2], _static_peak(t[0], facts)))
 
@@ -1185,7 +1185,7 @@ def apply_min_grow_policy(
     """min_grow auto policy: MAX→shrink with simulator-as-oracle.
 
     Raises ValueError("infeasible: ...") iff the MIN-plan footprint exceeds
-    device_capacity at some boundary (chain literally cannot run). Otherwise
+    fast_memory_capacity at some boundary (chain literally cannot run). Otherwise
     returns an annotated TaskChain.
     """
     for t in bare.tasks:

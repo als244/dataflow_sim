@@ -1,7 +1,7 @@
 """Evidence-directed recompute selection layered above a residency policy.
 
-Recompute and offload are competing rematerialization channels for the same
-activation bytes: offload spends PCIe, recompute spends the compute stream.
+Recompute and offload are competing regeneration channels for the same
+activation bytes: offload spends tier-link, recompute spends the compute stream.
 Which is cheaper for a given activation depends on the whole schedule (what
 else is offloaded, weight traffic, stream backlogs), so no static ranking
 works. This planner starts from "offload everything the policy wants"

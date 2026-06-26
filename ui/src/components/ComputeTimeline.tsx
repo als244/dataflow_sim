@@ -11,8 +11,8 @@ interface Props {
 }
 
 function categoryClass(iv: TaskInterval): string {
-  if (iv.track === "h2d") return "cat-h2d";
-  if (iv.track === "d2h") return "cat-d2h";
+  if (iv.track === "from_slow") return "cat-from_slow";
+  if (iv.track === "to_slow") return "cat-to_slow";
   const t = iv.task_id;
   if (t.startsWith("r_")) return "cat-recomp";
   if (t.startsWith("b_")) return "cat-bwd";
@@ -22,11 +22,11 @@ function categoryClass(iv: TaskInterval): string {
   return "";
 }
 
-/** Strip h2d:/d2h: prefix AND the "#N" instance suffix on transfer task_ids —
+/** Strip from_slow:/to_slow: prefix AND the "#N" instance suffix on transfer task_ids —
  * the lane already conveys direction, and the suffix is just for React-key
  * uniqueness across re-prefetches/re-offloads of the same object. */
 function displayLabel(iv: TaskInterval): string {
-  if (iv.track === "h2d" || iv.track === "d2h") {
+  if (iv.track === "from_slow" || iv.track === "to_slow") {
     const colon = iv.task_id.indexOf(":");
     const base = colon >= 0 ? iv.task_id.slice(colon + 1) : iv.task_id;
     const hash = base.indexOf("#");
@@ -44,11 +44,11 @@ const MIN_ZOOM = 1;
 const MAX_ZOOM = 2000;
 const DRAG_MIN_PX = 6;     // ignore drags smaller than this
 
-const LANE_ORDER: Track[] = ["h2d", "compute", "d2h"];
+const LANE_ORDER: Track[] = ["from_slow", "compute", "to_slow"];
 const LANE_LABELS: Record<Track, string> = {
-  h2d: "inbound",
-  compute: "compute",
-  d2h: "outbound",
+  from_slow: "From Slow",
+  compute: "Compute",
+  to_slow: "To Slow",
 };
 
 /** Choose unit + decimals based on the tick STEP (µs). At step ≥ 1 s use
@@ -153,9 +153,9 @@ export function ComputeTimeline({
   const visible = intervals.filter((iv) => iv.end > iv.start);
 
   const laneTop: Record<Track, number> = {
-    h2d: 0,
+    from_slow: 0,
     compute: BAR_HEIGHT + LANE_GAP,
-    d2h: 2 * (BAR_HEIGHT + LANE_GAP),
+    to_slow: 2 * (BAR_HEIGHT + LANE_GAP),
   };
   const lanesHeight = 3 * BAR_HEIGHT + 2 * LANE_GAP;
   const trackHeight = lanesHeight + AXIS_GAP + 22;
@@ -243,7 +243,7 @@ export function ComputeTimeline({
     <div className="panel timeline-panel">
       <div className="timeline-header">
         <h3>Compute &amp; Communication Timelines</h3>
-        <span className="timeline-label dim">inbound · compute · outbound</span>
+        <span className="timeline-label dim">From Slow · Compute · To Slow</span>
         <div className="timeline-zoom">
           <button
             className="zoom-btn"

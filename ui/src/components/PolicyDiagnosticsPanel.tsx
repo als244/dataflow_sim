@@ -15,7 +15,7 @@ export interface PressureFitDiagnostics {
   planning_time_s: number;
   task_count: number;
   object_count: number;
-  device_capacity: number | null;
+  fast_memory_capacity: number | null;
   candidate_count: number;
   valid_candidate_count: number;
   selected_candidate: string;

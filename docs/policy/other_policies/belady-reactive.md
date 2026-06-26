@@ -1,6 +1,6 @@
 # belady_reactive
 
-A reactive, oracle-aware eviction policy that takes a *bare* task chain (compute tasks with `inputs / outputs / runtime`, all weights on host, zero triggers) and produces a fully annotated `TaskChain` consumable by the simulator. It places `release / offload / prefetch` triggers by walking the chain forward through a `ShadowSimulator` that mirrors the real simulator's state machine, evicting the furthest-next-use object (Belady) when the device is full and chaining offload→prefetch round-trips against actual completion times rather than ideal ones.
+A reactive, oracle-aware eviction policy that takes a *bare* task chain (compute tasks with `inputs / outputs / runtime`, all weights on backing, zero triggers) and produces a fully annotated `TaskChain` consumable by the simulator. It places `release / offload / prefetch` triggers by walking the chain forward through a `ShadowSimulator` that mirrors the real simulator's state machine, evicting the furthest-next-use object (Belady) when the compute is full and chaining offload→prefetch round-trips against actual completion times rather than ideal ones.
 
 Implementation: `src/dataflow_sim/policies/belady_reactive.py`.
 
@@ -10,11 +10,11 @@ Six phases, applied to a bare chain:
 
 - **Phase 0a — reference stream.** `_compute_uses` builds a per-object sorted list of input-use timestamps from cumulative ideal start times. `_next_use_after` does bisect lookup. This is the Belady oracle.
 - **Phase 0b — recompute level.** Stub at `k_o = 0` (no recompute decisions). The signature is in place for a future K-level extension.
-- **Phase 1 — initial placement.** Must-place `in(T_1) ∪ out(T_1)` on device. Greedy-fill the remainder by `first_use` ascending, stopping at `device_capacity − widest_task_footprint + t1_pinned_size` so cascade and late-arriving prefetches have headroom (slack-aware).
-- **Phase 2 — forward simulation with Belady eviction.** Walk the chain inside a `ShadowSimulator`. Before each task, ensure inputs are device-live and the device has room for outputs; otherwise pick a Belady victim and emit an offload+prefetch pair. Cascade-aware prefetch placement walks past boundaries when the current one is full. Opportunistic GC uses task-index-based liveness (`last_use_task_idx[obj] <= i`), which is robust to actual-vs-ideal time drift.
-- **Phase 3 — trigger-task assignment.** Releases → offloads → prefetches, ordered against `boundary_pool_size[k]` snapshots so retroactive placements respect peak device usage over the affected boundary range. `offload_done_t` chains prefetches after their paired offload completes; per-stream busy-until is respected.
+- **Phase 1 — initial placement.** Must-place `in(T_1) ∪ out(T_1)` on compute. Greedy-fill the remainder by `first_use` ascending, stopping at `fast_memory_capacity − widest_task_footprint + t1_pinned_size` so cascade and late-arriving prefetches have headroom (slack-aware).
+- **Phase 2 — forward simulation with Belady eviction.** Walk the chain inside a `ShadowSimulator`. Before each task, ensure inputs are compute-live and the compute has room for outputs; otherwise pick a Belady victim and emit an offload+prefetch pair. Cascade-aware prefetch placement walks past boundaries when the current one is full. Opportunistic GC uses task-index-based liveness (`last_use_task_idx[obj] <= i`), which is robust to actual-vs-ideal time drift.
+- **Phase 3 — trigger-task assignment.** Releases → offloads → prefetches, ordered against `boundary_pool_size[k]` snapshots so retroactive placements respect peak compute usage over the affected boundary range. `offload_done_t` chains prefetches after their paired offload completes; per-stream busy-until is respected.
 - **Phase 4 — cascade resolution.** `_ensure_prefetch_v2` walks past boundaries when the immediate boundary won't fit, with a `safe_after` victim filter so an evicted object is never needed by an intervening task.
-- **Phase 5 — verify and refine.** Run the real simulator; parse `"cannot prefetch X: insufficient device capacity"` and `"X is being offloaded"` errors. The first triggers `_shift_prefetch_earlier`; the second drops the over-eager offload+prefetch pair. Loops up to 20 iterations.
+- **Phase 5 — verify and refine.** Run the real simulator; parse `"cannot prefetch X: insufficient compute capacity"` and `"X is being offloaded"` errors. The first triggers `_shift_prefetch_earlier`; the second drops the over-eager offload+prefetch pair. Loops up to 20 iterations.
 
 ### ShadowSimulator
 
@@ -44,7 +44,7 @@ The structural win is **tail-end optimization**: belady skips the unnecessary tr
 1. **`boundary_pool_size[k]` snapshots** with peak-over-range checks let the planner correctly cap-check retroactive trigger placements without re-simulating.
 2. **Task-index-based GC** (not time-based) — actual-vs-ideal drift would otherwise falsely flag chronologically-live objects dead.
 3. **`safe_after` victim filter** — cascade victims at past boundary k must have no use in `(boundary_end, deadline)`, preventing evictions of objects the next task immediately reads.
-4. **Drift-aware d2h subtraction** — offload completion uses `actual_boundary_end[k] >= completion_t + drift_at_offload`, not the ideal boundary end.
+4. **Drift-aware to_slow subtraction** — offload completion uses `actual_boundary_end[k] >= completion_t + drift_at_offload`, not the ideal boundary end.
 5. **Cascade not restricted to most-recent boundary** — past boundaries are eligible as long as the victim's `appeared_at <= boundary_end_k`.
 6. **Task-index-based producer filter** — `_Entry.producer_task_idx` rejects trigger placement at boundaries before the object exists; replaces an earlier time-based check that broke under drift.
 7. **Slack-aware initial placement** — leaves headroom for `dW_head` / late-arriving weights at tight caps.

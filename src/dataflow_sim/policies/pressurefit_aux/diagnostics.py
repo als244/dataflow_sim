@@ -26,7 +26,7 @@ class PressureFitDiagnostics:
     planning_time_s: float
     task_count: int
     object_count: int
-    device_capacity: int | None
+    fast_memory_capacity: int | None
     candidate_count: int
     valid_candidate_count: int
     selected_candidate: str

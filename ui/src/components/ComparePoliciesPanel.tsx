@@ -35,6 +35,13 @@ function fmtToks(t: number): string {
   if (t >= 1e3) return `${(t / 1e3).toFixed(1)}k`;
   return t.toFixed(0);
 }
+function fmtRate(summary: Summary): string {
+  const rate = summary.primary_rate_per_second ?? summary.tokens_per_second;
+  if (rate >= 1e9) return `${(rate / 1e9).toFixed(2)}B`;
+  if (rate >= 1e6) return `${(rate / 1e6).toFixed(2)}M`;
+  if (rate >= 1e3) return `${(rate / 1e3).toFixed(1)}k`;
+  return rate.toFixed(0);
+}
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
@@ -48,21 +55,27 @@ function Stat({ label, value }: { label: string; value: string }) {
 function SummaryRow({ summary }: { summary: Summary }) {
   return (
     <div className="summary-stats">
-      <Stat label="overall time" value={fmtTime(summary.makespan_us)} />
-      <Stat label="tok/sec" value={fmtToks(summary.tokens_per_second)} />
-      <Stat label="effective TFLOPS" value={fmtTflops(summary.effective_tflops)} />
-      <Stat label="hardware TFLOPS" value={fmtTflops(summary.hardware_tflops)} />
-      <Stat label="peak memory (GB)" value={fmtGb(summary.peak_memory_gb)} />
-      <Stat label="idle %" value={fmtPct(summary.idle_pct)} />
-      <Stat label="recompute %" value={fmtPct(summary.recompute_pct)} />
-      <Stat label="ingress util %" value={fmtPct(summary.ingress_util_pct)} />
-      <Stat label="egress util %" value={fmtPct(summary.egress_util_pct)} />
+      <Stat label="Overall Time" value={fmtTime(summary.makespan_us)} />
+      <Stat
+        label={summary.primary_unit ? `${summary.primary_unit}/sec` : "tok/sec"}
+        value={summary.primary_unit ? fmtRate(summary) : fmtToks(summary.tokens_per_second)}
+      />
+      <Stat label="Effective TFLOPS" value={fmtTflops(summary.effective_tflops)} />
+      <Stat label="Hardware TFLOPS" value={fmtTflops(summary.hardware_tflops)} />
+      <Stat label="Peak Fast Memory (GB)" value={fmtGb(summary.peak_fast_memory_gb)} />
+      <Stat label="Idle %" value={fmtPct(summary.idle_pct)} />
+      <Stat label="Recompute %" value={fmtPct(summary.recompute_pct)} />
+      <Stat label="From-Slow Util %" value={fmtPct(summary.from_slow_util_pct)} />
+      <Stat label="To-Slow Util %" value={fmtPct(summary.to_slow_util_pct)} />
     </div>
   );
 }
 
 async function fetchSummary(params: SimulationParams, policy: Policy): Promise<Summary> {
-  const body = { ...params, policy };
+  const body: SimulationParams = {
+    ...params,
+    planner: { ...params.planner, policy },
+  };
   const res = await fetch("/api/simulate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -138,7 +151,7 @@ export function ComparePoliciesPanel({ params, policies }: Props) {
                 <span className="compare-policy-name">{p.label}</span>
                 <span className="compare-policy-stem dim">{p.value}</span>
               </div>
-              {state.kind === "loading" && <div className="compare-loading dim">running…</div>}
+              {state.kind === "loading" && <div className="compare-loading dim">Running...</div>}
               {state.kind === "error" && (
                 <div className="compare-error">error: {state.message}</div>
               )}

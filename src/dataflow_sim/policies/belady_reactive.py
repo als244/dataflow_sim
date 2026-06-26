@@ -3,7 +3,7 @@
 Drives a `ShadowSimulator` that mirrors the simulator's state machine. As the
 planner walks forward through the bare chain, the shadow tracks pool state,
 stream queues, and timing. Trigger decisions (release / offload / prefetch)
-are made by querying the shadow for predicted device usage, predicted input
+are made by querying the shadow for predicted compute usage, predicted input
 arrival times, and stream slack, then mutating the shadow to reflect the
 decision.
 
@@ -35,30 +35,30 @@ from dataflow_sim.policies.shadow import INF, ShadowSimulator
 
 def _smart_initial_placement(
     bare: TaskChain,
-    device_capacity: int | None,
+    fast_memory_capacity: int | None,
     sizes: dict[str, int],
     uses_by_task: dict[str, list[_UseEvent]],
 ) -> set[str]:
     """Capacity-aware initial placement that accounts for STRUCTURAL future
     pressure (task outputs accumulating + residual streams + reserved
-    next-task outputs) when deciding which host objects to pre-place.
+    next-task outputs) when deciding which backing objects to pre-place.
 
     Algorithm (first principles):
       1. For each task boundary k, compute `min_bps[k]` — the minimum bytes
-         that MUST be on device at end of task k regardless of policy:
-           * device-initial objects (live until their last use)
+         that MUST be on compute at end of task k regardless of policy:
+           * compute-initial objects (live until their last use)
            * task outputs of tasks 0..k (live until their last use)
-           * host objects whose first use is <= k+1 and last use is >= k+1
-             (they have to be on device at start of task k+1 to be consumed)
+           * backing objects whose first use is <= k+1 and last use is >= k+1
+             (they have to be on compute at start of task k+1 to be consumed)
          This is a lower bound on bps[k]; cap < min_bps[k] -> infeasible.
 
       2. `headroom[k] = cap - min_bps[k] - reserved_outputs[k+1]`. This is
          the slack a pre-placement can occupy at boundary k.
 
-      3. T_1 inputs and T_1 device-located outputs are forced into the
+      3. T_1 inputs and T_1 compute-located outputs are forced into the
          placement (no extra cost — they're already counted in min_bps[0]).
 
-      4. Sort remaining host candidates by first-use ascending (tiebreak by
+      4. Sort remaining backing candidates by first-use ascending (tiebreak by
          size DESC so big objects compete for tight headroom first). For
          each candidate, pre-placement extends its window from
          [first_use - 1, last_use] to [0, last_use], so it adds `size` bytes
@@ -69,51 +69,51 @@ def _smart_initial_placement(
     if n == 0:
         return set()
 
-    already_device = {o.id for o in bare.initial_memory if o.location == "device"}
-    host_objs = {o.id: o for o in bare.initial_memory if o.location == "host"}
+    already_compute = {o.id for o in bare.initial_memory if o.location == "fast"}
+    backing_objs = {o.id: o for o in bare.initial_memory if o.location == "backing"}
 
-    if device_capacity is None:
-        return {oid for oid in host_objs if uses_by_task.get(oid)}
+    if fast_memory_capacity is None:
+        return {oid for oid in backing_objs if uses_by_task.get(oid)}
 
-    cap = device_capacity
+    cap = fast_memory_capacity
     last_use_idx = _last_use_task_idx(bare)
 
     def first_use_task_idx(oid: str) -> int:
         events = uses_by_task.get(oid, [])
         return events[0].task_idx if events else n  # n = never used
 
-    # Reserved bytes for the next task's device-located outputs (they're
+    # Reserved bytes for the next task's compute-located outputs (they're
     # allocated at start of task k+1, so must fit alongside bps[k]).
     next_outputs = [0] * n
     for k in range(n - 1):
         next_outputs[k] = sum(
-            o.size for o in bare.tasks[k + 1].outputs if o.location == "device"
+            o.size for o in bare.tasks[k + 1].outputs if o.location == "fast"
         )
 
     # --- 1. minimum bps[k] given just-in-time prefetch for everything ---
     # Each entry contributes to bps[k] for k in [appears_k, last_k].
     entries: list[tuple[int, int, int]] = []  # (appears_k, last_k, size)
     for o in bare.initial_memory:
-        if o.location == "device":
+        if o.location == "fast":
             last_k = last_use_idx.get(o.id, n - 1)
             entries.append((0, last_k, o.size))
     for i, task in enumerate(bare.tasks):
         for out in task.outputs:
-            if out.location == "device":
+            if out.location == "fast":
                 last_k = last_use_idx.get(out.id, n - 1)
                 entries.append((i, last_k, out.size))
-    for oid, obj in host_objs.items():
+    for oid, obj in backing_objs.items():
         first = first_use_task_idx(oid)
         if first >= n:
             continue
-        # Just-in-time prefetch: object must be on device at start of task
+        # Just-in-time prefetch: object must be on compute at start of task
         # `first`, i.e., at bps[first - 1] onward. (Clamped at 0 for T_1 inputs.)
         appears_k = max(0, first - 1)
         last_k = last_use_idx.get(oid, n - 1)
         entries.append((appears_k, last_k, obj.size))
 
     # `pessimistic_bps[k]`: bps assuming NOTHING gets evicted (initial-pool
-    # objects, all outputs accumulating, just-in-time prefetched hosts). It's
+    # objects, all outputs accumulating, just-in-time prefetched backings). It's
     # an UPPER bound on what the planner has to manage — when it overflows
     # cap, the planner will need to offload/release things at runtime.
     pessimistic_bps = [0] * n
@@ -135,19 +135,19 @@ def _smart_initial_placement(
     # managed by runtime eviction/prefetch. ---
     t1 = bare.tasks[0]
     t1_inputs_size = sum(sizes.get(i, 0) for i in t1.inputs)
-    t1_outputs_size = sum(o.size for o in t1.outputs if o.location == "device")
+    t1_outputs_size = sum(o.size for o in t1.outputs if o.location == "fast")
     if t1_inputs_size + t1_outputs_size > cap:
         raise ValueError(
-            f"infeasible: task 0 inputs ({t1_inputs_size} bytes) + device-located "
+            f"infeasible: task 0 inputs ({t1_inputs_size} bytes) + compute-located "
             f"outputs ({t1_outputs_size} bytes) exceeds capacity ({cap})"
         )
-    must_place = {oid for oid in t1.inputs if oid in host_objs and oid not in already_device}
+    must_place = {oid for oid in t1.inputs if oid in backing_objs and oid not in already_compute}
     placement = set(must_place)
 
     # --- 3. greedy fill by first-use ascending, size DESC tiebreak ---
     extra_per_boundary = [0] * n  # bytes consumed by pre-placement extensions
     candidates = sorted(
-        (oid for oid in host_objs
+        (oid for oid in backing_objs
          if oid not in placement and uses_by_task.get(oid)),
         key=lambda o: (first_use_task_idx(o), -sizes[o]),
     )
@@ -169,7 +169,7 @@ def _smart_initial_placement(
 
 def _belady_pass_v2(
     bare: TaskChain,
-    initial_device: set[str],
+    initial_compute: set[str],
     uses: dict[str, list[int]],
     sizes: dict[str, int],
     ideal_starts: dict[str, int],
@@ -183,23 +183,23 @@ def _belady_pass_v2(
     time to complete. We compute the earliest feasible task start as a
     function of:
       * previous compute end
-      * all inputs becoming live on device
-      * device capacity having room for outputs (after pending offloads)
+      * all inputs becoming live on compute
+      * compute capacity having room for outputs (after pending offloads)
     """
     shadow = ShadowSimulator(bare)
-    for oid in initial_device:
-        shadow.add_to_initial_device(oid)
+    for oid in initial_compute:
+        shadow.add_to_initial_compute(oid)
 
-    cap = bare.device_capacity
+    cap = bare.fast_memory_capacity
     last_use_idx = _last_use_task_idx(bare)
 
     for i, task in enumerate(bare.tasks):
         ideal_t = ideal_starts[task.id]
-        device_outputs_size = sum(
-            o.size for o in task.outputs if o.location == "device"
+        compute_outputs_size = sum(
+            o.size for o in task.outputs if o.location == "fast"
         )
         input_set = set(task.inputs)
-        output_set = {o.id for o in task.outputs if o.location == "device"}
+        output_set = {o.id for o in task.outputs if o.location == "fast"}
         pinned = input_set | output_set
 
         # 1. Ensure inputs scheduled to arrive
@@ -217,19 +217,19 @@ def _belady_pass_v2(
             tried_victims: set[str] = set()
             while True:
                 candidate_t = _earliest_capacity_fit_t(
-                    shadow, ideal_t, device_outputs_size, cap, task, pinned,
+                    shadow, ideal_t, compute_outputs_size, cap, task, pinned,
                 )
                 if candidate_t is not None:
                     break
                 excluded = pinned | tried_victims
                 victim = _pick_belady_victim_v2(shadow, excluded, uses, ideal_t)
                 if victim is None:
-                    cur_usage = shadow.predicted_device_usage_at(ideal_t)
+                    cur_usage = shadow.predicted_compute_usage_at(ideal_t)
                     raise ValueError(
                         f"widest-task infeasibility at {task.id!r}: "
                         f"pinned objects already exceed capacity. "
                         f"predicted usage at ideal_t={ideal_t}: {cur_usage}, "
-                        f"outputs need {device_outputs_size}, capacity {cap}"
+                        f"outputs need {compute_outputs_size}, capacity {cap}"
                     )
                 placed = _evict_v2(shadow, victim, deadline=ideal_t,
                                    current_task_idx=i, ideal_starts=ideal_starts,
@@ -251,11 +251,11 @@ def _belady_pass_v2(
             missing = [inp for inp in task.inputs
                        if math.isinf(shadow.predicted_input_ready_t(inp))]
             raise ValueError(
-                f"task {task.id!r}: inputs {missing} can never become device-live "
-                f"(no host source and no scheduled transfer)"
+                f"task {task.id!r}: inputs {missing} can never become compute-live "
+                f"(no backing source and no scheduled transfer)"
             )
         capacity_ready = (
-            _earliest_capacity_fit_t(shadow, ideal_t, device_outputs_size, cap, task, pinned)
+            _earliest_capacity_fit_t(shadow, ideal_t, compute_outputs_size, cap, task, pinned)
             if cap is not None
             else ideal_t
         )
@@ -267,7 +267,7 @@ def _belady_pass_v2(
         shadow.advance_to(actual_start)
         shadow.run_task(i, task, actual_start)
 
-        # 5. Opportunistic garbage collect: release any device-live entry that
+        # 5. Opportunistic garbage collect: release any compute-live entry that
         #    no future task in chain order consumes. Task-index-based (rather
         #    than time-based on `_next_use_after`) because actual start times
         #    drift from ideal starts due to prefetch delays — a time-based
@@ -276,7 +276,7 @@ def _belady_pass_v2(
         end_t = actual_start + task.runtime
         dead = [
             oid for (oid, loc), entry in list(shadow.pool.items())
-            if loc == "device"
+            if loc == "fast"
             and entry.state == "live"
             and oid not in (set(task.inputs) | {o.id for o in task.outputs})
             and last_use_idx.get(oid, -1) <= i
@@ -295,7 +295,7 @@ def _earliest_capacity_fit_t(
     task,
     pinned: set[str],
 ) -> int | None:
-    """Earliest time t >= `earliest` at which predicted device usage + outputs
+    """Earliest time t >= `earliest` at which predicted compute usage + outputs
     fits in `cap`, given currently-scheduled offload completions. Returns None
     if no such t exists with the current set of scheduled evictions (caller
     should schedule more).
@@ -307,14 +307,14 @@ def _earliest_capacity_fit_t(
     if pinned_size > cap:
         return None  # infeasible regardless
 
-    # Candidate times: `earliest` and each scheduled d2h completion >= earliest
+    # Candidate times: `earliest` and each scheduled to_slow completion >= earliest
     candidates = [earliest]
-    for tx in shadow.sched_d2h:
+    for tx in shadow.sched_to_slow:
         if tx.end_at > earliest:
             candidates.append(tx.end_at)
     candidates = sorted(set(candidates))
     for t in candidates:
-        if shadow.predicted_device_usage_at(t) + outputs_size <= cap:
+        if shadow.predicted_compute_usage_at(t) + outputs_size <= cap:
             return t
     return None
 
@@ -331,41 +331,41 @@ def _ensure_prefetch_v2(
     extra_pinned: set[str] | None = None,
 ) -> None:
     """Schedule a prefetch for obj_id arriving by deadline. Picks the latest
-    prior task boundary that satisfies (a) host source is live, (b) transfer
-    completes by deadline given stream contention, (c) device has capacity
+    prior task boundary that satisfies (a) backing source is live, (b) transfer
+    completes by deadline given stream contention, (c) compute has capacity
     for the prefetch reservation.
 
     Cascade resolution: if (c) fails at a candidate boundary, issues one or
     more evictions at the same boundary to make room. `cascade_budget` bounds
     the number of evictions per prefetch."""
-    if shadow.bw_h2d is None:
-        raise ValueError("bandwidth_h2d required for prefetches")
+    if shadow.bw_from_slow is None:
+        raise ValueError("bandwidth_from_slow required for prefetches")
     size = shadow.sizes[obj_id]
-    tau = max(1, math.ceil(size / shadow.bw_h2d))
+    tau = max(1, math.ceil(size / shadow.bw_from_slow))
 
-    host_ready = shadow.predicted_object_ready_t(obj_id, "host")
-    if math.isinf(host_ready):
+    backing_ready = shadow.predicted_object_ready_t(obj_id, "backing")
+    if math.isinf(backing_ready):
         return  # let simulator raise
 
     # Walk boundaries from latest to earliest
     for k in range(current_task_idx - 1, -1, -1):
         prev_task = shadow.chain.tasks[k]
         boundary_end = ideal_starts[prev_task.id] + prev_task.runtime
-        # (a) boundary after host source becomes live
-        if boundary_end < host_ready:
+        # (a) boundary after backing source becomes live
+        if boundary_end < backing_ready:
             continue  # earlier ones are also too early
         # (b) transfer completes by deadline given stream load
-        stream_busy = _h2d_busy_at(shadow, boundary_end)
+        stream_busy = _from_slow_busy_at(shadow, boundary_end)
         predicted_end = max(boundary_end, stream_busy) + tau
         if predicted_end > deadline:
             continue
-        # (c) device capacity at boundary k AND all later boundaries through
+        # (c) compute capacity at boundary k AND all later boundaries through
         #     current task — prefetching at k adds `size` to every bps[k..n-1].
         #     If any of those would exceed cap, this boundary doesn't work.
         #     Cascade only at the most-recent boundary (i-1), where the current
         #     shadow.pool is accurate for victim selection.
-        if shadow.device_capacity is not None:
-            cap = shadow.device_capacity
+        if shadow.fast_memory_capacity is not None:
+            cap = shadow.fast_memory_capacity
             # Find the peak bps across boundaries [k, current_task_idx-1]
             n_bps = len(shadow.boundary_pool_size)
             check_range_end = min(current_task_idx, n_bps)
@@ -422,27 +422,27 @@ def _ensure_prefetch_v2(
     if shadow.chain.tasks:
         t0 = shadow.chain.tasks[0]
         boundary_end = ideal_starts[t0.id] + t0.runtime
-        if shadow.device_capacity is None or \
-           shadow.predicted_device_usage_at(boundary_end) + size <= shadow.device_capacity:
+        if shadow.fast_memory_capacity is None or \
+           shadow.predicted_compute_usage_at(boundary_end) + size <= shadow.fast_memory_capacity:
             try:
                 shadow.issue_prefetch(obj_id, 0, boundary_end)
             except ValueError:
                 pass
 
 
-def _h2d_busy_at(shadow: ShadowSimulator, t: int) -> int:
-    """When would a new transfer enqueued at time t actually start on h2d?
+def _from_slow_busy_at(shadow: ShadowSimulator, t: int) -> int:
+    """When would a new transfer enqueued at time t actually start on from_slow?
     (Accounts for currently-scheduled transfers ahead in the FIFO.)"""
     busy = t
-    for tx in shadow.sched_h2d:
+    for tx in shadow.sched_from_slow:
         if tx.enqueue_at <= t:
             busy = max(busy, tx.end_at)
     return busy
 
 
-def _d2h_busy_at(shadow: ShadowSimulator, t: int) -> int:
+def _to_slow_busy_at(shadow: ShadowSimulator, t: int) -> int:
     busy = t
-    for tx in shadow.sched_d2h:
+    for tx in shadow.sched_to_slow:
         if tx.enqueue_at <= t:
             busy = max(busy, tx.end_at)
     return busy
@@ -456,7 +456,7 @@ def _pick_belady_victim_v2(
     appeared_by: int | None = None,
     safe_after: int | None = None,
 ) -> str | None:
-    """Pick the device-live object (not in `pinned`) with furthest next-use.
+    """Pick the compute-live object (not in `pinned`) with furthest next-use.
 
     `appeared_by`: if set, only consider victims whose `appeared_at <=
     appeared_by`. Used when cascading at a past boundary — the victim must
@@ -468,7 +468,7 @@ def _pick_belady_victim_v2(
     evicting it would break that task."""
     candidates: list[tuple[float, str]] = []
     for (oid, loc), entry in shadow.pool.items():
-        if loc != "device":
+        if loc != "fast":
             continue
         if entry.state != "live":
             continue
@@ -502,14 +502,14 @@ def _evict_v2(
     sizes: dict[str, int],
     uses: dict[str, list[int]],
 ) -> bool:
-    """Issue release (if dead, OR if host already holds a live size-matched
-    copy) or offload (if no host copy and victim has a future use). Picks the
+    """Issue release (if dead, OR if backing already holds a live size-matched
+    copy) or offload (if no backing copy and victim has a future use). Picks the
     latest boundary whose offload completion frees the bytes by deadline.
     Returns True if a feasible trigger was placed, False if no boundary
     satisfies the timing constraint."""
     next_t = _next_use_after(uses, victim, deadline + 1)
 
-    dev_entry = shadow.pool.get((victim, "device"))
+    dev_entry = shadow.pool.get((victim, "fast"))
     victim_producer_idx = dev_entry.producer_task_idx if dev_entry else -1
     # Latest ideal-time use up to deadline (the next task that consumes victim
     # before we'd want it evicted); release boundary must be strictly after.
@@ -519,17 +519,17 @@ def _evict_v2(
 
     # Workload contract: existing pool entries are never mutated by tasks
     # (an output always introduces a NEW obj_id, never overwrites an input).
-    # So if a `live` host copy with matching size exists, the device copy is
-    # byte-identical -> a release (instant, no d2h cost) is correct even if
-    # the victim has future uses (those will re-prefetch from host).
-    host_entry = shadow.pool.get((victim, "host"))
-    host_has_copy = (
-        host_entry is not None
-        and host_entry.state == "live"
-        and host_entry.size == sizes[victim]
+    # So if a `live` backing copy with matching size exists, the compute copy is
+    # byte-identical -> a release (instant, no to_slow cost) is correct even if
+    # the victim has future uses (those will re-prefetch from backing).
+    backing_entry = shadow.pool.get((victim, "backing"))
+    backing_has_copy = (
+        backing_entry is not None
+        and backing_entry.state == "live"
+        and backing_entry.size == sizes[victim]
     )
 
-    if math.isinf(next_t) or host_has_copy:
+    if math.isinf(next_t) or backing_has_copy:
         # Release: instant; pick the latest boundary in (last_use, deadline].
         for k in range(current_task_idx - 1, -1, -1):
             prev_task = shadow.chain.tasks[k]
@@ -543,20 +543,20 @@ def _evict_v2(
                 return True
         return False  # no boundary fits between last-use and deadline
 
-    # Offload: ideal boundary depends on whether host already has this
-    # object. For weight-like objects with a host copy we'd have taken the
+    # Offload: ideal boundary depends on whether backing already has this
+    # object. For weight-like objects with a backing copy we'd have taken the
     # release branch above; we only reach this point for objects WITHOUT a
-    # host source — typically task outputs like activations. For those
+    # backing source — typically task outputs like activations. For those
     # there's no harm in offloading EAGERLY (earliest safe boundary):
-    #   * frees device bytes ASAP (helps later operations breathe)
-    #   * puts the d2h stream to work during forward (otherwise idle)
-    #   * host copy materializes early, so a re-prefetch later is unblocked
+    #   * frees compute bytes ASAP (helps later operations breathe)
+    #   * puts the to_slow stream to work during forward (otherwise idle)
+    #   * backing copy materializes early, so a re-prefetch later is unblocked
     # Constraints stay the same: after producer + strictly after prior use,
     # no use of victim during the pending_outbound window, and stream-time
     # plus tau must fit by deadline.
-    if shadow.bw_d2h is None:
-        raise ValueError("bandwidth_d2h required for offload triggers")
-    tau = max(1, math.ceil(sizes[victim] / shadow.bw_d2h))
+    if shadow.bw_to_slow is None:
+        raise ValueError("bandwidth_to_slow required for offload triggers")
+    tau = max(1, math.ceil(sizes[victim] / shadow.bw_to_slow))
     victim_uses = uses.get(victim, [])
     prior_uses = [u for u in victim_uses if u <= deadline]
     last_prior_use = prior_uses[-1] if prior_uses else -1
@@ -568,7 +568,7 @@ def _evict_v2(
             continue  # victim not produced yet at this boundary
         if boundary_end <= last_prior_use:
             continue  # would set victim pending_outbound while still in use
-        stream_busy = _d2h_busy_at(shadow, boundary_end)
+        stream_busy = _to_slow_busy_at(shadow, boundary_end)
         predicted_end = max(boundary_end, stream_busy) + tau
         # No use of victim in [boundary_end, predicted_end] (pending_outbound window)
         bad = any(boundary_end <= u <= predicted_end for u in victim_uses)
@@ -592,7 +592,7 @@ def _evict_v2(
 def apply_belady_reactive_policy(
     bare: TaskChain,
     *,
-    device_capacity: int | None = None,
+    fast_memory_capacity: int | None = None,
     refinement_iters: int = 20,
 ) -> TaskChain:
     """belady_reactive reactive Belady auto-policy entry point.
@@ -606,18 +606,18 @@ def apply_belady_reactive_policy(
       5. Insert gradient writebacks (training-workload convention).
       6. Verify with the simulator; refine on common errors.
     """
-    if device_capacity is not None:
-        bare = replace(bare, device_capacity=device_capacity)
+    if fast_memory_capacity is not None:
+        bare = replace(bare, fast_memory_capacity=fast_memory_capacity)
 
     ideal_starts = _compute_ideal_starts(bare)
     sizes = _object_sizes(bare)
     uses = _compute_uses(bare, ideal_starts)
     uses_by_task = _object_uses_by_task_idx(bare, ideal_starts)
 
-    initial_device = _smart_initial_placement(
-        bare, bare.device_capacity, sizes, uses_by_task,
+    initial_compute = _smart_initial_placement(
+        bare, bare.fast_memory_capacity, sizes, uses_by_task,
     )
 
-    shadow = _belady_pass_v2(bare, initial_device, uses, sizes, ideal_starts)
+    shadow = _belady_pass_v2(bare, initial_compute, uses, sizes, ideal_starts)
     annotated = _add_gradient_writebacks(shadow.to_annotated_chain())
     return _verify_and_refine(annotated, max_iters=refinement_iters)

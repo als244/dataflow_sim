@@ -7,10 +7,10 @@ interface Props {
 }
 
 export function ReferenceStream({ references, memory, selectedObjId }: Props) {
-  // "Ready" = the object has a device-resident entry in the pool — visible OR
+  // "Ready" = the object has a compute-resident entry in the pool — visible OR
   // reserved (output of the active task counts: its memory is already accounted for).
-  const readyOnDevice = new Set(
-    memory.filter((m) => m.location === "device").map((m) => m.id),
+  const readyOnCompute = new Set(
+    memory.filter((m) => m.location === "fast").map((m) => m.id),
   );
 
   return (
@@ -34,7 +34,7 @@ export function ReferenceStream({ references, memory, selectedObjId }: Props) {
           </thead>
           <tbody>
             {references.map((r, i) => {
-              const ready = readyOnDevice.has(r.obj_id);
+              const ready = readyOnCompute.has(r.obj_id);
               return (
                 <tr
                   key={r.obj_id}

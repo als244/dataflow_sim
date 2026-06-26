@@ -4,13 +4,13 @@ import { TYPE_COLORS } from "./MemoryBreakdown";
 
 interface Props {
   log: EventLog | null;
-  deviceCapacityGb: number | null;
+  fastMemoryCapacityGb: number | null;
   currentT: number | null;
 }
 
 /** Memory bands. Live/reserved bytes are bucketed by `type`; transient
  * transfer states get their own bands. Pending_inbound bytes are merged
- * into `inbound` (in the simulator both occupy device memory the moment
+ * into `inbound` (in the simulator both occupy fast memory the moment
  * the trigger fires, so the distinction would only be cosmetic). */
 type BandKey =
   | ObjectType
@@ -32,9 +32,9 @@ const STACK_ORDER: BandKey[] = [
   "pending_outbound",
 ];
 
-// Match the timeline's cat-h2d / cat-d2h colors for visual consistency.
-const H2D_COLOR = "#2ee6a6"; // Nsight-like HtoD green-mint
-const D2H_COLOR = "#e36bff"; // Nsight-like DtoH magenta
+// Match the timeline's transfer colors for visual consistency.
+const FROM_SLOW_COLOR = "#2ee6a6";
+const TO_SLOW_COLOR = "#e36bff";
 
 const BAND_FILL: Record<BandKey, { color: string; opacity: number }> = {
   weight:           { color: TYPE_COLORS.weight,     opacity: 0.55 },
@@ -42,8 +42,8 @@ const BAND_FILL: Record<BandKey, { color: string; opacity: number }> = {
   activation:       { color: TYPE_COLORS.activation, opacity: 0.55 },
   optimizer:        { color: TYPE_COLORS.optimizer,  opacity: 0.55 },
   other:            { color: TYPE_COLORS.other,      opacity: 0.55 },
-  inbound:          { color: H2D_COLOR,              opacity: 0.65 },
-  outbound:         { color: D2H_COLOR,              opacity: 0.65 },
+  inbound:          { color: FROM_SLOW_COLOR,         opacity: 0.65 },
+  outbound:         { color: TO_SLOW_COLOR,           opacity: 0.65 },
   pending_outbound: { color: "#e8a93b",              opacity: 0.45 },  // slightly transparent gold
 };
 
@@ -59,7 +59,7 @@ const BAND_LABEL: Record<BandKey, string> = {
 };
 
 function bandKeyForEntry(m: MemoryEntry): BandKey | null {
-  if (m.location !== "device") return null;
+  if (m.location !== "fast") return null;
   const s: MemoryState = m.state;
   if (s === "pending_inbound" || s === "inbound") return "inbound";
   if (s === "outbound") return "outbound";
@@ -141,12 +141,12 @@ function pointFromBandBytes(t: number, bandBytes: Record<string, number>): Point
   return { t, sumByBand, cumByBand, totalBytes: running };
 }
 
-export function MemoryTimelinePanel({ log, deviceCapacityGb, currentT }: Props) {
+export function MemoryTimelinePanel({ log, fastMemoryCapacityGb, currentT }: Props) {
   const points: Point[] = useMemo(() => {
     if (!log) return [];
     if (log.events.length === 0) {
       return (log.memory_trace ?? []).map((p) => (
-        pointFromBandBytes(p.t, p.device_bytes_by_band)
+        pointFromBandBytes(p.t, p.fast_bytes_by_band)
       ));
     }
     return log.events.map((ev) => {
@@ -184,7 +184,7 @@ export function MemoryTimelinePanel({ log, deviceCapacityGb, currentT }: Props) 
   const contentWidth = viewportWidth * zoom;
   const xScale = (t: number) => (t / tMax) * contentWidth;
 
-  const capBytes = deviceCapacityGb ? deviceCapacityGb * 1024 ** 3 : null;
+  const capBytes = fastMemoryCapacityGb ? fastMemoryCapacityGb * 1024 ** 3 : null;
   const yMax = capBytes
     ? Math.max(peakBytes, capBytes) * 1.02
     : (peakBytes || 1) * 1.1;
@@ -301,7 +301,7 @@ export function MemoryTimelinePanel({ log, deviceCapacityGb, currentT }: Props) 
   return (
     <div className="panel memtl-panel">
       <div className="panel-header">
-        <h3>GPU memory over time</h3>
+        <h3>Fast Memory Over Time</h3>
         <span className="memtl-peak dim">
           peak {fmtBytesGb(peakBytes)}
           {capBytes ? ` · cap ${fmtBytesGb(capBytes)}` : ""}

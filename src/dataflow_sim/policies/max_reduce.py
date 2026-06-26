@@ -1,7 +1,7 @@
 """max_reduce — clean general formulation auto policy.
 
 See docs/policy/other_policies/max-reduce.md for the design doc. Three phases:
-  1. Residency  — decide which boundaries each object is on device. Pure
+  1. Residency  — decide which boundaries each object is on compute. Pure
                   memory accounting; no streams, no times.
   2. Triggers   — derive initial-placement + per-task triggers from the
                   residency intervals.
@@ -67,13 +67,13 @@ def _initial_residency(bare: TaskChain) -> dict[str, list[tuple[int, int]]]:
     """MAX residency for each object: a single interval covering its entire
     active span. The exact shape depends on the object's role:
 
-      - device-initial: [-1, last_use_boundary] (already on device, kept live)
-      - host-initial:   [-1, last_use_boundary] (pre-placed, kept live)
+      - compute-initial: [-1, last_use_boundary] (already on compute, kept live)
+      - backing-initial:   [-1, last_use_boundary] (pre-placed, kept live)
       - task output:    [producer_idx, last_use_boundary]
 
-    For gradients (host-initial, type=gradient), the last_use_boundary is
+    For gradients (backing-initial, type=gradient), the last_use_boundary is
     extended by 1 (= the writeback boundary, where the offload trigger fires
-    to flush updated bytes back to host). For non-gradients, last_use_boundary
+    to flush updated bytes back to backing). For non-gradients, last_use_boundary
     is `last_use_task_idx - 1` (the obj is consumed during the last-use task
     and structurally dies at boundary `last_use_task_idx`).
 
@@ -83,7 +83,7 @@ def _initial_residency(bare: TaskChain) -> dict[str, list[tuple[int, int]]]:
     producer = _producer_idx(bare)
     uses = _uses_by_obj(bare)
     types = _object_types(bare)
-    host_init_ids = {o.id for o in bare.initial_memory if o.location == "host"}
+    backing_init_ids = {o.id for o in bare.initial_memory if o.location == "backing"}
 
     residency: dict[str, list[tuple[int, int]]] = {}
     all_ids: set[str] = set(producer) | set(uses)
@@ -108,7 +108,7 @@ def _initial_residency(bare: TaskChain) -> dict[str, list[tuple[int, int]]]:
 
 
 def _next_outputs_size(bare: TaskChain) -> list[int]:
-    """For each boundary k, the device bytes reserved by task[k+1]'s outputs.
+    """For each boundary k, the compute bytes reserved by task[k+1]'s outputs.
     By boundary semantics, outputs of task[k+1] are reserved at its START,
     which is boundary k. So we charge them against pool[k]."""
     n = len(bare.tasks)
@@ -116,7 +116,7 @@ def _next_outputs_size(bare: TaskChain) -> list[int]:
     # boundary k → array index k + 1
     for k in range(-1, n - 1):
         nxt = bare.tasks[k + 1]
-        out[k + 1] = sum(o.size for o in nxt.outputs if o.location == "device")
+        out[k + 1] = sum(o.size for o in nxt.outputs if o.location == "fast")
     return out
 
 
@@ -135,7 +135,7 @@ def _departure_type(
     oid: str,
     interval_idx: int,
     n_intervals: int,
-    host_source: bool,
+    backing_source: bool,
     is_gradient: bool,
 ) -> str:
     """Returns 'offload' or 'release' for this interval's departure."""
@@ -143,7 +143,7 @@ def _departure_type(
     if is_last:
         return "offload" if is_gradient else "release"
     # Mid-interval: must preserve bytes for next interval.
-    return "release" if (host_source and not is_gradient) else "offload"
+    return "release" if (backing_source and not is_gradient) else "offload"
 
 
 def _effective_residency_ends(
@@ -152,28 +152,28 @@ def _effective_residency_ends(
     sizes: dict[str, int],
 ) -> dict[tuple[str, int], int]:
     """For each (oid, interval_idx), the EFFECTIVE last boundary at which the
-    object is in the device pool. For intervals ending in release this is
+    object is in the compute pool. For intervals ending in release this is
     just `b` (release is instant). For intervals ending in offload it's
-    extended forward by however many task boundaries the d2h takes to drain
+    extended forward by however many task boundaries the to_slow takes to drain
     given FIFO contention with all other offloads.
 
-    Simulates the d2h FIFO in fire-order to assign each offload an actual
+    Simulates the to_slow FIFO in fire-order to assign each offload an actual
     completion time, then maps that time to a task boundary.
     """
     n = len(bare.tasks)
     task_end = _task_end_times(bare)
-    bw = bare.bandwidth_d2h
-    host_init_ids = {o.id for o in bare.initial_memory if o.location == "host"}
+    bw = bare.bandwidth_to_slow
+    backing_init_ids = {o.id for o in bare.initial_memory if o.location == "backing"}
     types = _object_types(bare)
 
     # Collect offload events in fire order.
     events: list[tuple[int, str, int, int]] = []  # (fire_time, oid, idx, size)
     eff_ends: dict[tuple[str, int], int] = {}
     for oid, intervals in residency.items():
-        host_source = oid in host_init_ids
-        is_grad = host_source and types.get(oid) == "gradient"
+        backing_source = oid in backing_init_ids
+        is_grad = backing_source and types.get(oid) == "gradient"
         for idx, (a, b) in enumerate(intervals):
-            dep = _departure_type(oid, idx, len(intervals), host_source, is_grad)
+            dep = _departure_type(oid, idx, len(intervals), backing_source, is_grad)
             if dep == "release":
                 eff_ends[(oid, idx)] = b
                 continue
@@ -185,7 +185,7 @@ def _effective_residency_ends(
             # Actually triggers fire AT task (b+1)? Re-check: a departure
             # at end of interval [a,b] (= obj NOT live at b+1) fires at task
             # b+1. So fire time = task_end[b + 1] in absolute µs. But that's
-            # AFTER task b+1 has run. The d2h starts AT that moment.
+            # AFTER task b+1 has run. The to_slow starts AT that moment.
             # Actually the simulator fires offload at end of producing task —
             # which for a departure between intervals [a,b] and [c,d] means
             # the trigger is on task (b+1) and fires at task_end[b+1].
@@ -201,15 +201,15 @@ def _effective_residency_ends(
                 eff_ends.setdefault((oid, idx), b)
         return eff_ends
 
-    d2h_busy = 0
+    to_slow_busy = 0
     for fire_t, oid, idx, sz in events:
-        start = max(d2h_busy, fire_t)
+        start = max(to_slow_busy, fire_t)
         tau = max(1, math.ceil(sz / bw))
         end = start + tau
-        d2h_busy = end
+        to_slow_busy = end
         # Find max boundary k such that task_end[k] < end.
         # boundary k = end of task k = task_end[k]. If end > task_end[k],
-        # the d2h still hasn't finished as of boundary k → obj still in pool.
+        # the to_slow still hasn't finished as of boundary k → obj still in pool.
         eff_b = -1
         for k in range(n):
             if task_end[k] < end:
@@ -223,9 +223,9 @@ def _effective_residency_ends(
 
 def _effective_a(a: int, producer_idx: int) -> int:
     """Boundary at which the simulator first counts a prefetched object in
-    the device pool. For an interval starting at `a`, if the source is a
-    prefetch (a > -1 and a is not the production boundary), then h2d STARTS
-    at boundary (a - 1) and the simulator's device entry exists from then
+    the compute pool. For an interval starting at `a`, if the source is a
+    prefetch (a > -1 and a is not the production boundary), then from_slow STARTS
+    at boundary (a - 1) and the simulator's compute entry exists from then
     onward (state=inbound → live by boundary a). For pre-placed (a == -1)
     or task-output (a == producer) intervals, no such extension applies."""
     if a > -1 and a != producer_idx:
@@ -233,27 +233,27 @@ def _effective_a(a: int, producer_idx: int) -> int:
     return a
 
 
-def _compute_d2h_tails(
+def _compute_to_slow_tails(
     bare: TaskChain,
     residency: dict[str, list[tuple[int, int]]],
     sizes: dict[str, int],
     mutators: dict[str, set[int]],
 ) -> dict[tuple[str, int], int]:
-    """For each interval that ends in an OFFLOAD trigger, simulate the d2h
+    """For each interval that ends in an OFFLOAD trigger, simulate the to_slow
     FIFO to determine the actual last boundary the object occupies. Returns
     a dict (obj_id, interval_idx) -> effective_b extended past the logical
-    interval end by d2h transit time. For RELEASE departures, no extension.
+    interval end by to_slow transit time. For RELEASE departures, no extension.
 
     The simulation is conservative: it walks offload events in fire-time
-    order, assigns each one a slot in the d2h queue (max of fire_time and
-    cumulative d2h-busy), and computes its completion time. The object's
+    order, assigns each one a slot in the to_slow queue (max of fire_time and
+    cumulative to_slow-busy), and computes its completion time. The object's
     effective last boundary is the largest k with task_end[k] < completion."""
     n = len(bare.tasks)
-    bw = bare.bandwidth_d2h
+    bw = bare.bandwidth_to_slow
     if bw is None or bw <= 0:
         return {}
     task_end = _task_end_times(bare)
-    host_init_ids = {o.id for o in bare.initial_memory if o.location == "host"}
+    backing_init_ids = {o.id for o in bare.initial_memory if o.location == "backing"}
     uses_by_obj = _uses_by_obj(bare)
     producer = _producer_idx(bare)
 
@@ -261,7 +261,7 @@ def _compute_d2h_tails(
     # departure trigger is an OFFLOAD (not a release).
     events: list[tuple[int, str, int, int]] = []
     for oid, intervals in residency.items():
-        has_host_source = oid in host_init_ids
+        has_backing_source = oid in backing_init_ids
         obj_mutators = mutators.get(oid, set())
         ever_mutated = bool(obj_mutators)
         for idx, (a, b) in enumerate(intervals):
@@ -280,7 +280,7 @@ def _compute_d2h_tails(
             # Same trigger-type decision as in _emit_triggers:
             if dirty:
                 trigger = "offload"
-            elif not is_last and not has_host_source:
+            elif not is_last and not has_backing_source:
                 trigger = "offload"
             else:
                 trigger = "release"
@@ -289,12 +289,12 @@ def _compute_d2h_tails(
 
     events.sort(key=lambda e: (e[0], e[1]))
     eff_ends: dict[tuple[str, int], int] = {}
-    d2h_busy = 0
+    to_slow_busy = 0
     for fire_t, oid, idx, sz in events:
-        start = max(d2h_busy, fire_t)
+        start = max(to_slow_busy, fire_t)
         tau = max(1, math.ceil(sz / bw))
         end = start + tau
-        d2h_busy = end
+        to_slow_busy = end
         eff_b = -1
         for k in range(n):
             if task_end[k] < end:
@@ -315,7 +315,7 @@ def _pool_size_per_boundary(
 ) -> list[int]:
     """pool[k] = sum of sizes of objects whose effective residency includes
     boundary k, for k in [-1, n-1]. Indexed as array[k + 1]. Accounts for
-    prefetch arrival on the left edge AND d2h transit tail on the right edge
+    prefetch arrival on the left edge AND to_slow transit tail on the right edge
     (objects in pending_outbound state still occupy bytes)."""
     n = len(bare.tasks)
     producer = _producer_idx(bare)
@@ -343,26 +343,26 @@ def _reduce_to_fit_cap(
     Raises ValueError("infeasible: ...") if even the minimum-residency plan
     (everything just-in-time prefetched) exceeds cap at some boundary.
     """
-    cap = bare.device_capacity
+    cap = bare.fast_memory_capacity
     if cap is None:
         return  # no constraint
     n = len(bare.tasks)
     next_outputs = _next_outputs_size(bare)
     uses = _uses_by_obj(bare)
     producer = _producer_idx(bare)
-    device_init_ids = {o.id for o in bare.initial_memory if o.location == "device"}
+    compute_init_ids = {o.id for o in bare.initial_memory if o.location == "fast"}
 
     def _anchors(oid: str) -> list[int]:
         """Mandatory boundaries that ANY residency interval of `oid` must
         cover collectively (across all intervals). Each anchor must lie in
         SOME interval; splitting can move it between intervals but can't
         drop it. For oid:
-          - device-initial: boundary -1 is anchor (already on device at start)
+          - compute-initial: boundary -1 is anchor (already on compute at start)
           - task output: producer(oid) is anchor (must be live when produced)
           - each use u: boundary (u - 1) is anchor (must be live for task u)
         """
         out: list[int] = []
-        if oid in device_init_ids:
+        if oid in compute_init_ids:
             out.append(-1)
         p = producer.get(oid, -1)
         if p >= 0:
@@ -371,11 +371,11 @@ def _reduce_to_fit_cap(
             out.append(u - 1)
         return sorted(set(out))
 
-    # Phase 1 pool tracking accounts for the prefetch left-edge (h2d-start)
-    # but NOT for d2h transit on the right edge. Modeling d2h tails would
-    # make max_reduce declare configs infeasible whenever the d2h queue can't fully
+    # Phase 1 pool tracking accounts for the prefetch left-edge (from_slow-start)
+    # but NOT for to_slow transit on the right edge. Modeling to_slow tails would
+    # make max_reduce declare configs infeasible whenever the to_slow queue can't fully
     # drain by an arbitrary boundary — but the simulator's drain loop will
-    # stall compute to wait for d2h naturally, which is the right physical
+    # stall compute to wait for to_slow naturally, which is the right physical
     # behavior. max_reduce instead emits a logically-correct plan; any tail-induced
     # pressure manifests as small inter-task gaps in the simulator's timeline.
     pool = _pool_size_per_boundary(bare, residency, sizes)
@@ -403,23 +403,23 @@ def _reduce_to_fit_cap(
         # Otherwise the new intervals are:
         #   - [a, max(anchors_le_k_minus_1)] if non-empty, else dropped
         #   - [min(anchors_ge_k_plus_1), b]  if non-empty, else dropped
-        # The dropped middle range frees boundaries from device.
+        # The dropped middle range frees boundaries from fast memory.
         # Eviction ranking. Three orthogonal cost axes drive the choice:
         #
         # (1) STREAM COST per byte freed depends on the eviction TYPE, not
         #     just the obj's mutation status:
         #     - drop_init (= un-pre-place by removing the obj's [-1, …]
-        #       portion): only adds 1 h2d (the just-in-time prefetch when
+        #       portion): only adds 1 from_slow (the just-in-time prefetch when
         #       the obj is first needed). The writeback offload for mutated
         #       objs happens REGARDLESS of pre-placement, so it doesn't
         #       count as eviction cost here.
         #     - mid-life split (cut between two uses): if the obj is
-        #       release-eligible (host source exists AND never mutated),
-        #       cost = 1 h2d. Else round-trip cost = 1 d2h + 1 h2d.
+        #       release-eligible (backing source exists AND never mutated),
+        #       cost = 1 from_slow. Else round-trip cost = 1 to_slow + 1 from_slow.
         #
         # (2) FIRST-USE TIME: pre-placing an obj that's used SOON avoids
-        #     forward h2d contention; pre-placing one used FAR can be
-        #     deferred to backward where h2d has slack. Prefer evicting
+        #     forward from_slow contention; pre-placing one used FAR can be
+        #     deferred to backward where from_slow has slack. Prefer evicting
         #     LATE-first-use objs first (= keep early-use objs pre-placed).
         #
         # (3) drop_init vs mid-life: drop_init frees more boundaries (all
@@ -427,7 +427,7 @@ def _reduce_to_fit_cap(
         #
         # Combined key (lower = better): (stream_cost, not_drop_init,
         # -first_use, -size, -gap_length).
-        host_init_ids = {o.id for o in bare.initial_memory if o.location == "host"}
+        backing_init_ids = {o.id for o in bare.initial_memory if o.location == "backing"}
         uses_by_obj = _uses_by_obj(bare)
         candidates: list[tuple[tuple, str, int, int | None, int | None]] = []
         for oid, intervals in residency.items():
@@ -450,19 +450,19 @@ def _reduce_to_fit_cap(
                 if gap_len <= 0:
                     continue
                 drops_init = (left_end is None and a == -1)
-                has_host_source = oid in host_init_ids
+                has_backing_source = oid in backing_init_ids
                 obj_ever_mutated = any(
                     oid in t.mutates_inputs for t in bare.tasks
                 )
                 if drops_init:
-                    # Un-pre-place: 1 h2d. Writeback happens regardless.
+                    # Un-pre-place: 1 from_slow. Writeback happens regardless.
                     stream_cost = 0
                 else:
-                    release_eligible = has_host_source and not obj_ever_mutated
+                    release_eligible = has_backing_source and not obj_ever_mutated
                     stream_cost = 0 if release_eligible else 1
                 # First-use time across ENTIRE chain (not just this interval).
                 # Pre-placing an early-use obj is more valuable than pre-
-                # placing a late-use obj — late uses have h2d slack to load
+                # placing a late-use obj — late uses have from_slow slack to load
                 # them on demand. So prefer evicting LATE-first-use objs.
                 obj_uses = uses_by_obj.get(oid, [])
                 first_use = obj_uses[0] if obj_uses else n  # never used → max idx
@@ -514,11 +514,11 @@ def _check_min_pool_feasibility(
     bare: TaskChain,
     sizes: dict[str, int],
 ) -> None:
-    """Quick check that the minimum-residency plan (every object on device
+    """Quick check that the minimum-residency plan (every object on compute
     ONLY at its use boundaries, plus production boundary for outputs) fits
     cap. If this fails, no plan can fit — error out before the reduction
     loop hits the same conclusion the slow way."""
-    cap = bare.device_capacity
+    cap = bare.fast_memory_capacity
     if cap is None:
         return
     n = len(bare.tasks)
@@ -533,9 +533,9 @@ def _check_min_pool_feasibility(
             min_pool[u - 1 + 1] += sz  # boundary u-1
         if producer[oid] >= 0:
             min_pool[producer[oid] + 1] += sz  # boundary producer[oid]
-    # device-initial objects also pinned at boundary -1
+    # compute-initial objects also pinned at boundary -1
     for o in bare.initial_memory:
-        if o.location == "device":
+        if o.location == "fast":
             # Live at all boundaries until last use - 1 (or boundary -1 if no use)
             u = uses.get(o.id, [])
             last_b = (u[-1] - 1) if u else -1
@@ -562,18 +562,18 @@ def _emit_triggers(
     bare: TaskChain,
     residency: dict[str, list[tuple[int, int]]],
 ) -> tuple[set[str], dict[int, dict[str, list[str]]]]:
-    """Returns (initial_device, annotations) where:
-      - initial_device: set of host obj_ids to pre-place on device
+    """Returns (initial_compute, annotations) where:
+      - initial_compute: set of backing obj_ids to pre-place on compute
       - annotations: task_idx -> {"release": [...], "offload": [...], "prefetch": [...]}
     """
     producer = _producer_idx(bare)
     uses = _uses_by_obj(bare)
-    host_init_ids = {o.id for o in bare.initial_memory if o.location == "host"}
+    backing_init_ids = {o.id for o in bare.initial_memory if o.location == "backing"}
     n = len(bare.tasks)
 
     # Per-object set of task indices that mutate this object. Generalizes
     # the prior "type=='gradient'" special case: any input listed in a task's
-    # `mutates_inputs` is treated as mutated by that task. The host copy of
+    # `mutates_inputs` is treated as mutated by that task. The backing copy of
     # such an object goes stale at the mutating task and must be flushed
     # back via an offload before being safely dropped.
     mutators: dict[str, set[int]] = defaultdict(set)
@@ -581,14 +581,14 @@ def _emit_triggers(
         for oid in task.mutates_inputs:
             mutators[oid].add(i)
 
-    initial_device: set[str] = set()
+    initial_compute: set[str] = set()
     annotations: dict[int, dict[str, list[str]]] = defaultdict(
         lambda: {"release": [], "offload": [], "prefetch": []}
     )
 
     for oid, intervals in residency.items():
         intervals = sorted(intervals)
-        has_host_source = oid in host_init_ids
+        has_backing_source = oid in backing_init_ids
         obj_mutators = mutators.get(oid, set())
 
         for i, (a, b) in enumerate(intervals):
@@ -598,9 +598,9 @@ def _emit_triggers(
 
             # --- Arrival ---
             if is_first and a == -1:
-                if has_host_source:
-                    initial_device.add(oid)
-                # device-initial: already in pool, no trigger
+                if has_backing_source:
+                    initial_compute.add(oid)
+                # compute-initial: already in pool, no trigger
             elif is_first and a == p and p >= 0:
                 # Natural production — no trigger needed
                 pass
@@ -623,7 +623,7 @@ def _emit_triggers(
             #   - For production p in [a, b]: the obj appears at end of task
             #     p (step 7). Trigger can fire on the SAME task p (step 9
             #     runs after step 7, so the obj is live then immediately
-            #     queued for d2h).
+            #     queued for to_slow).
             # Take the max so the trigger fires only after all needs are met.
             uses_in = [u for u in uses.get(oid, []) if a <= u - 1 <= b]
             production_in = [p] if (p >= 0 and a <= p <= b) else []
@@ -636,12 +636,12 @@ def _emit_triggers(
             if fire_task >= n:
                 # Obj outlives the chain (the last use is the final task and
                 # there's no post-chain trigger slot). Acceptable for objects
-                # that should remain on device at end-of-run (e.g. the very
+                # that should remain on compute at end-of-run (e.g. the very
                 # last output). Mutated objects ending here would silently
                 # lose their writeback — flag it.
-                if obj_mutators and is_last and has_host_source:
+                if obj_mutators and is_last and has_backing_source:
                     raise ValueError(
-                        f"max_reduce bug: mutated host-initial {oid!r} has its last "
+                        f"max_reduce bug: mutated backing-initial {oid!r} has its last "
                         f"residency interval ending at boundary {b} (post-chain) "
                         f"— no place to fire the writeback offload"
                     )
@@ -657,34 +657,34 @@ def _emit_triggers(
 
             if dirty:
                 # Must offload to preserve the updated bytes (writeback if
-                # host source exists, or just preserve-for-next-prefetch if
+                # backing source exists, or just preserve-for-next-prefetch if
                 # not). Either way: offload.
                 annotations[fire_task]["offload"].append(oid)
-            elif not is_last and not has_host_source:
-                # No host source AND another interval will re-use o; must
+            elif not is_last and not has_backing_source:
+                # No backing source AND another interval will re-use o; must
                 # offload to keep the bytes accessible for re-prefetch.
                 annotations[fire_task]["offload"].append(oid)
             else:
-                # Clean and (has host source OR is the last interval). Just
-                # drop the device entry; host copy is identical (or obj is
+                # Clean and (has backing source OR is the last interval). Just
+                # drop the compute entry; backing copy is identical (or obj is
                 # structurally dead).
                 annotations[fire_task]["release"].append(oid)
 
-    return initial_device, dict(annotations)
+    return initial_compute, dict(annotations)
 
 
 def _build_chain(
     bare: TaskChain,
-    initial_device: set[str],
+    initial_compute: set[str],
     annotations: dict[int, dict[str, list[str]]],
 ) -> TaskChain:
-    """Construct the annotated TaskChain from initial_device + per-task triggers."""
-    host_objs = {o.id: o for o in bare.initial_memory if o.location == "host"}
+    """Construct the annotated TaskChain from initial_compute + per-task triggers."""
+    backing_objs = {o.id: o for o in bare.initial_memory if o.location == "backing"}
     new_initial = list(bare.initial_memory)
-    for oid in initial_device:
-        src = host_objs[oid]
+    for oid in initial_compute:
+        src = backing_objs[oid]
         new_initial.append(
-            Object(id=src.id, size=src.size, location="device", type=src.type)
+            Object(id=src.id, size=src.size, location="fast", type=src.type)
         )
 
     new_tasks: list[Task] = []
@@ -706,18 +706,18 @@ def _build_chain(
 
 # ---------- public entry point ----------
 
-# ---------- Phase 3: EDF prefetch scheduling on the h2d FIFO ----------
+# ---------- Phase 3: EDF prefetch scheduling on the from_slow FIFO ----------
 
-def _schedule_prefetches_h2d(
+def _schedule_prefetches_from_slow(
     bare: TaskChain,
     residency: dict[str, list[tuple[int, int]]],
     sizes: dict[str, int],
 ) -> None:
     """Extend prefetched residency intervals LEFT to give each prefetch
-    enough h2d lead time, packed EDF-backward into the FIFO.
+    enough from_slow lead time, packed EDF-backward into the FIFO.
 
     Without this, every prefetch fires one task before its consumer
-    (=just-in-time), so a contended h2d queue causes the consumer to stall
+    (=just-in-time), so a contended from_slow queue causes the consumer to stall
     waiting for the transfer. The general principle: when transfers share
     a FIFO stream and each has a known deadline, issue them in deadline
     order as early as the DAG and memory cap allow. The FIFO itself
@@ -735,11 +735,11 @@ def _schedule_prefetches_h2d(
     extension to the latest fitting candidate. Falls back to the original
     just-in-time placement if no extension fits.
     """
-    if bare.bandwidth_h2d is None or bare.bandwidth_h2d <= 0:
+    if bare.bandwidth_from_slow is None or bare.bandwidth_from_slow <= 0:
         return
-    cap = bare.device_capacity
+    cap = bare.fast_memory_capacity
     n = len(bare.tasks)
-    bw = bare.bandwidth_h2d
+    bw = bare.bandwidth_from_slow
     task_end = _task_end_times(bare)
     producer = _producer_idx(bare)
     next_outputs = _next_outputs_size(bare)
@@ -761,7 +761,7 @@ def _schedule_prefetches_h2d(
             deadline = task_end[a - 1]
             tau = max(1, math.ceil(sizes[oid] / bw))
             # Earliest valid a:
-            #   - host-initial / device-initial first interval: any a >= 1
+            #   - backing-initial / compute-initial first interval: any a >= 1
             #     (= fire at task 0 or later; can't fire before chain starts)
             #   - task output: a >= producer + 1 (obj doesn't exist before)
             #   - non-first interval: a >= prev_interval.end + 2
@@ -778,7 +778,7 @@ def _schedule_prefetches_h2d(
     if not prefetches:
         return
 
-    # EDF-backward: process latest-deadline first, pack into h2d
+    # EDF-backward: process latest-deadline first, pack into from_slow
     prefetches.sort(key=lambda e: (-e[0], e[1]))
 
     next_start_t = float('inf')
@@ -841,13 +841,13 @@ def apply_max_reduce_policy(bare: TaskChain) -> TaskChain:
     """max_reduce auto policy. See docs/policy/other_policies/max-reduce.md for the full spec.
 
     Raises ValueError("infeasible: ...") if no memory schedule can fit the
-    chain at the configured `device_capacity`. Otherwise returns an annotated
+    chain at the configured `fast_memory_capacity`. Otherwise returns an annotated
     chain satisfying all invariants listed in the doc.
     """
     sizes = _object_sizes(bare)
     _check_min_pool_feasibility(bare, sizes)
     residency = _initial_residency(bare)
     _reduce_to_fit_cap(bare, residency, sizes)
-    _schedule_prefetches_h2d(bare, residency, sizes)
-    initial_device, annotations = _emit_triggers(bare, residency)
-    return _build_chain(bare, initial_device, annotations)
+    _schedule_prefetches_from_slow(bare, residency, sizes)
+    initial_compute, annotations = _emit_triggers(bare, residency)
+    return _build_chain(bare, initial_compute, annotations)

@@ -16,8 +16,8 @@ class _Facts:
     producer: dict[str, int]
     uses: dict[str, list[int]]
     mutators: dict[str, set[int]]
-    host_ids: set[str]
-    device_ids: set[str]
+    backing_ids: set[str]
+    compute_ids: set[str]
     final_locations: dict[str, str]
     task_start: list[int]
     task_end: list[int]
@@ -52,7 +52,7 @@ def _build_facts(chain: TaskChain) -> _Facts:
     for b in range(-1, n - 1):
         task = chain.tasks[b + 1]
         next_outputs[b + 1] = sum(
-            out.size for out in task.outputs if out.location == "device"
+            out.size for out in task.outputs if out.location == "fast"
         )
 
     return _Facts(
@@ -61,8 +61,8 @@ def _build_facts(chain: TaskChain) -> _Facts:
         producer=producer,
         uses={k: sorted(v) for k, v in uses.items()},
         mutators=mutators,
-        host_ids={o.id for o in chain.initial_memory if o.location == "host"},
-        device_ids={o.id for o in chain.initial_memory if o.location == "device"},
+        backing_ids={o.id for o in chain.initial_memory if o.location == "backing"},
+        compute_ids={o.id for o in chain.initial_memory if o.location == "fast"},
         final_locations=dict(chain.final_locations),
         task_start=task_start,
         task_end=task_end,
@@ -78,7 +78,7 @@ def _transfer_time(size: int, bandwidth: int | None) -> int:
 
 def _anchors(oid: str, facts: _Facts) -> list[int]:
     out: set[int] = set()
-    if oid in facts.device_ids:
+    if oid in facts.compute_ids:
         out.add(-1)
     p = facts.producer.get(oid, -1)
     if p >= 0:

@@ -18,7 +18,7 @@ def make_invalid_id_resolution_unknown_input() -> TaskChain:
     object produced upstream. Expected validator error includes: 'unknown input'.
     """
     return TaskChain(
-        initial_memory=[Object(id="W", size=1, location="device", type="weight")],
+        initial_memory=[Object(id="W", size=1, location="fast", type="weight")],
         tasks=[
             Task(
                 id="t0",
@@ -27,10 +27,10 @@ def make_invalid_id_resolution_unknown_input() -> TaskChain:
                 runtime=1,
             ),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -48,7 +48,7 @@ def make_invalid_id_resolution_release_not_in_inputs() -> TaskChain:
     """
     return TaskChain(
         initial_memory=[
-            Object(id="W", size=1, location="device", type="weight"),
+            Object(id="W", size=1, location="fast", type="weight"),
         ],
         tasks=[
             Task(
@@ -59,10 +59,10 @@ def make_invalid_id_resolution_release_not_in_inputs() -> TaskChain:
                 releases_after=["GHOST"],  # GHOST is unknown
             ),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -72,7 +72,7 @@ def make_invalid_id_resolution_offload_unknown_obj() -> TaskChain:
     must name a real object. Expected validator error includes: 'offload'.
     """
     return TaskChain(
-        initial_memory=[Object(id="W", size=1, location="device", type="weight")],
+        initial_memory=[Object(id="W", size=1, location="fast", type="weight")],
         tasks=[
             Task(
                 id="t0",
@@ -82,10 +82,10 @@ def make_invalid_id_resolution_offload_unknown_obj() -> TaskChain:
                 offload_after=[TransferTrigger(obj_id="NOPE")],  # NOPE doesn't exist
             ),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -95,7 +95,7 @@ def make_invalid_id_resolution_prefetch_unknown_obj() -> TaskChain:
     must name a real object. Expected validator error includes: 'prefetch'.
     """
     return TaskChain(
-        initial_memory=[Object(id="W", size=1, location="device", type="weight")],
+        initial_memory=[Object(id="W", size=1, location="fast", type="weight")],
         tasks=[
             Task(
                 id="t0",
@@ -105,10 +105,10 @@ def make_invalid_id_resolution_prefetch_unknown_obj() -> TaskChain:
                 prefetch_after=[TransferTrigger(obj_id="MISSING")],  # MISSING doesn't exist
             ),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -119,7 +119,7 @@ def make_invalid_id_resolution_output_shadows_initial() -> TaskChain:
     Expected validator error includes: 'duplicate'.
     """
     return TaskChain(
-        initial_memory=[Object(id="W", size=1, location="device", type="weight")],
+        initial_memory=[Object(id="W", size=1, location="fast", type="weight")],
         tasks=[
             Task(
                 id="t0",
@@ -128,10 +128,10 @@ def make_invalid_id_resolution_output_shadows_initial() -> TaskChain:
                 runtime=1,
             ),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -141,7 +141,7 @@ def make_invalid_id_resolution_output_id_collision() -> TaskChain:
     Expected validator error includes: 'duplicate'.
     """
     return TaskChain(
-        initial_memory=[Object(id="W", size=1, location="device", type="weight")],
+        initial_memory=[Object(id="W", size=1, location="fast", type="weight")],
         tasks=[
             Task(
                 id="t0",
@@ -156,10 +156,10 @@ def make_invalid_id_resolution_output_id_collision() -> TaskChain:
                 runtime=1,
             ),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -170,8 +170,8 @@ def make_invalid_id_resolution_mutates_not_in_inputs() -> TaskChain:
     """
     return TaskChain(
         initial_memory=[
-            Object(id="W", size=1, location="device", type="weight"),
-            Object(id="G", size=1, location="device", type="gradient"),
+            Object(id="W", size=1, location="fast", type="weight"),
+            Object(id="G", size=1, location="fast", type="gradient"),
         ],
         tasks=[
             Task(
@@ -182,10 +182,10 @@ def make_invalid_id_resolution_mutates_not_in_inputs() -> TaskChain:
                 mutates_inputs=["G"],  # G is not in inputs
             ),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -204,9 +204,9 @@ EXPECTED_ERROR_KEYWORDS: dict[str, str | list[str]] = {
 # Category: TRIGGER VALIDITY
 #
 # Principles cited (docs/policy/principles.md §1):
-#   * "Prefetch of X is valid only when X's device entry is absent or in-flight
-#      outbound; offload of X is valid only when device entry is `live` and any
-#      host entry is `live` with matching size."
+#   * "Prefetch of X is valid only when X's compute entry is absent or in-flight
+#      outbound; offload of X is valid only when compute entry is `live` and any
+#      backing entry is `live` with matching size."
 #
 # All five fixtures below violate this trigger-validity invariant in distinct
 # ways. The simulator should reject each (today: at runtime; eventually: via
@@ -214,20 +214,20 @@ EXPECTED_ERROR_KEYWORDS: dict[str, str | list[str]] = {
 # ---------------------------------------------------------------------------
 
 
-def make_invalid_trigger_validity_prefetch_already_on_device() -> TaskChain:
-    """Prefetch of X when X is statically already on device.
+def make_invalid_trigger_validity_prefetch_already_on_compute() -> TaskChain:
+    """Prefetch of X when X is statically already on compute.
 
-    Rule: "Prefetch of X is valid only when X's device entry is absent or
-    in-flight outbound." Here W starts in device-resident initial_memory and
+    Rule: "Prefetch of X is valid only when X's compute entry is absent or
+    in-flight outbound." Here W starts in compute-resident initial_memory and
     t0 schedules a prefetch_after of W with no intervening offload — the
-    prefetch targets a slot that is already `live` on device.
+    prefetch targets a slot that is already `live` on compute.
 
     Expected validator error includes: 'prefetch'.
     """
     return TaskChain(
         initial_memory=[
-            Object(id="W", size=1, location="device", type="weight"),
-            Object(id="W_host", size=1, location="host", type="weight"),
+            Object(id="W", size=1, location="fast", type="weight"),
+            Object(id="W_backing", size=1, location="backing", type="weight"),
         ],
         tasks=[
             Task(
@@ -239,27 +239,27 @@ def make_invalid_trigger_validity_prefetch_already_on_device() -> TaskChain:
             ),
             Task(id="t1", inputs=["W"], outputs=[], runtime=1),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
-def make_invalid_trigger_validity_offload_not_on_device() -> TaskChain:
-    """Offload of X when X is statically not on device.
+def make_invalid_trigger_validity_offload_not_on_compute() -> TaskChain:
+    """Offload of X when X is statically not on compute.
 
-    Rule: "Offload of X is valid only when device entry is `live`." Here W
-    only exists on host (initial_memory location="host") and is never
-    prefetched. t0 attempts to offload_after W — there is no device entry to
+    Rule: "Offload of X is valid only when compute entry is `live`." Here W
+    only exists on backing (initial_memory location="backing") and is never
+    prefetched. t0 attempts to offload_after W — there is no compute entry to
     move.
 
     Expected validator error includes: 'offload'.
     """
     return TaskChain(
         initial_memory=[
-            Object(id="A", size=1, location="device", type="weight"),
-            Object(id="W", size=1, location="host", type="weight"),
+            Object(id="A", size=1, location="fast", type="weight"),
+            Object(id="W", size=1, location="backing", type="weight"),
         ],
         tasks=[
             Task(
@@ -271,17 +271,17 @@ def make_invalid_trigger_validity_offload_not_on_device() -> TaskChain:
             ),
             Task(id="t1", inputs=["A"], outputs=[], runtime=1),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
 def make_invalid_trigger_validity_duplicate_prefetch_same_task() -> TaskChain:
     """Two prefetches of the SAME object attached to one task's prefetch_after.
 
-    Rule: "Prefetch of X is valid only when X's device entry is absent or
+    Rule: "Prefetch of X is valid only when X's compute entry is absent or
     in-flight outbound." The first prefetch makes X pending_inbound/inbound;
     the second targets a slot that is no longer absent — duplicate enqueue
     against the same destination.
@@ -290,8 +290,8 @@ def make_invalid_trigger_validity_duplicate_prefetch_same_task() -> TaskChain:
     """
     return TaskChain(
         initial_memory=[
-            Object(id="A", size=1, location="device", type="weight"),
-            Object(id="W", size=1, location="host", type="weight"),
+            Object(id="A", size=1, location="fast", type="weight"),
+            Object(id="W", size=1, location="backing", type="weight"),
         ],
         tasks=[
             Task(
@@ -306,27 +306,27 @@ def make_invalid_trigger_validity_duplicate_prefetch_same_task() -> TaskChain:
             ),
             Task(id="t1", inputs=["A", "W"], outputs=[], runtime=1),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
 def make_invalid_trigger_validity_duplicate_offload_same_task() -> TaskChain:
     """Two offloads of the SAME object attached to one task's offload_after.
 
-    Rule: "Offload of X is valid only when device entry is `live`." The first
-    offload flips the device entry to pending_outbound/outbound; the second
-    finds the device entry no longer `live` (or attempts to overwrite an
+    Rule: "Offload of X is valid only when compute entry is `live`." The first
+    offload flips the compute entry to pending_outbound/outbound; the second
+    finds the compute entry no longer `live` (or attempts to overwrite an
     in-flight transfer).
 
     Expected validator error includes: 'duplicate'.
     """
     return TaskChain(
         initial_memory=[
-            Object(id="W", size=1, location="device", type="weight"),
-            Object(id="W_host", size=1, location="host", type="weight"),
+            Object(id="W", size=1, location="fast", type="weight"),
+            Object(id="W_backing", size=1, location="backing", type="weight"),
         ],
         tasks=[
             Task(
@@ -341,18 +341,18 @@ def make_invalid_trigger_validity_duplicate_offload_same_task() -> TaskChain:
             ),
             Task(id="t1", inputs=[], outputs=[], runtime=1),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
 def make_invalid_trigger_validity_prefetch_and_offload_same_object_same_task() -> TaskChain:
     """Both a prefetch_after AND offload_after on the SAME object on one task.
 
-    Rule: "Prefetch of X is valid only when X's device entry is absent or
-    in-flight outbound; offload of X is valid only when device entry is
+    Rule: "Prefetch of X is valid only when X's compute entry is absent or
+    in-flight outbound; offload of X is valid only when compute entry is
     `live`." These two conditions are mutually exclusive at the same anchor
     — one of the triggers necessarily targets a state the other forbids
     (and the result is a no-op round-trip even if the simulator tolerated
@@ -362,8 +362,8 @@ def make_invalid_trigger_validity_prefetch_and_offload_same_object_same_task() -
     """
     return TaskChain(
         initial_memory=[
-            Object(id="W", size=1, location="device", type="weight"),
-            Object(id="W_host", size=1, location="host", type="weight"),
+            Object(id="W", size=1, location="fast", type="weight"),
+            Object(id="W_backing", size=1, location="backing", type="weight"),
         ],
         tasks=[
             Task(
@@ -376,17 +376,17 @@ def make_invalid_trigger_validity_prefetch_and_offload_same_object_same_task() -
             ),
             Task(id="t1", inputs=[], outputs=[], runtime=1),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
 EXPECTED_ERROR_KEYWORDS.update(
     {
-        "make_invalid_trigger_validity_prefetch_already_on_device": "prefetch",
-        "make_invalid_trigger_validity_offload_not_on_device": "offload",
+        "make_invalid_trigger_validity_prefetch_already_on_compute": "prefetch",
+        "make_invalid_trigger_validity_offload_not_on_compute": "offload",
         "make_invalid_trigger_validity_duplicate_prefetch_same_task": "duplicate",
         "make_invalid_trigger_validity_duplicate_offload_same_task": "duplicate",
         "make_invalid_trigger_validity_prefetch_and_offload_same_object_same_task": "conflict",
@@ -399,14 +399,14 @@ EXPECTED_ERROR_KEYWORDS.update(
 #
 # Principles cited (docs/policy/principles.md §1):
 #   * "An object may be released only by a task that names it as input, and
-#      only when its device entry is `live`."
-#   * "An object cannot be released if it has another use AND (host lacks a
+#      only when its compute entry is `live`."
+#   * "An object cannot be released if it has another use AND (backing lacks a
 #      copy OR object is dirty)."
 #   * "A mutated input must be offloaded after its last mutation, before any
 #      bare release of the same object."
 #
 # Each fixture below violates one of these rules in isolation. The bare
-# release of a dirty / device-only object is the user's seed bug; the others
+# release of a dirty / compute-only object is the user's seed bug; the others
 # pin down adjacent corners of the same invariant family.
 # ---------------------------------------------------------------------------
 
@@ -420,12 +420,12 @@ def make_invalid_release_mutation_dirty_with_later_use() -> TaskChain:
 
     W is mutated by t0, then bare-released by t0; t2 later consumes W. A
     bare release of a dirty object with a later use silently discards the
-    mutation (any host copy is stale).
+    mutation (any backing copy is stale).
 
     Expected validator error includes: 'dirty'.
     """
     return TaskChain(
-        initial_memory=[Object(id="W", size=1, location="device", type="weight")],
+        initial_memory=[Object(id="W", size=1, location="fast", type="weight")],
         tasks=[
             Task(
                 id="t0",
@@ -438,24 +438,24 @@ def make_invalid_release_mutation_dirty_with_later_use() -> TaskChain:
             Task(id="t1", inputs=[], outputs=[], runtime=1),
             Task(id="t2", inputs=["W"], outputs=[], runtime=1),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
-def make_invalid_release_mutation_no_host_copy_with_later_use() -> TaskChain:
+def make_invalid_release_mutation_no_backing_copy_with_later_use() -> TaskChain:
     """Bare release of a DEVICE-ONLY object that has a later use.
 
-    Rule: 'An object cannot be released if it has another use AND (host
+    Rule: 'An object cannot be released if it has another use AND (backing
     lacks a copy ...).'
 
-    A is produced device-only by t0 (never offloaded) and bare-released by
-    t0, but t2 re-references A — there is no host copy to re-prefetch from,
+    A is produced compute-only by t0 (never offloaded) and bare-released by
+    t0, but t2 re-references A — there is no backing copy to re-prefetch from,
     so the bare release strands the only copy.
 
-    Expected validator error includes: 'host'.
+    Expected validator error includes: 'backing'.
     """
     return TaskChain(
         initial_memory=[],
@@ -464,18 +464,18 @@ def make_invalid_release_mutation_no_host_copy_with_later_use() -> TaskChain:
                 id="t0",
                 inputs=[],
                 outputs=[
-                    OutputAlloc(id="A", size=1, location="device", type="activation"),
+                    OutputAlloc(id="A", size=1, location="fast", type="activation"),
                 ],
                 runtime=1,
-                releases_after=["A"],  # BAD: A is device-only and has a later use
+                releases_after=["A"],  # BAD: A is compute-only and has a later use
             ),
             Task(id="t1", inputs=[], outputs=[], runtime=1),
             Task(id="t2", inputs=["A"], outputs=[], runtime=1),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -494,7 +494,7 @@ def make_invalid_release_mutation_release_not_in_inputs() -> TaskChain:
     fixed and the validator re-tightens.
     """
     return TaskChain(
-        initial_memory=[Object(id="W", size=1, location="device", type="weight")],
+        initial_memory=[Object(id="W", size=1, location="fast", type="weight")],
         tasks=[
             Task(id="t0", inputs=["W"], outputs=[], runtime=1),
             Task(
@@ -505,28 +505,28 @@ def make_invalid_release_mutation_release_not_in_inputs() -> TaskChain:
                 releases_after=["W"],  # principle-violation; currently accepted
             ),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
 def make_invalid_release_mutation_mutation_never_offloaded() -> TaskChain:
-    """A mutated input with final host placement that is never offloaded.
+    """A mutated input with final backing placement that is never offloaded.
 
-    Rule: if final_locations[obj] == "host", host must receive the latest
+    Rule: if final_locations[obj] == "backing", backing must receive the latest
     bytes by chain end.
 
-    W starts device-resident. t0 mutates W in place, then the chain ends with
-    no offload of W. The terminal host placement cannot be satisfied.
+    W starts compute-resident. t0 mutates W in place, then the chain ends with
+    no offload of W. The terminal backing placement cannot be satisfied.
 
-    Expected validator error includes: 'host'.
+    Expected validator error includes: 'backing'.
     """
     return TaskChain(
         initial_memory=[
-            Object(id="W", size=1, location="device", type="weight"),
-            Object(id="W_host", size=1, location="host", type="weight"),
+            Object(id="W", size=1, location="fast", type="weight"),
+            Object(id="W_backing", size=1, location="backing", type="weight"),
         ],
         tasks=[
             Task(
@@ -537,11 +537,11 @@ def make_invalid_release_mutation_mutation_never_offloaded() -> TaskChain:
                 mutates_inputs=["W"],  # BAD: mutated, never offloaded, never released
             ),
         ],
-        final_locations={"W": "host"},
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        final_locations={"W": "backing"},
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -553,17 +553,17 @@ def make_invalid_release_mutation_release_then_later_reference() -> TaskChain:
     raises 'unknown input' mid-execution; the static prepass should catch
     it up front).
 
-    W is clean and host-backed, so t0's bare release is structurally legal
+    W is clean and backing-backed, so t0's bare release is structurally legal
     in isolation. The bug is that t2 references W with no intervening
     prefetch_after — lifetime tracking should flag that W is no longer in
-    device memory at t2's start.
+    fast memory at t2's start.
 
     Expected validator error includes: 'released'.
     """
     return TaskChain(
         initial_memory=[
-            Object(id="W", size=1, location="device", type="weight"),
-            Object(id="W_host", size=1, location="host", type="weight"),
+            Object(id="W", size=1, location="fast", type="weight"),
+            Object(id="W_backing", size=1, location="backing", type="weight"),
         ],
         tasks=[
             Task(
@@ -576,10 +576,10 @@ def make_invalid_release_mutation_release_then_later_reference() -> TaskChain:
             Task(id="t1", inputs=[], outputs=[], runtime=1),
             Task(id="t2", inputs=["W"], outputs=[], runtime=1),  # BAD: W is gone
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -589,7 +589,7 @@ def make_invalid_release_mutation_release_and_offload_same_object() -> TaskChain
     Rule: well-formedness / §1 trigger composition — a single task may not
     both release and offload the same object in the same trigger group; the
     semantics are ambiguous (does the offload's source still exist after
-    release? does the release fire before or after D2H starts?).
+    release? does the release fire before or after to-slow starts?).
 
     t0 lists W in BOTH releases_after AND offload_after.
 
@@ -597,8 +597,8 @@ def make_invalid_release_mutation_release_and_offload_same_object() -> TaskChain
     """
     return TaskChain(
         initial_memory=[
-            Object(id="W", size=1, location="device", type="weight"),
-            Object(id="W_host", size=1, location="host", type="weight"),
+            Object(id="W", size=1, location="fast", type="weight"),
+            Object(id="W_backing", size=1, location="backing", type="weight"),
         ],
         tasks=[
             Task(
@@ -611,19 +611,19 @@ def make_invalid_release_mutation_release_and_offload_same_object() -> TaskChain
                 offload_after=[TransferTrigger(obj_id="W")],   # ... as offload
             ),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
 EXPECTED_ERROR_KEYWORDS.update(
     {
         "make_invalid_release_mutation_dirty_with_later_use": "dirty",
-        "make_invalid_release_mutation_no_host_copy_with_later_use": "host",
+        "make_invalid_release_mutation_no_backing_copy_with_later_use": "backing",
         "make_invalid_release_mutation_release_not_in_inputs": None,
-        "make_invalid_release_mutation_mutation_never_offloaded": "host",
+        "make_invalid_release_mutation_mutation_never_offloaded": "backing",
         "make_invalid_release_mutation_release_then_later_reference": "released",
         "make_invalid_release_mutation_release_and_offload_same_object": "both",
     }
@@ -634,8 +634,8 @@ EXPECTED_ERROR_KEYWORDS.update(
 # Category: TOPOLOGICAL / DEADLOCK
 #
 # Principles cited (docs/policy/principles.md §1):
-#   * "Every task input must be `live` on device by task start — either
-#      resident or via a prefetch whose H2D (plus any blocking D2H)
+#   * "Every task input must be `live` on compute by task start — either
+#      resident or via a prefetch whose from-slow (plus any blocking to-slow)
 #      completes before the earliest start." (missing-input deadlock raise)
 #   * "Plans must terminate. No policy may produce a chain that deadlocks
 #      with empty queues and missing inputs."
@@ -656,7 +656,7 @@ def make_invalid_topological_unproduced_input() -> TaskChain:
     """A task consumes an id that NO upstream task produces and that is not
     in initial_memory.
 
-    Rule: 'Every task input must be `live` on device by task start.' If no
+    Rule: 'Every task input must be `live` on compute by task start.' If no
     task produces the id and it is not pre-placed, the input can never
     become live — guaranteed deadlock at this task's dispatch.
 
@@ -664,7 +664,7 @@ def make_invalid_topological_unproduced_input() -> TaskChain:
     'unproduced' / 'not present').
     """
     return TaskChain(
-        initial_memory=[Object(id="W", size=1, location="device", type="weight")],
+        initial_memory=[Object(id="W", size=1, location="fast", type="weight")],
         tasks=[
             Task(
                 id="t0",
@@ -679,10 +679,10 @@ def make_invalid_topological_unproduced_input() -> TaskChain:
                 runtime=1,
             ),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -696,7 +696,7 @@ def make_invalid_topological_self_cycle() -> TaskChain:
     Expected validator error includes: 'self' (or 'cycle' / 'own output').
     """
     return TaskChain(
-        initial_memory=[Object(id="W", size=1, location="device", type="weight")],
+        initial_memory=[Object(id="W", size=1, location="fast", type="weight")],
         tasks=[
             Task(
                 id="t0",
@@ -705,10 +705,10 @@ def make_invalid_topological_self_cycle() -> TaskChain:
                 runtime=1,
             ),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -725,7 +725,7 @@ def make_invalid_topological_forward_reference() -> TaskChain:
     'produced by later' / 'cycle' / 'not present').
     """
     return TaskChain(
-        initial_memory=[Object(id="W", size=1, location="device", type="weight")],
+        initial_memory=[Object(id="W", size=1, location="fast", type="weight")],
         tasks=[
             Task(
                 id="t0",
@@ -740,10 +740,10 @@ def make_invalid_topological_forward_reference() -> TaskChain:
                 runtime=1,
             ),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -762,12 +762,12 @@ def make_invalid_topological_empty_chain() -> TaskChain:
     value is None). Flip to 'empty' when/if a prepass rejects it.
     """
     return TaskChain(
-        initial_memory=[Object(id="W", size=1, location="device", type="weight")],
+        initial_memory=[Object(id="W", size=1, location="fast", type="weight")],
         tasks=[],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
@@ -784,7 +784,7 @@ def make_invalid_topological_duplicate_input_id() -> TaskChain:
     repeated id 'W').
     """
     return TaskChain(
-        initial_memory=[Object(id="W", size=1, location="device", type="weight")],
+        initial_memory=[Object(id="W", size=1, location="fast", type="weight")],
         tasks=[
             Task(
                 id="t0",
@@ -793,19 +793,19 @@ def make_invalid_topological_duplicate_input_id() -> TaskChain:
                 runtime=1,
             ),
         ],
-        device_capacity=100,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
-# Skipped: "compute task with host-located output."
-# Verified against schema.py (OutputAlloc.location accepts "host") and
-# simulator.py L501-507 (the main loop explicitly handles host-located
-# outputs via host_outputs_size capacity check + host pool allocation).
+# Skipped: "compute task with backing-located output."
+# Verified against schema.py (OutputAlloc.location accepts "backing") and
+# simulator.py L501-507 (the main loop explicitly handles backing-located
+# outputs via backing_outputs_size capacity check + backing pool allocation).
 # This is a valid construct — a compute task whose result is written
-# directly to host — not a violation. No fixture written.
+# directly to backing — not a violation. No fixture written.
 
 
 # Topological/deadlock keywords. Some entries are lists: the test bench
@@ -833,12 +833,12 @@ EXPECTED_ERROR_KEYWORDS.update(
 # Category: CAPACITY FEASIBILITY
 #
 # Principles cited (docs/policy/principles.md §1):
-#   * "Free device bytes + scheduled-D2H reclaim must cover the task's
-#      device-located output footprint at dispatch."
-#   * "Host pool + task's host-located outputs must fit `host_capacity` at
-#      task start (no host stall mechanism exists)."
+#   * "Free compute bytes + scheduled-to-slow reclaim must cover the task's
+#      compute-located output footprint at dispatch."
+#   * "Backing pool + task's backing-located outputs must fit `backing_memory_capacity` at
+#      task start (no backing stall mechanism exists)."
 #   * (implicit at t=0) initial_memory at each location must fit its cap.
-#   * "Every task input must be `live` on device by task start."
+#   * "Every task input must be `live` on compute by task start."
 #
 # Each fixture below violates exactly one capacity invariant. These are
 # forced-footprint failures: NO policy could schedule the chain successfully
@@ -851,11 +851,11 @@ EXPECTED_ERROR_KEYWORDS.update(
 # ---------------------------------------------------------------------------
 
 
-def make_invalid_capacity_initial_device_overflow() -> TaskChain:
-    """Initial device-located objects sum > device_capacity.
+def make_invalid_capacity_initial_compute_overflow() -> TaskChain:
+    """Initial compute-located objects sum > fast_memory_capacity.
 
     Rule: capacity feasibility at t=0 — the chain hasn't started a task yet
-    and the device pool already exceeds the cap. Simulator's
+    and the compute pool already exceeds the cap. Simulator's
     `_check_initial_capacity` raises immediately with a message naming
     `<initial_memory>` and the offending location.
 
@@ -863,94 +863,94 @@ def make_invalid_capacity_initial_device_overflow() -> TaskChain:
     """
     return TaskChain(
         initial_memory=[
-            Object(id="W0", size=60, location="device", type="weight"),
-            Object(id="W1", size=60, location="device", type="weight"),
+            Object(id="W0", size=60, location="fast", type="weight"),
+            Object(id="W1", size=60, location="fast", type="weight"),
         ],
         tasks=[
             Task(id="t0", inputs=["W0", "W1"], outputs=[], runtime=1),
         ],
-        device_capacity=100,
-        host_capacity=200,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=200,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
-def make_invalid_capacity_initial_host_overflow() -> TaskChain:
-    """Initial host-located objects sum > host_capacity.
+def make_invalid_capacity_initial_backing_overflow() -> TaskChain:
+    """Initial backing-located objects sum > backing_memory_capacity.
 
     Rule: capacity feasibility for the HOST pool at t=0. Same
-    `_check_initial_capacity` path as the device variant, but the overflow
-    is on the host side.
+    `_check_initial_capacity` path as the compute variant, but the overflow
+    is on the backing side.
 
     Expected validator error includes: 'initial_memory'.
     """
     return TaskChain(
         initial_memory=[
-            Object(id="W0", size=60, location="host", type="weight"),
-            Object(id="W1", size=60, location="host", type="weight"),
+            Object(id="W0", size=60, location="backing", type="weight"),
+            Object(id="W1", size=60, location="backing", type="weight"),
         ],
         tasks=[
             Task(id="t0", inputs=[], outputs=[], runtime=1),
         ],
-        device_capacity=200,
-        host_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=200,
+        backing_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
 def make_invalid_capacity_forced_footprint_exceeds_cap() -> TaskChain:
-    """Forced (inputs + outputs) footprint at task t exceeds device_capacity.
+    """Forced (inputs + outputs) footprint at task t exceeds fast_memory_capacity.
 
-    Rule: "Free device bytes + scheduled-D2H reclaim must cover the task's
-    device-located output footprint at dispatch." Task t0 requires A
-    (size 50) AND B (size 50) live on device AND must reserve C (size 50)
+    Rule: "Free compute bytes + scheduled-to-slow reclaim must cover the task's
+    compute-located output footprint at dispatch." Task t0 requires A
+    (size 50) AND B (size 50) live on compute AND must reserve C (size 50)
     — total 150 bytes against a cap of 100. Inputs cannot be evicted while
     a task is running, so no policy can hide this. With A and B placed on
-    device at t=0 (already 100/100 used), `device_outputs_ready_t` cannot
+    compute at t=0 (already 100/100 used), `compute_outputs_ready_t` cannot
     satisfy the 50-byte output reservation and raises.
 
-    Expected validator error includes: 'cannot satisfy device memory need'.
+    Expected validator error includes: 'cannot satisfy fast memory need'.
     """
     return TaskChain(
         initial_memory=[
-            Object(id="A", size=50, location="device", type="weight"),
-            Object(id="B", size=50, location="device", type="weight"),
+            Object(id="A", size=50, location="fast", type="weight"),
+            Object(id="B", size=50, location="fast", type="weight"),
         ],
         tasks=[
             Task(
                 id="t0",
                 inputs=["A", "B"],
-                outputs=[OutputAlloc(id="C", size=50, location="device", type="activation")],
+                outputs=[OutputAlloc(id="C", size=50, location="fast", type="activation")],
                 runtime=1,
             ),
         ],
-        device_capacity=100,
-        host_capacity=200,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=200,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
 def make_invalid_capacity_input_footprint_exceeds_cap() -> TaskChain:
-    """A single task's INPUT-only footprint exceeds device_capacity.
+    """A single task's INPUT-only footprint exceeds fast_memory_capacity.
 
-    Rule: "Every task input must be `live` on device by task start." Task
-    t0 needs A (size 60) AND B (size 60) both live on device
+    Rule: "Every task input must be `live` on compute by task start." Task
+    t0 needs A (size 60) AND B (size 60) both live on compute
     simultaneously; cap=100, so 120 > 100 is unreachable for any policy.
-    Both start on host with no prefetch triggers attached upstream (there
+    Both start on backing with no prefetch triggers attached upstream (there
     is no upstream task here), so the simulator surfaces this as a
     deadlock when `input_ready_t` cannot make both inputs live within the
     cap.
 
     Expected validator error includes: 'deadlock' (or, if a static
-    prepass is added, 'input footprint exceeds device_capacity').
+    prepass is added, 'input footprint exceeds fast_memory_capacity').
     """
     return TaskChain(
         initial_memory=[
-            Object(id="A", size=60, location="host", type="weight"),
-            Object(id="B", size=60, location="host", type="weight"),
+            Object(id="A", size=60, location="backing", type="weight"),
+            Object(id="B", size=60, location="backing", type="weight"),
         ],
         tasks=[
             Task(
@@ -960,24 +960,24 @@ def make_invalid_capacity_input_footprint_exceeds_cap() -> TaskChain:
                 runtime=1,
             ),
         ],
-        device_capacity=100,
-        host_capacity=200,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=200,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
 def make_invalid_capacity_output_footprint_exceeds_cap() -> TaskChain:
-    """A single task's OUTPUT-only footprint exceeds device_capacity.
+    """A single task's OUTPUT-only footprint exceeds fast_memory_capacity.
 
-    Rule: "Free device bytes + scheduled-D2H reclaim must cover the task's
-    device-located output footprint at dispatch." Task t0 must reserve a
-    single device-located output of size 150 against a cap of 100 — no
-    eviction scheme can free more than 100 bytes of device space.
-    `device_outputs_ready_t` walks all scheduled d2h offloads, finds none,
+    Rule: "Free compute bytes + scheduled-to-slow reclaim must cover the task's
+    compute-located output footprint at dispatch." Task t0 must reserve a
+    single compute-located output of size 150 against a cap of 100 — no
+    eviction scheme can free more than 100 bytes of compute space.
+    `compute_outputs_ready_t` walks all scheduled to_slow offloads, finds none,
     and raises.
 
-    Expected validator error includes: 'cannot satisfy device memory need'.
+    Expected validator error includes: 'cannot satisfy fast memory need'.
     """
     return TaskChain(
         initial_memory=[],
@@ -985,23 +985,23 @@ def make_invalid_capacity_output_footprint_exceeds_cap() -> TaskChain:
             Task(
                 id="t0",
                 inputs=[],
-                outputs=[OutputAlloc(id="C", size=150, location="device", type="activation")],
+                outputs=[OutputAlloc(id="C", size=150, location="fast", type="activation")],
                 runtime=1,
             ),
         ],
-        device_capacity=100,
-        host_capacity=200,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        backing_memory_capacity=200,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
 
 
 EXPECTED_ERROR_KEYWORDS.update(
     {
-        "make_invalid_capacity_initial_device_overflow": "initial_memory",
-        "make_invalid_capacity_initial_host_overflow": "initial_memory",
-        "make_invalid_capacity_forced_footprint_exceeds_cap": "cannot satisfy device memory need",
+        "make_invalid_capacity_initial_compute_overflow": "initial_memory",
+        "make_invalid_capacity_initial_backing_overflow": "initial_memory",
+        "make_invalid_capacity_forced_footprint_exceeds_cap": "cannot satisfy fast memory need",
         "make_invalid_capacity_input_footprint_exceeds_cap": ["deadlock", "input"],
-        "make_invalid_capacity_output_footprint_exceeds_cap": "cannot satisfy device memory need",
+        "make_invalid_capacity_output_footprint_exceeds_cap": "cannot satisfy fast memory need",
     }
 )

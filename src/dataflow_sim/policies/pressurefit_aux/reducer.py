@@ -235,7 +235,7 @@ class _PressureReducer:
                 for m in self.facts.mutators.get(oid, set())
             )
         )
-        release_eligible = oid in self.facts.host_ids and not left_dirty
+        release_eligible = oid in self.facts.backing_ids and not left_dirty
         stream_cost = 0 if (drops_init or release_eligible) else 1
         first_use = self.facts.uses.get(oid, [self.facts.n])[0]
         rank = (
@@ -297,7 +297,7 @@ class _PressureReducer:
         boundary = boundary_idx - 1
         raise ValueError(
             f"infeasible: pressurefit cannot reduce boundary {boundary} "
-            f"under device_capacity={self.cap}"
+            f"under fast_memory_capacity={self.cap}"
         )
 
 

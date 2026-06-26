@@ -22,16 +22,16 @@ def build_bare_training_chain(
     head_weight_size: int = 64,
     fwd_runtime: int = 10,
     head_runtime: int = 2,
-    bandwidth_h2d: int = 8,
-    bandwidth_d2h: int = 8,
+    bandwidth_from_slow: int = 8,
+    bandwidth_to_slow: int = 8,
     layer_output_size: int | None = None,
     bwd_runtime: int | None = None,
 ) -> TaskChain:
     """Build the structural skeleton of an L-layer training chain.
 
-    Initial memory: `input` on device; all weights and gradient buffers
-    (`W_i, dW_i, W_head, dW_head`) on host only. No triggers. No
-    `device_capacity` set. A policy is required before the chain can run.
+    Initial memory: `input` on compute; all weights and gradient buffers
+    (`W_i, dW_i, W_head, dW_head`) on backing only. No triggers. No
+    `fast_memory_capacity` set. A policy is required before the chain can run.
     """
     if L < 1:
         raise ValueError("L must be >= 1")
@@ -41,13 +41,13 @@ def build_bare_training_chain(
         layer_output_size = activation_size
 
     initial: list[Object] = [
-        Object(id="input", size=input_size, location="device", type="activation"),
+        Object(id="input", size=input_size, location="fast", type="activation"),
     ]
     for i in range(L):
-        initial.append(Object(id=f"W_{i}", size=weight_size, location="host", type="weight"))
-        initial.append(Object(id=f"dW_{i}", size=weight_size, location="host", type="gradient"))
-    initial.append(Object(id="W_head", size=head_weight_size, location="host", type="weight"))
-    initial.append(Object(id="dW_head", size=head_weight_size, location="host", type="gradient"))
+        initial.append(Object(id=f"W_{i}", size=weight_size, location="backing", type="weight"))
+        initial.append(Object(id=f"dW_{i}", size=weight_size, location="backing", type="gradient"))
+    initial.append(Object(id="W_head", size=head_weight_size, location="backing", type="weight"))
+    initial.append(Object(id="dW_head", size=head_weight_size, location="backing", type="gradient"))
 
     tasks: list[Task] = []
 
@@ -101,7 +101,7 @@ def build_bare_training_chain(
     return TaskChain(
         initial_memory=initial,
         tasks=tasks,
-        bandwidth_h2d=bandwidth_h2d,
-        bandwidth_d2h=bandwidth_d2h,
-        device_capacity=None,
+        bandwidth_from_slow=bandwidth_from_slow,
+        bandwidth_to_slow=bandwidth_to_slow,
+        fast_memory_capacity=None,
     )

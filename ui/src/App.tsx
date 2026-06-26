@@ -11,7 +11,10 @@ import {
   type Presets,
   type Policy,
   type OptimizerMode,
+  type TransformerWorkloadParams,
+  type DataflowProgram,
 } from "./components/InputPanel";
+import { PlannerPanel } from "./components/PlannerPanel";
 import { ComparePoliciesPanel } from "./components/ComparePoliciesPanel";
 import { SubOpBreakdownPanel, type Breakdown } from "./components/SubOpBreakdownPanel";
 import { SummaryPanel, type Summary } from "./components/SummaryPanel";
@@ -32,12 +35,40 @@ interface SimulateResponse {
   breakdown: Breakdown;
   summary: Summary;
   chain: AnnotatedChain;
+  workload_preview: WorkloadPreviewSummary;
+  compute_blocks?: Breakdown["compute_blocks"];
   policy_diagnostics: PressureFitDiagnostics | null;
+}
+
+interface WorkloadPreviewSummary {
+  name: string;
+  object_count: number;
+  task_count: number;
+  compute_block_count: number;
+  aggregate_task_runtime_us: number;
+}
+
+interface WorkloadPreviewResponse {
+  schema: DataflowProgram;
+  preview: WorkloadPreviewSummary;
+  chain: AnnotatedChain;
+  breakdown: Breakdown;
+  compute_blocks: Breakdown["compute_blocks"];
+  task_summaries: {
+    id: string;
+    label: string;
+    group: string;
+    compute_block_key: string;
+    compute_block_name: string;
+    runtime_us: number;
+    inputs: number;
+    outputs: number;
+  }[];
 }
 
 // Flat URL-param encoding for nested params.
 const HW_KEYS = [
-  "peak_tflops", "gpu_membw_gbs", "interconnect_bw_gbs",
+  "peak_tflops", "fast_memory_bw_gbs", "from_slow_bw_gbs", "to_slow_bw_gbs",
   "matmul_eff", "attn_fwd_eff", "attn_bwd_eff", "mem_eff",
 ] as const;
 const MODEL_NUM_KEYS = [
@@ -48,6 +79,7 @@ const MODEL_NUM_KEYS = [
 function initialParams(): SimulationParams {
   const url = new URLSearchParams(window.location.search);
   const out: SimulationParams = JSON.parse(JSON.stringify(DEFAULT_PARAMS));
+  const transformer = out.workload as TransformerWorkloadParams;
 
   const hwPreset = url.get("hw_preset");
   if (hwPreset) out.hardware.preset = hwPreset;
@@ -59,47 +91,50 @@ function initialParams(): SimulationParams {
     }
   }
 
-  const mPreset = url.get("model_preset");
-  if (mPreset) out.model.preset = mPreset;
+  const mPreset = url.get("workload_preset") ?? url.get("model_preset");
+  if (mPreset) {
+    transformer.preset = mPreset;
+    transformer.model.preset = mPreset;
+  }
   for (const k of MODEL_NUM_KEYS) {
     const v = url.get(`model_${k}`);
     if (v !== null) {
       const n = Number(v);
-      if (Number.isFinite(n)) (out.model as unknown as Record<string, unknown>)[k] = n;
+      if (Number.isFinite(n)) (transformer.model as unknown as Record<string, unknown>)[k] = n;
     }
   }
   const qk = url.get("model_qk_norm");
-  if (qk !== null) out.model.qk_norm = qk === "true";
+  if (qk !== null) transformer.model.qk_norm = qk === "true";
 
   const seq = url.get("seqlen");
   if (seq !== null) {
     const n = Number(seq);
-    if (Number.isFinite(n)) out.seqlen = n;
+    if (Number.isFinite(n)) transformer.training.seqlen = n;
   }
   const mb = url.get("num_seqs");
   if (mb !== null) {
     const n = Number(mb);
-    if (Number.isFinite(n)) out.num_seqs = n;
+    if (Number.isFinite(n)) transformer.training.num_seqs = n;
   }
   const ga = url.get("grad_accum_rounds");
   if (ga !== null) {
     const n = Number(ga);
-    if (Number.isFinite(n)) out.grad_accum_rounds = n;
+    if (Number.isFinite(n)) transformer.training.grad_accum_rounds = n;
   }
   const steps = url.get("num_steps");
   if (steps !== null) {
     const n = Number(steps);
-    if (Number.isFinite(n)) out.num_steps = n;
+    if (Number.isFinite(n)) transformer.training.num_steps = n;
   }
   const optimizer = url.get("optimizer");
   if (optimizer !== null) {
     const VALID_OPTIMIZERS: OptimizerMode[] = ["none", "adamw", "muon"];
     if ((VALID_OPTIMIZERS as string[]).includes(optimizer)) {
-      out.optimizer = optimizer as OptimizerMode;
+      transformer.training.optimizer = optimizer as OptimizerMode;
     }
   }
-  const finalHost = url.get("final_model_state_on_host");
-  if (finalHost !== null) out.final_model_state_on_host = finalHost === "true";
+  const finalBacking = url.get("final_model_state_on_backing");
+  if (finalBacking !== null) transformer.training.final_model_state_on_backing = finalBacking === "true";
   const policy = url.get("policy");
   if (policy !== null) {
     const VALID_POLICIES: Policy[] = [
@@ -111,21 +146,21 @@ function initialParams(): SimulationParams {
       "pressurefit",
     ];
     if ((VALID_POLICIES as string[]).includes(policy)) {
-      out.policy = policy as Policy;
+      out.planner.policy = policy as Policy;
     }
   }
   const rc = url.get("recompute");
-  if (rc !== null) out.recompute = rc === "true";
+  if (rc !== null) out.planner.recompute = rc === "true";
   const ws = url.get("window_size");
   if (ws !== null) {
     const n = Number(ws);
-    if (Number.isFinite(n)) out.window_size = n;
+    if (Number.isFinite(n)) out.planner.window_size = n;
   }
-  const cap = url.get("device_capacity_gb");
-  if (cap === "" || cap === "null") out.device_capacity_gb = null;
+  const cap = url.get("fast_memory_capacity_gb");
+  if (cap === "" || cap === "null") out.planner.fast_memory_capacity_gb = null;
   else if (cap !== null) {
     const n = Number(cap);
-    if (Number.isFinite(n)) out.device_capacity_gb = n;
+    if (Number.isFinite(n)) out.planner.fast_memory_capacity_gb = n;
   }
   return out;
 }
@@ -134,22 +169,26 @@ function syncUrl(params: SimulationParams): void {
   const url = new URL(window.location.href);
   url.searchParams.set("hw_preset", params.hardware.preset);
   for (const k of HW_KEYS) url.searchParams.set(`hw_${k}`, String(params.hardware[k]));
-  url.searchParams.set("model_preset", params.model.preset);
-  for (const k of MODEL_NUM_KEYS) url.searchParams.set(`model_${k}`, String(params.model[k]));
-  url.searchParams.set("model_qk_norm", params.model.qk_norm ? "true" : "false");
-  url.searchParams.set("seqlen", String(params.seqlen));
-  url.searchParams.set("num_seqs", String(params.num_seqs));
-  url.searchParams.set("grad_accum_rounds", String(params.grad_accum_rounds));
-  url.searchParams.set("num_steps", String(params.num_steps));
-  url.searchParams.set("optimizer", params.optimizer);
-  url.searchParams.set("final_model_state_on_host", params.final_model_state_on_host ? "true" : "false");
-  url.searchParams.set("policy", params.policy);
+  if (params.workload.source === "training_transformer") {
+    url.searchParams.set("workload_preset", params.workload.preset);
+    for (const k of MODEL_NUM_KEYS) url.searchParams.set(`model_${k}`, String(params.workload.model[k]));
+    url.searchParams.set("model_qk_norm", params.workload.model.qk_norm ? "true" : "false");
+    url.searchParams.set("seqlen", String(params.workload.training.seqlen));
+    url.searchParams.set("num_seqs", String(params.workload.training.num_seqs));
+    url.searchParams.set("grad_accum_rounds", String(params.workload.training.grad_accum_rounds));
+    url.searchParams.set("num_steps", String(params.workload.training.num_steps));
+    url.searchParams.set("optimizer", params.workload.training.optimizer);
+    url.searchParams.set("final_model_state_on_backing", params.workload.training.final_model_state_on_backing ? "true" : "false");
+  } else {
+    url.searchParams.set("workload_preset", "schema");
+  }
+  url.searchParams.set("policy", params.planner.policy);
   url.searchParams.delete("pressurefit_mode");
-  url.searchParams.set("recompute", params.recompute ? "true" : "false");
-  url.searchParams.set("window_size", String(params.window_size));
+  url.searchParams.set("recompute", params.planner.recompute ? "true" : "false");
+  url.searchParams.set("window_size", String(params.planner.window_size));
   url.searchParams.set(
-    "device_capacity_gb",
-    params.device_capacity_gb === null ? "" : String(params.device_capacity_gb),
+    "fast_memory_capacity_gb",
+    params.planner.fast_memory_capacity_gb === null ? "" : String(params.planner.fast_memory_capacity_gb),
   );
   window.history.replaceState(null, "", url.toString());
 }
@@ -180,22 +219,98 @@ async function simulate(params: SimulationParams): Promise<SimulateResponse> {
   return res.json();
 }
 
+async function previewWorkload(params: SimulationParams): Promise<WorkloadPreviewResponse> {
+  let res: Response;
+  try {
+    res = await fetch("/api/workloads/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workload: params.workload, hardware: params.hardware }),
+    });
+  } catch (e) {
+    throw new Error(
+      `Network connection failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) msg = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
 async function fetchPresets(): Promise<Presets> {
   const res = await fetch("/api/presets");
   if (!res.ok) throw new Error(`presets HTTP ${res.status}`);
   return res.json();
 }
 
+function fmtTime(us: number): string {
+  if (us === 0) return "0 µs";
+  if (us >= 1_000_000) return `${(us / 1_000_000).toFixed(2)} s`;
+  if (us >= 1_000) return `${(us / 1_000).toFixed(1)} ms`;
+  return `${us.toLocaleString()} µs`;
+}
+
+function WorkloadStatsPanel({ preview, stale }: { preview: WorkloadPreviewSummary | null; stale: boolean }) {
+  if (!preview) {
+    return (
+      <div className="panel workload-stats-panel">
+        <div className="panel-header">
+          <h3>Workload Preview</h3>
+        </div>
+        <p className="dim">Create a workload to inspect the bare plan and compute blocks.</p>
+      </div>
+    );
+  }
+  return (
+    <div className={`panel workload-stats-panel${stale ? " workload-stats-stale" : ""}`}>
+      <div className="panel-header">
+        <h3>Workload Preview</h3>
+        {stale && <span className="tag status-stale">Stale</span>}
+      </div>
+      <div className="workload-stat-grid">
+        <div>
+          <span className="workload-stat-label">Tasks</span>
+          <strong>{preview.task_count.toLocaleString()}</strong>
+        </div>
+        <div>
+          <span className="workload-stat-label">Objects</span>
+          <strong>{preview.object_count.toLocaleString()}</strong>
+        </div>
+        <div>
+          <span className="workload-stat-label">Compute Blocks</span>
+          <strong>{preview.compute_block_count.toLocaleString()}</strong>
+        </div>
+        <div>
+          <span className="workload-stat-label">Aggregate Task Runtime</span>
+          <strong>{fmtTime(preview.aggregate_task_runtime_us)}</strong>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [params, setParams] = useState<SimulationParams>(initialParams);
   const [log, setLog] = useState<EventLog | null>(null);
-  const [breakdown, setBreakdown] = useState<Breakdown | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [chain, setChain] = useState<AnnotatedChain | null>(null);
+  const [simulationBreakdown, setSimulationBreakdown] = useState<Breakdown | null>(null);
   const [policyDiagnostics, setPolicyDiagnostics] = useState<PressureFitDiagnostics | null>(null);
   const [presets, setPresets] = useState<Presets | null>(null);
   const [status, setStatus] = useState<Status>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [preview, setPreview] = useState<WorkloadPreviewResponse | null>(null);
+  const [previewStatus, setPreviewStatus] = useState<Status>("idle");
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
 
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -222,10 +337,47 @@ export default function App() {
   useEffect(() => {
     syncUrl(params);
     if (errorMsg) setErrorMsg(null);
+    if (previewError) setPreviewError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params]);
 
+  const workloadKey = useMemo(
+    () => JSON.stringify({ workload: params.workload, hardware: params.hardware }),
+    [params.workload, params.hardware],
+  );
+  const previewStale = previewStatus === "ok" && previewKey !== workloadKey;
+  const workloadReady = previewStatus === "ok" && !previewStale && preview !== null;
+
+  const resetSimulation = useCallback(() => {
+    setLog(null);
+    setSummary(null);
+    setChain(null);
+    setSimulationBreakdown(null);
+    setPolicyDiagnostics(null);
+    setIndex(0);
+    setPlaying(false);
+    setStatus("idle");
+    setErrorMsg(null);
+  }, []);
+
+  const handlePreview = useCallback(async () => {
+    setPreviewStatus("loading");
+    setPreviewError(null);
+    setPlaying(false);
+    try {
+      const resp = await previewWorkload(params);
+      setPreview(resp);
+      setPreviewKey(workloadKey);
+      setPreviewStatus("ok");
+      resetSimulation();
+    } catch (e) {
+      setPreviewStatus("error");
+      setPreviewError(String(e instanceof Error ? e.message : e));
+    }
+  }, [params, resetSimulation, workloadKey]);
+
   const handleSubmit = useCallback(async () => {
+    if (!workloadReady) return;
     setStatus("loading");
     setErrorMsg(null);
     setPolicyDiagnostics(null);
@@ -233,9 +385,9 @@ export default function App() {
     try {
       const resp = await simulate(params);
       setLog(resp.log);
-      setBreakdown(resp.breakdown);
       setSummary(resp.summary);
       setChain(resp.chain);
+      setSimulationBreakdown(resp.breakdown);
       setPolicyDiagnostics(resp.policy_diagnostics);
       setIndex(0);
       setStatus("ok");
@@ -243,7 +395,7 @@ export default function App() {
       setStatus("error");
       setErrorMsg(String(e instanceof Error ? e.message : e));
     }
-  }, [params]);
+  }, [params, workloadReady]);
 
   const playRef = useRef<number | null>(null);
   useEffect(() => {
@@ -275,141 +427,158 @@ export default function App() {
     log !== null
     && (hasSnapshots || (log.memory_trace?.length ?? 0) > 0)
   );
+  const simulationActive = status === "loading" || log !== null;
+  const visibleBreakdown = simulationBreakdown ?? preview?.breakdown ?? null;
 
   return (
     <div className="app">
       <header className="app-header">
-        <h1>dataflow simulator</h1>
+        <h1>Dataflow Simulator</h1>
         {log ? (
           <span className="dim">
             {log.task_intervals.length} tasks · {log.events.length} events · duration {totalDuration.toLocaleString()} µs
           </span>
         ) : (
-          <span className="dim">no simulation yet — fill inputs and click submit</span>
+          <span className="dim">Create a workload, then run a memory-planning simulation.</span>
         )}
       </header>
 
-      <InputPanel
-        params={params}
-        setParams={setParams}
-        onSubmit={handleSubmit}
-        onReset={() => {
-          setLog(null);
-          setBreakdown(null);
-          setSummary(null);
-          setChain(null);
-          setPolicyDiagnostics(null);
-          setIndex(0);
-          setPlaying(false);
-          setStatus("idle");
-          setErrorMsg(null);
-        }}
-        locked={log !== null}
-        status={status}
-        errorMsg={errorMsg}
-        presets={presets}
-      />
-
-      <MemorySweepPanel params={params} />
-
-      {log ? (
-        <>
-          <SummaryPanel summary={summary} />
-
-          <details className="panel collapsible-panel">
-            <summary className="collapsible-summary">Compute Block Breakdown</summary>
-            <div className="collapsible-content">
-              <SubOpBreakdownPanel breakdown={breakdown} />
-            </div>
-          </details>
-
-          {hasMemoryTimeline && (
-            <MemoryTimelinePanel
-              log={log}
-              deviceCapacityGb={params.device_capacity_gb}
-              currentT={current?.t ?? null}
-            />
-          )}
-
-          <ComputeTimeline
-            intervals={log.task_intervals}
-            currentT={current?.t ?? 0}
-            totalDuration={totalDuration}
-            activeTaskId={current?.snapshot.active_task?.id ?? null}
-            hoverTaskId={hoverTaskId}
-            onHoverTask={setHoverTaskId}
+      <div className="workspace-shell">
+        <aside className="workspace-left">
+          <InputPanel
+            params={params}
+            setParams={setParams}
+            onPreview={handlePreview}
+            locked={simulationActive}
+            previewStatus={previewStatus}
+            previewError={previewError}
+            previewStale={previewStale}
+            presets={presets}
           />
 
-          {hasSnapshots && current ? (
+          <WorkloadStatsPanel preview={preview?.preview ?? null} stale={previewStale} />
+
+          <AnnotatedPlanPanel
+            chain={preview?.chain ?? null}
+            title="Unannotated Plan"
+            emptyText="Create a workload to inspect the bare task chain."
+          />
+        </aside>
+
+        <main className="workspace-right">
+          {workloadReady && <MemorySweepPanel params={params} />}
+
+          <PlannerPanel
+            params={params}
+            setParams={setParams}
+            onRun={handleSubmit}
+            onReset={resetSimulation}
+            canRun={workloadReady}
+            status={status}
+            errorMsg={errorMsg}
+            previewStale={previewStale}
+            hasResults={log !== null}
+          />
+
+          {workloadReady && <SubOpBreakdownPanel breakdown={visibleBreakdown} />}
+
+          {log ? (
             <>
-              <EventControls
-                events={log.events}
-                index={safeIndex}
-                setIndex={setIndex}
-                playing={playing}
-                setPlaying={setPlaying}
+              <SummaryPanel summary={summary} />
+
+              {hasMemoryTimeline && (
+                <MemoryTimelinePanel
+                  log={log}
+                  fastMemoryCapacityGb={params.planner.fast_memory_capacity_gb}
+                  currentT={current?.t ?? null}
+                />
+              )}
+
+              <ComputeTimeline
+                intervals={log.task_intervals}
+                currentT={current?.t ?? 0}
+                totalDuration={totalDuration}
+                activeTaskId={current?.snapshot.active_task?.id ?? null}
+                hoverTaskId={hoverTaskId}
+                onHoverTask={setHoverTaskId}
               />
 
-              <details className="panel collapsible-panel">
-                <summary className="collapsible-summary">Memory Contents &amp; Reference Stream</summary>
-                <div className="collapsible-content">
-                  <div className="three-col">
-                    <div className="scroll-subpanel">
-                      <MemoryPanel
-                        title="host memory"
-                        memory={current.snapshot.memory.filter((m) => m.location === "host")}
-                        highlightedIds={new Set()}
-                        selectedObjId={selectedObjId}
-                        onSelectObj={setSelectedObjId}
-                      />
+              {hasSnapshots && current ? (
+                <>
+                  <EventControls
+                    events={log.events}
+                    index={safeIndex}
+                    setIndex={setIndex}
+                    playing={playing}
+                    setPlaying={setPlaying}
+                  />
+
+                  <details className="panel collapsible-panel">
+                    <summary className="collapsible-summary">Memory Contents &amp; Reference Stream</summary>
+                    <div className="collapsible-content">
+                      <div className="three-col">
+                        <div className="scroll-subpanel">
+                          <MemoryPanel
+                            title="Slow Memory"
+                            memory={current.snapshot.memory.filter((m) => m.location === "backing")}
+                            highlightedIds={new Set()}
+                            selectedObjId={selectedObjId}
+                            onSelectObj={setSelectedObjId}
+                          />
+                        </div>
+                        <div className="scroll-subpanel">
+                          <MemoryPanel
+                            title="Fast Memory"
+                            memory={current.snapshot.memory.filter((m) => m.location === "fast")}
+                            highlightedIds={new Set()}
+                            selectedObjId={selectedObjId}
+                            onSelectObj={setSelectedObjId}
+                          />
+                        </div>
+                        <div className="scroll-subpanel">
+                          <ReferenceStream
+                            references={current.snapshot.reference_stream}
+                            memory={current.snapshot.memory}
+                            selectedObjId={selectedObjId}
+                          />
+                        </div>
+                      </div>
                     </div>
-                    <div className="scroll-subpanel">
-                      <MemoryPanel
-                        title="device memory"
-                        memory={current.snapshot.memory.filter((m) => m.location === "device")}
-                        highlightedIds={new Set()}
-                        selectedObjId={selectedObjId}
-                        onSelectObj={setSelectedObjId}
-                      />
-                    </div>
-                    <div className="scroll-subpanel">
-                      <ReferenceStream
-                        references={current.snapshot.reference_stream}
-                        memory={current.snapshot.memory}
-                        selectedObjId={selectedObjId}
-                      />
-                    </div>
-                  </div>
+                  </details>
+                </>
+              ) : (
+                <div className="panel trace-note">
+                  Exact summary, compute intervals, and compact fast-memory trace returned.
+                  Full memory contents and reference stream were omitted for this large chain.
                 </div>
-              </details>
+              )}
+
+              <AnnotatedPlanPanel chain={chain} title="Annotated Plan" />
+
+              <ComparePoliciesPanel params={params} policies={POLICY_OPTIONS} />
+
+              <PolicyDiagnosticsPanel diagnostics={policyDiagnostics} />
             </>
           ) : (
-            <div className="panel trace-note">
-              exact summary, compute intervals, and compact GPU memory trace returned;
-              full memory contents and reference stream were omitted for this large chain
+            <div className="panel empty-panel">
+              {status === "loading" ? (
+                <p className="dim loading-line">
+                  <span className="loading-spinner" aria-hidden="true" />
+                  Running simulation
+                </p>
+              ) : workloadReady ? (
+                <p className="dim">
+                  Workload ready. Choose planner settings and run the simulation.
+                </p>
+              ) : (
+                <p className="dim">
+                  Create or update the workload preview before running a simulation.
+                </p>
+              )}
             </div>
           )}
-
-          <AnnotatedPlanPanel chain={chain} />
-
-          <ComparePoliciesPanel params={params} policies={POLICY_OPTIONS} />
-
-          <PolicyDiagnosticsPanel diagnostics={policyDiagnostics} />
-        </>
-      ) : (
-        <div className="panel empty-panel">
-          {status === "loading" ? (
-            <p className="dim loading-line">
-              <span className="loading-spinner" aria-hidden="true" />
-              running simulation
-            </p>
-          ) : (
-            <p className="dim">
-              press <span className="kbd">submit</span> on the inputs panel above to run a simulation.
-            </p>
-          )}
-        </div>
-      )}
+        </main>
+      </div>
     </div>
   );
 }

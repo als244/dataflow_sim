@@ -4,7 +4,7 @@ Academic framing for the auto-policy problem. Pairs with [docs/problem.md](probl
 
 ## Problem space
 
-Modern ML training compilers have **complete forward visibility** into the task graph: tensor sizes, kernel runtimes, and transfer placements are known at planning time. Given a finite device-memory budget, the runtime decides what to keep resident, what to offload to host, what to prefetch back, and (optionally) what to discard and recompute.
+Modern ML training compilers have **complete forward visibility** into the task graph: tensor sizes, kernel runtimes, and transfer placements are known at planning time. Given a finite fast-memory budget, the runtime decides what to keep resident, what to offload to backing, what to prefetch back, and (optionally) what to discard and recompute.
 
 These decisions look like classical paging but classical theory does not capture them. Belady-MIN and online-paging models assume a single uniform cache, fixed miss penalty, and free eviction. The training setting has *two parallel FIFO transfer streams with bandwidth-proportional latency, mandatory write-back of mutated state, output reservation at task start, and a per-intermediate recompute trade-off curve*.
 
@@ -14,14 +14,14 @@ This is an **offline oracle-aware scheduling** problem, not online prediction. S
 
 The auto-policy has eight degrees of freedom, not three:
 
-1. **Initial placement** — host/device residency at t=0.
-2. **Release decisions** — drop a device entry whose value is dead or host-backed.
-3. **Offload decisions** — D→H write-back (semantically required for mutated state like gradients).
-4. **Prefetch decisions** — H→D reload before next use.
-5. **Trigger-task assignment** — *which prior boundary* fires a release/offload/prefetch. Late triggers minimize device occupancy; early triggers give streams slack.
+1. **Initial placement** — backing/compute residency at t=0.
+2. **Release decisions** — drop a compute entry whose value is dead or backing-backed.
+3. **Offload decisions** — to-slow write-back (semantically required for mutated state like gradients).
+4. **Prefetch decisions** — from-slow reload before next use.
+5. **Trigger-task assignment** — *which prior boundary* fires a release/offload/prefetch. Late triggers minimize compute occupancy; early triggers give streams slack.
 6. **Stream FIFO ordering** — when multiple triggers co-fire on the same stream, queue order determines which downstream task is unblocked first.
 7. **Cascade dependencies** — some prefetches can only fit after a paired offload completes; "issue after" semantics are required, not just "issue at."
-8. **Recomputation level** `k_o ∈ {0..K}` — per-intermediate point on a (stored-size, recompute-time) curve. Generalizes Chen-2016 binary checkpointing to a K-level continuum. Device allocation stays `s(o)`; only host occupancy and transfer cost vary.
+8. **Recomputation level** `k_o ∈ {0..K}` — per-intermediate point on a (stored-size, recompute-time) curve. Generalizes Chen-2016 binary checkpointing to a K-level continuum. Compute allocation stays `s(o)`; only backing occupancy and transfer cost vary.
 
 Axes 5–8 are the ones a naive "what to evict / what to load" framing collapses or omits.
 
@@ -44,15 +44,15 @@ This work is the only entry that combines: oracle + multi-stream + bidirectional
 
 **Hardness.** The decision problem subsumes multi-machine scheduling with precedence constraints (NP-hard, Garey–Johnson 1979). Per-object integer `k_o` adds a combinatorial layer. Practical approach: greedy approximations with verification re-planning.
 
-**Feasibility theorem (lazy strategy).** Let `W = max_i ∑_{o ∈ in(T_i) ∪ out(T_i)} s(o)` be the *widest single-task device footprint*. If `C_dev ≥ W` and host has room for the chosen stored fragments, a feasible schedule exists: between tasks, evict everything not needed by `T_{i+1}`; offload anything needed later (at max `k_o`); prefetch + recompute at each task start. At most one task's footprint is resident at any instant.
+**Feasibility theorem (lazy strategy).** Let `W = max_i ∑_{o ∈ in(T_i) ∪ out(T_i)} s(o)` be the *widest single-task compute footprint*. If `C_fast ≥ W` and backing has room for the chosen stored fragments, a feasible schedule exists: between tasks, evict everything not needed by `T_{i+1}`; offload anything needed later (at max `k_o`); prefetch + recompute at each task start. At most one task's footprint is resident at any instant.
 
-The bound is tight — `C_dev < W` makes `T_i` impossible because compute requires its full input set device-resident plus output reservation simultaneously.
+The bound is tight — `C_fast < W` makes `T_i` impossible because compute requires its full input set fast-memory-resident plus output reservation simultaneously.
 
 **Optimality conjecture.** Greedy-Belady (eviction by furthest-next-use, modulated by stream load) is conjectured within `O(τ_max / r_min)` of optimal makespan — at worst one transfer's bandwidth wasted vs. an oracle. Unproven; natural open problem alongside ILP-baseline benchmarks for small chains.
 
 ## Open extensions
 
-Online variants (dynamic graphs), joint `k_o` + cache optimization, multi-device, multi-tier memory (NVMe / network), bandwidth contention (concurrent transfers per stream), and tighter approximation bounds.
+Online variants (dynamic graphs), joint `k_o` + cache optimization, multi-compute, multi-tier memory (NVMe / network), bandwidth contention (concurrent transfers per stream), and tighter approximation bounds.
 
 ---
 

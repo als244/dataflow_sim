@@ -33,7 +33,7 @@ PolicyFn = Callable[[TaskChain], TaskChain]
 def get_all_policies() -> list[tuple[str, PolicyFn]]:
     """Return the canonical list of selectable policies as (name, fn) pairs.
 
-    Each fn takes a bare TaskChain (with device_capacity already set) and
+    Each fn takes a bare TaskChain (with fast_memory_capacity already set) and
     returns the annotated chain. Adapters here paper over per-policy kwarg
     differences so callers can iterate uniformly — useful for sweeps,
     comparisons, and any "run every policy" workflow.
@@ -44,16 +44,16 @@ def get_all_policies() -> list[tuple[str, PolicyFn]]:
         (
             "sliding_window",
             lambda b: apply_sliding_window_policy(
-                b, window_size=2, device_capacity=b.device_capacity,
+                b, window_size=2, fast_memory_capacity=b.fast_memory_capacity,
             ),
         ),
         (
             "belady_reactive",
-            lambda b: apply_belady_reactive_policy(b, device_capacity=b.device_capacity),
+            lambda b: apply_belady_reactive_policy(b, fast_memory_capacity=b.fast_memory_capacity),
         ),
         (
             "roundtrip_planner",
-            lambda b: apply_roundtrip_planner_policy(b, device_capacity=b.device_capacity),
+            lambda b: apply_roundtrip_planner_policy(b, fast_memory_capacity=b.fast_memory_capacity),
         ),
         ("max_reduce", apply_max_reduce_policy),
         ("min_grow", apply_min_grow_policy),

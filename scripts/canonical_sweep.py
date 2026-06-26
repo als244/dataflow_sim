@@ -65,7 +65,7 @@ CONFIG_KEY_FIELDS = (
     "optimizer",
     "grad_accum_rounds",
     "num_steps",
-    "final_model_state_on_host",
+    "final_model_state_on_backing",
 )
 
 SweepRow = tuple[
@@ -133,7 +133,7 @@ def all_configs(args: argparse.Namespace):
                 "optimizer": optimizer,
                 "grad_accum_rounds": grad_accum_rounds,
                 "num_steps": args.num_steps,
-                "final_model_state_on_host": args.final_model_state_on_host,
+                "final_model_state_on_backing": args.final_model_state_on_backing,
             }
 
 
@@ -154,10 +154,10 @@ def _build_bare(config: dict[str, Any]) -> TaskChain:
         grad_accum_rounds=config["grad_accum_rounds"],
         num_steps=config["num_steps"],
         optimizer=config["optimizer"],
-        final_model_state_on_host=config["final_model_state_on_host"],
+        final_model_state_on_backing=config["final_model_state_on_backing"],
     )
     bare = build_transformer_training_workload(spec, hw, cfg).chain
-    return replace(bare, device_capacity=_cap_bytes(config["cap_gb_raw"]))
+    return replace(bare, fast_memory_capacity=_cap_bytes(config["cap_gb_raw"]))
 
 
 def _makespan_us(chain: TaskChain) -> int:
@@ -174,7 +174,7 @@ def _config_public_fields(config: dict[str, Any]) -> dict[str, Any]:
         "optimizer": config["optimizer"],
         "grad_accum_rounds": config["grad_accum_rounds"],
         "num_steps": config["num_steps"],
-        "final_model_state_on_host": config["final_model_state_on_host"],
+        "final_model_state_on_backing": config["final_model_state_on_backing"],
     }
 
 
@@ -282,7 +282,7 @@ def _run_one_config(payload):
         try:
             _chain, diagnostics = plan_pressurefit_policy(
                 bare,
-                device_capacity=bare.device_capacity,
+                fast_memory_capacity=bare.fast_memory_capacity,
             )
             candidate_rows.extend(_candidate_rows(config, diagnostics))
             policy_results["pressurefit"] = diagnostics.selected_makespan_us
@@ -326,7 +326,7 @@ def _write_policy_csv(
             "optimizer",
             "grad_accum_rounds",
             "num_steps",
-            "final_model_state_on_host",
+            "final_model_state_on_backing",
             *policy_names,
             "best_policy",
         ])
@@ -353,7 +353,7 @@ def _write_policy_csv(
                 public["optimizer"],
                 public["grad_accum_rounds"],
                 public["num_steps"],
-                public["final_model_state_on_host"],
+                public["final_model_state_on_backing"],
                 *(
                     values[name] if values[name] is not None else "ERR"
                     for name in policy_names
@@ -392,7 +392,7 @@ def _write_policy_errors(
             "optimizer",
             "grad_accum_rounds",
             "num_steps",
-            "final_model_state_on_host",
+            "final_model_state_on_backing",
             "policy",
             "error",
         ]
@@ -417,7 +417,7 @@ def _write_candidate_csv(path: Path, rows: list[SweepRow]) -> int:
         "optimizer",
         "grad_accum_rounds",
         "num_steps",
-        "final_model_state_on_host",
+        "final_model_state_on_backing",
         "candidate_name",
         "status",
         "selected",
@@ -493,7 +493,7 @@ def main() -> int:
         help="comma-separated gradient-accumulation rounds",
     )
     parser.add_argument("--num-steps", type=int, default=1)
-    parser.add_argument("--final-model-state-on-host", action="store_true")
+    parser.add_argument("--final-model-state-on-backing", action="store_true")
     parser.add_argument(
         "--policies",
         type=_parse_string_list,

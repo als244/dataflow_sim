@@ -1,6 +1,6 @@
 # PressureFit
 
-PressureFit is a standalone policy for linear `TaskChain`s. It plans device
+PressureFit is a standalone policy for linear `TaskChain`s. It plans compute
 residency as intervals over task boundaries, removes optional residency where
 modeled byte pressure exceeds capacity, emits release/offload/prefetch triggers
 under each of four inbound schedules, verifies each annotated chain with the
@@ -27,7 +27,7 @@ lets the simulator pick.
 Public entry point:
 
 ```text
-apply_pressurefit_policy(bare, *, device_capacity=None)
+apply_pressurefit_policy(bare, *, fast_memory_capacity=None)
 ```
 
 Diagnostics entry point:
@@ -43,11 +43,11 @@ and selection metadata.
 
 PressureFit is schema-driven. It uses:
 
-- task order, runtimes, inputs, outputs, and device output sizes;
+- task order, runtimes, inputs, outputs, and compute output sizes;
 - object sizes and initial source locations;
 - producer/use positions;
 - explicit mutation metadata from `Task.mutates_inputs`;
-- inbound and outbound bandwidths and `device_capacity`.
+- inbound and outbound bandwidths and `fast_memory_capacity`.
 
 It does not depend on object ids, object types, or task names.
 
@@ -64,7 +64,7 @@ given:
     seed intervals S
     required anchors A
     object sizes size(o)
-    device capacity C
+    compute capacity C
     output reservation Q(x) at each boundary x
     repair pressure E(x) at each boundary x
 
@@ -78,9 +78,9 @@ such that:
         resident_P(x) + Q(x) + E(x) <= C
 ```
 
-Here `resident_P(x)` is the sum of device bytes for objects whose planned
+Here `resident_P(x)` is the sum of compute bytes for objects whose planned
 intervals count resident at boundary `x`. `Q(x)` reserves memory for the next
-task's device outputs, and `E(x)` is extra pressure discovered by simulator
+task's compute outputs, and `E(x)` is extra pressure discovered by simulator
 repair. The appendix defines these quantities and the exact boundary
 accounting.
 
@@ -98,12 +98,12 @@ rule for reaching feasibility, not a proof of globally optimal residency.
 This section names only the concepts needed to read the algorithm. The appendix
 contains the precise definitions and ranking rules.
 
-- **Boundary:** a point between tasks where the policy accounts for device
+- **Boundary:** a point between tasks where the policy accounts for compute
   residency and output reservations. Boundary `-1` is the initial state.
-- **Anchor:** a boundary where an object must be device-resident: initial device
+- **Anchor:** a boundary where an object must be compute-resident: initial compute
   residency, production, or the boundary before a use.
 - **Residency interval:** an inclusive boundary range `[a, b]` where an object
-  is planned to be device-resident.
+  is planned to be compute-resident.
 - **Seed interval set:** the starting residency hypothesis before pressure
   reduction cuts optional gaps.
 - **Pressure reduction:** the shared pass that cuts non-required residency gaps
@@ -119,9 +119,9 @@ The planner flow is:
 
 1. **Build reference facts.** Compute ideal compute-stream times, object sizes,
    producers, uses, mutators, initial locations, final locations, and each next
-   task's device output reservation.
+   task's compute output reservation.
 2. **Choose initial residency, build the seed, reduce once.** Select which
-   host-source objects start on device (appendix: Initial Residency), build one
+   backing-source objects start on compute (appendix: Initial Residency), build one
    seed interval set from liveness anchors, and run pressure reduction once —
    every schedule starts from the same pressure-fit interval set, so the base
    reduction is shared and each schedule works on a copy.
@@ -234,7 +234,7 @@ writes one row per config and schedule.
 ## Removed Alternatives (2026-06)
 
 Earlier versions evaluated a larger portfolio of candidate plans: alternative
-seeds (source-gap trimming, cold admission, all-host with protected initial
+seeds (source-gap trimming, cold admission, all-backing with protected initial
 sets), a slack-reserve pressure variant, a latest-trigger schedule, and
 `auto`/`fast`/`full` portfolio modes that gated which candidates ran by chain
 size. A 286-config measurement (canonical llama3-8B grid on H100/RTX_5090 plus
@@ -273,9 +273,9 @@ reduce_to_fit(intervals, extra_pressure):
         pool = planned resident bytes at every boundary
         strict_overflow(x) =
             pool[x]
-            + next_task_device_outputs(x)
+            + next_task_compute_outputs(x)
             + extra_pressure[x]
-            - device_capacity
+            - fast_memory_capacity
 
         worst = boundary with largest strict_overflow(x)
 
@@ -309,19 +309,19 @@ reduce_to_fit(intervals, extra_pressure):
 emit_triggers(intervals, schedule):
     for each interval of each object:
         if interval starts at initial boundary:
-            add initial device copy when object has a host source
+            add initial compute copy when object has a backing source
         else if interval starts at object's producer:
             no arrival trigger is needed
         else:
             add inbound prefetch trigger per the schedule's placement rule
 
-        if final_locations[object] == device and this is the object's last interval:
+        if final_locations[object] == fast and this is the object's last interval:
             no exit trigger; the object stays resident at chain end
         else if interval exit contains a mutation and object has a later interval:
             add outbound offload trigger
-        else if final_locations[object] == host and host lacks latest bytes:
+        else if final_locations[object] == backing and backing lacks latest bytes:
             add outbound offload trigger
-        else if object has no host source and has a later interval:
+        else if object has no backing source and has a later interval:
             add outbound offload trigger
         else:
             add release trigger
@@ -360,17 +360,17 @@ prefetched object occupies bytes one boundary earlier than its interval start
 ### Byte Accounting
 
 `resident_bytes(boundary)` is the sum of object sizes whose planned intervals
-cover that boundary in the analytic model. It counts only device-side bytes. It
-does not include the next task's output reservation, host memory, or
+cover that boundary in the analytic model. It counts only compute-side bytes. It
+does not include the next task's output reservation, slow memory, or
 `physical_extra`.
 
 For an interval `[a, b]`, the counted boundaries are:
 
-- `a .. b` for initial-device, initial-host, and naturally produced intervals;
+- `a .. b` for initial-compute, initial-backing, and naturally produced intervals;
 - `a - 1 .. b` for inbound-prefetched intervals, because the simulator allocates
   destination bytes when the transfer starts, not when it finishes.
 
-`next_task_device_outputs(boundary)` is the number of device bytes that the next
+`next_task_compute_outputs(boundary)` is the number of compute bytes that the next
 task must reserve before it can start. It is added separately because outputs
 are not part of any existing residency interval yet.
 
@@ -383,11 +383,11 @@ queue head blocked behind capacity.
 
 ### Seed Interval Set
 
-In plain terms, the seed interval set is the starting guess for device
+In plain terms, the seed interval set is the starting guess for compute
 residency: for each relevant object, one continuous interval that covers the
 object's required anchors. It is intentionally simple.
 
-The seed is not required to fit device capacity. It is the input to pressure
+The seed is not required to fit compute capacity. It is the input to pressure
 reduction, which removes optional gaps until the strict capacity inequality can
 be satisfied at every boundary.
 
@@ -400,24 +400,24 @@ producer(o)       = task index that produces o, or none
 uses(o)           = sorted tasks that consume o
 first_use(o)      = first task in uses(o)
 last_use(o)       = last task in uses(o)
-initial_device(o) = true if o starts on device
-initial_host(o)   = true if o starts on host
-initial_choice(o) = true if initial-residency selection places host-source o
-                    on device at -1
+initial_compute(o) = true if o starts on compute
+initial_backing(o)   = true if o starts on backing
+initial_choice(o) = true if initial-residency selection places backing-source o
+                    on compute at -1
 ```
 
 Then the seed interval for object `o` is:
 
 ```text
-if initial_host(o) and uses(o) is empty:
+if initial_backing(o) and uses(o) is empty:
     S[o] = []
 
-elif initial_host(o):
+elif initial_backing(o):
     start = -1 if initial_choice(o) else first_use(o) - 1
     end   = last_use(o) - 1
     S[o] = [[start, end]]
 
-elif initial_device(o):
+elif initial_compute(o):
     start = -1
     end   = last_use(o) - 1 if uses(o) is nonempty else -1
     S[o] = [[start, end]]
@@ -456,7 +456,7 @@ Each interval is an inclusive boundary range `[a, b]`. For each object:
    interval in `P[o]`. Required anchors are:
 
    ```text
-   -1                          if o is an initial device object
+   -1                          if o is an initial compute object
    producer_task(o)            if o is produced by a task
    use_task(o) - 1             for every task that consumes o
    ```
@@ -492,9 +492,9 @@ The strict capacity inequality is:
 
 ```text
 resident_P(x)
-+ next_task_device_outputs(x)
++ next_task_compute_outputs(x)
 + physical_extra(x)
-<= device_capacity
+<= fast_memory_capacity
 ```
 
 Pressure reduction first tries to produce a `P` satisfying this strict check at
@@ -516,8 +516,8 @@ initial interval if keeping it resident creates too much later pressure.
 
 Finite-cap initial selection works in this order:
 
-1. host-source task-0 inputs are mandatory;
-2. the policy computes a cold inbound FIFO estimate for every other used host-source
+1. backing-source task-0 inputs are mandatory;
+2. the policy computes a cold inbound FIFO estimate for every other used backing-source
    object, sorted by ascending first consumer task index;
 3. for each object, `miss = max(0, estimated_inbound_end - first_consumer_start)`;
 4. remaining objects are sorted by this exact key:
@@ -533,8 +533,8 @@ Finite-cap initial selection works in this order:
    ```
 
 5. `inbound_slack = max(0, first_consumer_start - task0_end - inbound_runtime)`;
-6. objects are admitted in that order while initial device bytes plus mandatory
-   task-0 inputs plus task-0 device outputs still fit.
+6. objects are admitted in that order while initial compute bytes plus mandatory
+   task-0 inputs plus task-0 compute outputs still fit.
 
 ### Split Legality
 
@@ -557,7 +557,7 @@ Split options are sorted by this exact key:
 Where:
 
 - `stream_cost = 0` when the split either drops unused initial residency or can
-  release a clean host-source object;
+  release a clean backing-source object;
 - `stream_cost = 1` when the split needs an outbound offload to preserve bytes for a
   later interval;
 - `drop_initial_rank = 0` when the split removes initial residency, otherwise
@@ -578,15 +578,15 @@ the entry earlier and accepts the move only when every newly covered boundary
 still satisfies the strict capacity inequality.
 
 This changes only interval start positions. It does not change which objects
-exist, which objects have host sources, or which intervals are split.
+exist, which objects have backing sources, or which intervals are split.
 
 ### Physical Repair
 
 The analytic model does not fully simulate the inbound and outbound FIFO queues. In the
 real simulator:
 
-- an inbound destination consumes device bytes when the transfer starts;
-- an outbound source keeps consuming device bytes until the transfer completes;
+- an inbound destination consumes compute bytes when the transfer starts;
+- an outbound source keeps consuming compute bytes until the transfer completes;
 - a queued transfer can block behind capacity at the queue head.
 
 If the simulator reports a capacity contradiction, PressureFit translates the

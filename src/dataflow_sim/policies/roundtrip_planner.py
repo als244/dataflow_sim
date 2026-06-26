@@ -2,8 +2,8 @@
 
 Constructive planner that explicitly enumerates and packs offload+prefetch
 round-trips for objects whose use-to-use (or production-to-first-use) gap is
-wide enough to amortize the d2h+h2d transfer cost. First-use prefetches for
-host-resident inputs are mandatory and packed second; round-trips are
+wide enough to amortize the to_slow+from_slow transfer cost. First-use prefetches for
+backing-resident inputs are mandatory and packed second; round-trips are
 optional optimizations packed in a demand-driven pass that only commits
 trips that actually reduce capacity pressure at some boundary.
 
@@ -37,72 +37,72 @@ from dataflow_sim.policies._common import (
 
 def _initial_placement(
     bare: TaskChain,
-    device_capacity: int | None,
+    fast_memory_capacity: int | None,
     uses: dict[str, list[int]],
     sizes: dict[str, int],
 ) -> set[str]:
-    """Decide which host-resident objects to also pre-place on device.
+    """Decide which backing-resident objects to also pre-place on compute.
 
-    Strategy: must-place inputs and device-located outputs of T_1; then greedy
+    Strategy: must-place inputs and compute-located outputs of T_1; then greedy
     fill remaining capacity by `first_use` ascending.
-    Returns the set of object ids to ADD to the device pool (not the union).
+    Returns the set of object ids to ADD to the compute pool (not the union).
 
     roundtrip_planner explicitly schedules offload+prefetch round-trips for activations whose
     first-use is far from their production, so leaving room for activations in
     init is the planner's job, not init's. A conservative init means fewer
-    forced first-use prefetches crowding the h2d stream.
+    forced first-use prefetches crowding the from_slow stream.
     """
-    # Already device-resident in the bare chain (e.g., `input`)
-    already_device = {o.id for o in bare.initial_memory if o.location == "device"}
-    host_objs = {o.id: o for o in bare.initial_memory if o.location == "host"}
+    # Already compute-resident in the bare chain (e.g., `input`)
+    already_compute = {o.id for o in bare.initial_memory if o.location == "fast"}
+    backing_objs = {o.id: o for o in bare.initial_memory if o.location == "backing"}
 
     if not bare.tasks:
         return set()
     t1 = bare.tasks[0]
     must_place = set(t1.inputs)
     for out in t1.outputs:
-        if out.location == "device":
+        if out.location == "fast":
             must_place.add(out.id)
-    must_place = {oid for oid in must_place if oid not in already_device}
-    # Only objects that exist on host can be promoted to device
-    must_place = {oid for oid in must_place if oid in host_objs}
+    must_place = {oid for oid in must_place if oid not in already_compute}
+    # Only objects that exist on backing can be promoted into fast memory.
+    must_place = {oid for oid in must_place if oid in backing_objs}
 
     # Verify widest-T_1 feasibility (we'll catch other tasks' widest separately)
-    if device_capacity is not None:
-        usage = sum(sizes.get(o, 0) for o in already_device | must_place)
-        if usage > device_capacity:
+    if fast_memory_capacity is not None:
+        usage = sum(sizes.get(o, 0) for o in already_compute | must_place)
+        if usage > fast_memory_capacity:
             raise ValueError(
-                f"widest-task infeasibility at T_1: needs {usage} device bytes, "
-                f"capacity is {device_capacity}"
+                f"widest-task infeasibility at T_1: needs {usage} compute bytes, "
+                f"capacity is {fast_memory_capacity}"
             )
 
     placement = set(must_place)
 
-    # Reserve room for T_1's device-located outputs (they reserve at task start
+    # Reserve room for T_1's compute-located outputs (they reserve at task start
     # so they consume capacity alongside the initial pool).
     t1_outputs_size = sum(
-        out.size for out in t1.outputs if out.location == "device"
+        out.size for out in t1.outputs if out.location == "fast"
     )
 
     # Greedy fill remaining capacity, sorted by first-use ascending. At finite
     # capacity, leave slack equal to the widest single-task footprint MINUS
-    # T_1's pinned set (which is already on device). This prevents the initial
+    # T_1's pinned set (which is already on compute). This prevents the initial
     # pool from crowding out prefetches/cascade evictions the planner needs
     # later. Without slack, tight caps fail to fit `dW_head` etc.
-    usage = sum(sizes.get(o, 0) for o in already_device | placement)
+    usage = sum(sizes.get(o, 0) for o in already_compute | placement)
     candidates = sorted(
-        (oid for oid in host_objs if oid not in placement and uses.get(oid)),
+        (oid for oid in backing_objs if oid not in placement and uses.get(oid)),
         key=lambda o: uses[o][0],
     )
-    if device_capacity is not None:
+    if fast_memory_capacity is not None:
         widest_task = max(
             sum(sizes.get(i, 0) for i in t.inputs)
-            + sum(o.size for o in t.outputs if o.location == "device")
+            + sum(o.size for o in t.outputs if o.location == "fast")
             for t in bare.tasks
         )
         t1_pinned = t1_outputs_size + sum(sizes.get(i, 0) for i in t1.inputs)
         slack = max(0, widest_task - t1_pinned)
-        effective_cap = device_capacity - slack
+        effective_cap = fast_memory_capacity - slack
     else:
         effective_cap = None
     for oid in candidates:
@@ -120,7 +120,7 @@ def _initial_placement(
 
 @dataclass
 class _RoundTrip:
-    """A candidate offload-then-prefetch trip that frees an object's device
+    """A candidate offload-then-prefetch trip that frees an object's compute
     bytes during the gap between two consecutive uses."""
     obj_id: str
     size: int
@@ -163,22 +163,22 @@ def _enumerate_roundtrips(
           it forces the planner to fall back on belady_reactive's reactive eviction,
           which fires offloads only when memory pressure binds (~tens of
           ms late on a 32-layer config), wasting the early forward window
-          when d2h would otherwise be idle.
+          when to_slow would otherwise be idle.
 
       (b) **use_i -> use_{i+1}** for consecutive-use pairs (e.g. weights
           used at f_i then again at b_i). Always enumerated.
     """
-    if bare.bandwidth_d2h is None or bare.bandwidth_h2d is None:
+    if bare.bandwidth_to_slow is None or bare.bandwidth_from_slow is None:
         return []
-    bw_d, bw_h = bare.bandwidth_d2h, bare.bandwidth_h2d
+    bw_d, bw_h = bare.bandwidth_to_slow, bare.bandwidth_from_slow
 
-    # Find producer task index + production end-time for each device output.
+    # Find producer task index + production end-time for each compute output.
     producer_idx: dict[str, int] = {}
     production_t: dict[str, int] = {}
     for i, task in enumerate(bare.tasks):
         end_t = ideal_starts[task.id] + task.runtime
         for out in task.outputs:
-            if out.location == "device":
+            if out.location == "fast":
                 producer_idx[out.id] = i
                 production_t[out.id] = end_t
 
@@ -224,7 +224,7 @@ def _enumerate_roundtrips(
 
 @dataclass
 class _FirstUsePrefetch:
-    """A host-only object's first device load. Required for the simulator to
+    """A backing-only object's first compute load. Required for the simulator to
     accept any task that consumes it — unlike `_RoundTrip` this isn't
     optional, it's a feasibility precondition."""
     obj_id: str
@@ -241,29 +241,29 @@ def _enumerate_first_use_prefetches(
     bare: TaskChain,
     sizes: dict[str, int],
     uses_by_task: dict[str, list[_UseEvent]],
-    initial_device: set[str],
+    initial_compute: set[str],
 ) -> list[_FirstUsePrefetch]:
-    """For each host-only object that's ever consumed as input, emit a
-    first-use prefetch requirement. Excludes objects already on device
-    initially (either bare's `initial_memory` or augmented by `initial_device`).
+    """For each backing-only object that's ever consumed as input, emit a
+    first-use prefetch requirement. Excludes objects already on compute
+    initially (either bare's `initial_memory` or augmented by `initial_compute`).
     """
-    if bare.bandwidth_h2d is None:
+    if bare.bandwidth_from_slow is None:
         return []
-    bw_h = bare.bandwidth_h2d
-    # Only host-resident initial objects need a first-use prefetch.
-    # Outputs of tasks are produced directly on device — no host source exists.
-    host_initial = {
-        o.id for o in bare.initial_memory if o.location == "host"
+    bw_h = bare.bandwidth_from_slow
+    # Only backing-resident initial objects need a first-use prefetch.
+    # Outputs of tasks are produced directly on compute — no backing source exists.
+    backing_initial = {
+        o.id for o in bare.initial_memory if o.location == "backing"
     }
-    device_initial = {
-        o.id for o in bare.initial_memory if o.location == "device"
-    } | initial_device
+    compute_initial = {
+        o.id for o in bare.initial_memory if o.location == "fast"
+    } | initial_compute
     out: list[_FirstUsePrefetch] = []
     for obj_id, events in uses_by_task.items():
-        if obj_id not in host_initial:
-            continue  # not on host originally; either device-initial or a task output
-        if obj_id in device_initial:
-            continue  # already on device; no prefetch needed
+        if obj_id not in backing_initial:
+            continue  # not on backing originally; either compute-initial or a task output
+        if obj_id in compute_initial:
+            continue  # already on compute; no prefetch needed
         if not events:
             continue
         first = events[0]
@@ -293,7 +293,7 @@ def _rank_roundtrips(
 
 def _try_v3_pack(
     bare: TaskChain,
-    initial_device: set[str],
+    initial_compute: set[str],
     sizes: dict[str, int],
     ideal_starts: dict[str, int],
     uses_by_task: dict[str, list[_UseEvent]],
@@ -304,17 +304,17 @@ def _try_v3_pack(
     candidates = _enumerate_roundtrips(bare, sizes, uses_by_task, ideal_starts)
     candidates = _rank_roundtrips(candidates, bare)
     first_uses = _enumerate_first_use_prefetches(
-        bare, sizes, uses_by_task, initial_device,
+        bare, sizes, uses_by_task, initial_compute,
     )
     annotations, _committed, all_fit = _pack_roundtrips(
-        bare, initial_device, candidates, first_uses, cap, sizes, ideal_starts,
+        bare, initial_compute, candidates, first_uses, cap, sizes, ideal_starts,
     )
     return annotations, all_fit
 
 
 def _pack_roundtrips(
     bare: TaskChain,
-    initial_device: set[str],
+    initial_compute: set[str],
     candidates: list[_RoundTrip],
     first_uses: list[_FirstUsePrefetch],
     cap: int | None,
@@ -329,7 +329,7 @@ def _pack_roundtrips(
     )
 
     n = len(bare.tasks)
-    bps = _initial_bps(bare, initial_device, sizes)
+    bps = _initial_bps(bare, initial_compute, sizes)
 
     task_end: list[int] = []
     cum = 0
@@ -338,8 +338,8 @@ def _pack_roundtrips(
         task_end.append(cum)
     task_start = [task_end[i] - bare.tasks[i].runtime for i in range(n)]
 
-    d2h_slots: list[_StreamSlot] = []
-    h2d_slots: list[_StreamSlot] = []
+    to_slow_slots: list[_StreamSlot] = []
+    from_slow_slots: list[_StreamSlot] = []
     committed: list[_RoundTrip] = []
 
     def find_slot(
@@ -409,7 +409,7 @@ def _pack_roundtrips(
         if k + 1 < n:
             sz = sum(
                 o.size for o in bare.tasks[k + 1].outputs
-                if o.location == "device"
+                if o.location == "fast"
             )
             next_outputs.append(sz)
         else:
@@ -425,12 +425,12 @@ def _pack_roundtrips(
             bps[k] + first_use_demand_at(k) + next_outputs[k] - cap,
         )
 
-    # Host-initial objects are read-only (workload contract: outputs always
+    # Backing-initial objects are read-only (workload contract: outputs always
     # introduce new obj_ids), so when round-tripping them we can RELEASE
-    # the device copy instead of OFFLOADING — the host copy is byte-identical
-    # and untouched. Saves d2h bandwidth + frees bytes instantly.
-    host_initial = {
-        o.id for o in bare.initial_memory if o.location == "host"
+    # the compute copy instead of OFFLOADING — the backing copy is byte-identical
+    # and untouched. Saves to_slow bandwidth + frees bytes instantly.
+    backing_initial = {
+        o.id for o in bare.initial_memory if o.location == "backing"
     }
 
     # --- pass 1: demand-driven round-trip commitment ---
@@ -454,28 +454,28 @@ def _pack_roundtrips(
                 continue  # not needed; skip to keep makespan low
 
             prefetch_fire_t = task_end[k_pre]
-            use_release = rt.obj_id in host_initial
+            use_release = rt.obj_id in backing_initial
             if use_release:
-                # Release-instead-of-offload: no d2h slot needed, bytes free
+                # Release-instead-of-offload: no to_slow slot needed, bytes free
                 # instantly at offload_fire_t, prefetch only gated by k_pre.
                 off_start, off_end = offload_fire_t, offload_fire_t
             else:
-                d2h = find_slot(d2h_slots, offload_fire_t, rt.gap_end - rt.tau_pre, rt.tau_off)
-                if d2h is None:
+                to_slow = find_slot(to_slow_slots, offload_fire_t, rt.gap_end - rt.tau_pre, rt.tau_off)
+                if to_slow is None:
                     continue
-                off_start, off_end = d2h
-            h2d_earliest = max(off_end, prefetch_fire_t)
-            h2d = find_slot(h2d_slots, h2d_earliest, rt.gap_end, rt.tau_pre)
-            if h2d is None:
+                off_start, off_end = to_slow
+            from_slow_earliest = max(off_end, prefetch_fire_t)
+            from_slow = find_slot(from_slow_slots, from_slow_earliest, rt.gap_end, rt.tau_pre)
+            if from_slow is None:
                 continue
-            pre_start, pre_end = h2d
+            pre_start, pre_end = from_slow
             # Subtract rt.size from bps[k] ONLY at boundaries where the
-            # object is actually off-device. The object stays in the device
-            # pool until the d2h completes at `off_end` (pending_outbound /
+            # object is actually off-compute. The object stays in the compute
+            # pool until the to_slow completes at `off_end` (pending_outbound /
             # outbound state still occupies bytes), and reappears the moment
-            # the h2d starts (`pre_start`, state=inbound). For boundaries
+            # the from_slow starts (`pre_start`, state=inbound). For boundaries
             # k with task_end[k] inside [off_end, pre_start), the object is
-            # genuinely off-device and bps[k] drops by rt.size.
+            # genuinely off-compute and bps[k] drops by rt.size.
             for k in range(k_off + 1, k_pre + 1):
                 if off_end <= task_end[k] < pre_start:
                     bps[k] -= rt.size
@@ -484,8 +484,8 @@ def _pack_roundtrips(
             rt.offload_end_t = off_end
             rt.prefetch_start_t = pre_start
             if not use_release:
-                insert_slot(d2h_slots, _StreamSlot(off_start, off_end, rt.obj_id, "offload"))
-            insert_slot(h2d_slots, _StreamSlot(pre_start, pre_end, rt.obj_id, "prefetch"))
+                insert_slot(to_slow_slots, _StreamSlot(off_start, off_end, rt.obj_id, "offload"))
+            insert_slot(from_slow_slots, _StreamSlot(pre_start, pre_end, rt.obj_id, "prefetch"))
             annotations[k_off]["release" if use_release else "offload"].append(rt.obj_id)
             annotations[k_pre]["prefetch"].append(rt.obj_id)
             committed.append(rt)
@@ -501,7 +501,7 @@ def _pack_roundtrips(
             if task_end[k] + fp.tau_pre > target_t:
                 continue
             fire_t = task_end[k]
-            slot = find_slot(h2d_slots, fire_t, target_t, fp.tau_pre)
+            slot = find_slot(from_slow_slots, fire_t, target_t, fp.tau_pre)
             if slot is None:
                 continue
             if cap is not None:
@@ -524,14 +524,14 @@ def _pack_roundtrips(
             # to retry.
             for k in range(fp.first_use_task_idx - 1, -1, -1):
                 fire_t = task_end[k]
-                slot = find_slot(h2d_slots, fire_t, target_t, fp.tau_pre)
+                slot = find_slot(from_slow_slots, fire_t, target_t, fp.tau_pre)
                 if slot is not None:
                     chosen_k = k
                     chosen_slot = slot
                     break
         if chosen_k is None:
             cursor = 0
-            for s in h2d_slots:
+            for s in from_slow_slots:
                 if s.end > cursor:
                     cursor = s.end
             chosen_k = 0
@@ -540,7 +540,7 @@ def _pack_roundtrips(
         ps, pe = chosen_slot
         fp.prefetch_boundary_idx = chosen_k
         fp.prefetch_start_t = ps
-        insert_slot(h2d_slots, _StreamSlot(ps, pe, fp.obj_id, "prefetch"))
+        insert_slot(from_slow_slots, _StreamSlot(ps, pe, fp.obj_id, "prefetch"))
         annotations[chosen_k]["prefetch"].append(fp.obj_id)
         for k in range(chosen_k, min(last + 1, n)):
             bps[k] += fp.size
@@ -549,9 +549,9 @@ def _pack_roundtrips(
 
 
 def _initial_bps(
-    bare: TaskChain, initial_device: set[str], sizes: dict[str, int]
+    bare: TaskChain, initial_compute: set[str], sizes: dict[str, int]
 ) -> list[int]:
-    """Compute per-boundary device pool size assuming NO planner triggers,
+    """Compute per-boundary compute pool size assuming NO planner triggers,
     only initial placement + accumulating outputs + structural GC of
     dead-after-last-use objects (the structural release that runs at the
     last-use boundary).
@@ -562,21 +562,21 @@ def _initial_bps(
     """
     n = len(bare.tasks)
     initial_dev_bytes = sum(
-        o.size for o in bare.initial_memory if o.location == "device"
+        o.size for o in bare.initial_memory if o.location == "fast"
     )
-    augmented_bytes = sum(sizes.get(oid, 0) for oid in initial_device)
+    augmented_bytes = sum(sizes.get(oid, 0) for oid in initial_compute)
     cur = initial_dev_bytes + augmented_bytes
 
     last_use_idx = _last_use_task_idx(bare)
     live: set[str] = {
-        o.id for o in bare.initial_memory if o.location == "device"
-    } | set(initial_device)
+        o.id for o in bare.initial_memory if o.location == "fast"
+    } | set(initial_compute)
 
     bps: list[int] = []
     for i, task in enumerate(bare.tasks):
         # Outputs become live at end of task i.
         for out in task.outputs:
-            if out.location == "device" and out.id not in live:
+            if out.location == "fast" and out.id not in live:
                 cur += out.size
                 live.add(out.id)
         # GC dead objects: anything with last_use_task_idx <= i. This includes
@@ -593,7 +593,7 @@ def _initial_bps(
 
 def _v3_pass(
     bare: TaskChain,
-    initial_device: set[str],
+    initial_compute: set[str],
     sizes: dict[str, int],
     ideal_starts: dict[str, int],
     uses: dict[str, list[int]],
@@ -602,18 +602,18 @@ def _v3_pass(
     enumerate + rank + pack round-trips, then place mandatory first-use
     prefetches against the post-round-trip bps.
 
-    Returns (annotations, final_initial_device). The initial_device is
+    Returns (annotations, final_initial_compute). The initial_compute is
     unchanged from the input (no drop-retry — we discovered that dropping
     an initial-pool item just shifts the same bytes into a first-use
     prefetch, with zero bps benefit and added stream contention).
     """
     uses_by_task = _object_uses_by_task_idx(bare, ideal_starts)
     annotations, _all_fit = _try_v3_pack(
-        bare, initial_device, sizes, ideal_starts, uses_by_task,
-        bare.device_capacity,
+        bare, initial_compute, sizes, ideal_starts, uses_by_task,
+        bare.fast_memory_capacity,
     )
 
-    # Add structural GC releases: for each object that will end up device-
+    # Add structural GC releases: for each object that will end up compute-
     # resident, release after its last-use task. Mirrors the baseline
     # `_initial_bps` assumption that anything with `last_use_task_idx == i`
     # is GC'd at boundary i.
@@ -622,26 +622,26 @@ def _v3_pass(
     for oid, last_i in last_use_idx.items():
         if oid in seen_release:
             continue
-        is_device_initial = any(
-            o.id == oid and o.location == "device" for o in bare.initial_memory
+        is_compute_initial = any(
+            o.id == oid and o.location == "fast" for o in bare.initial_memory
         )
-        is_augmented = oid in initial_device
+        is_augmented = oid in initial_compute
         is_output = any(
-            out.id == oid and out.location == "device"
+            out.id == oid and out.location == "fast"
             for t in bare.tasks for out in t.outputs
         )
-        # First-use prefetched host-only objects also become device-resident
+        # First-use prefetched backing-only objects also become compute-resident
         # — include them too.
         is_prefetched = any(
             oid in ann["prefetch"] for ann in annotations.values()
         )
-        if not (is_device_initial or is_augmented or is_output or is_prefetched):
+        if not (is_compute_initial or is_augmented or is_output or is_prefetched):
             continue
         if last_i < 0 or last_i >= len(bare.tasks):
             continue
         annotations[last_i]["release"].append(oid)
         seen_release.add(oid)
-    return annotations, initial_device
+    return annotations, initial_compute
 
 
 # ---------- orchestrator ----------
@@ -649,7 +649,7 @@ def _v3_pass(
 def apply_roundtrip_planner_policy(
     bare: TaskChain,
     *,
-    device_capacity: int | None = None,
+    fast_memory_capacity: int | None = None,
     refinement_iters: int = 20,
 ) -> TaskChain:
     """roundtrip_planner proactive round-trip planner entry point.
@@ -665,20 +665,20 @@ def apply_roundtrip_planner_policy(
       5. Insert gradient writebacks (training-workload convention).
       6. Verify with the simulator; refine on common errors.
     """
-    if device_capacity is not None:
-        bare = replace(bare, device_capacity=device_capacity)
+    if fast_memory_capacity is not None:
+        bare = replace(bare, fast_memory_capacity=fast_memory_capacity)
 
     ideal_starts = _compute_ideal_starts(bare)
     sizes = _object_sizes(bare)
     uses = _compute_uses(bare, ideal_starts)
 
-    initial_device = _initial_placement(
-        bare, bare.device_capacity, uses, sizes,
+    initial_compute = _initial_placement(
+        bare, bare.fast_memory_capacity, uses, sizes,
     )
     annotations, final_initial = _v3_pass(
-        bare, initial_device, sizes, ideal_starts, uses,
+        bare, initial_compute, sizes, ideal_starts, uses,
     )
     chain = _add_gradient_writebacks(_apply_annotations(
-        bare, final_initial, annotations, bare.device_capacity,
+        bare, final_initial, annotations, bare.fast_memory_capacity,
     ))
     return _verify_and_refine(chain, max_iters=refinement_iters)

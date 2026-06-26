@@ -214,7 +214,7 @@ def _assign_prefetch_jobs(
     """Pack inbound jobs backward from their deadlines as one FIFO queue.
 
     When `pool` and `cap` are given, packing is pressure-aware: a job may
-    not fire earlier than device pressure allows. Firing on task `t`
+    not fire earlier than compute pressure allows. Firing on task `t`
     materializes destination bytes at boundaries `[t, entry_a - 2]` that the
     interval model counts only from `entry_a - 1`; the clamp slides the
     trigger later until every newly covered boundary still satisfies the

@@ -16,7 +16,7 @@ Pattern (per layer index i, w = window_size, L inferred from the chain):
     after b_i, i - 2 ≥ 0:              prefetch dW_{i-2}
     after b_i, i - 2 ∈ offloaded_A:    prefetch A_{i-2}
 
-Initial device residency added: W_0..W_{w-1}, W_head, dW_head; plus any dW_j
+Initial compute residency added: W_0..W_{w-1}, W_head, dW_head; plus any dW_j
 not brought in by the forward dW preamble or the backward dW cascade (covers
 edge cases like L=1).
 """
@@ -33,7 +33,7 @@ def apply_sliding_window_policy(
     bare: TaskChain,
     *,
     window_size: int = 2,
-    device_capacity: int | None = None,
+    fast_memory_capacity: int | None = None,
 ) -> TaskChain:
     """Annotate a bare training chain with the sliding-window pattern.
 
@@ -53,23 +53,23 @@ def apply_sliding_window_policy(
         raise ValueError("could not infer L (no f_i tasks in bare chain)")
 
     # Look up object sizes/types from bare initial memory (all model state lives
-    # there as host-resident entries).
-    host_objs: dict[str, Object] = {
-        obj.id: obj for obj in bare.initial_memory if obj.location == "host"
+    # there as backing-resident entries).
+    backing_objs: dict[str, Object] = {
+        obj.id: obj for obj in bare.initial_memory if obj.location == "backing"
     }
 
     # --- augmented initial memory ---
     new_initial: list[Object] = list(bare.initial_memory)
 
-    # First `window_size` weights on device (so forward can start).
+    # First `window_size` weights on compute (so forward can start).
     for i in range(min(window_size, L)):
-        src = host_objs[f"W_{i}"]
-        new_initial.append(Object(id=src.id, size=src.size, location="device", type=src.type))
-    # Head weights kept permanently device-resident.
+        src = backing_objs[f"W_{i}"]
+        new_initial.append(Object(id=src.id, size=src.size, location="fast", type=src.type))
+    # Head weights kept permanently compute-resident.
     head_ids = ("W_head", "dW_head") if mode == "legacy" else ("W_head",)
     for hid in head_ids:
-        src = host_objs[hid]
-        new_initial.append(Object(id=src.id, size=src.size, location="device", type=src.type))
+        src = backing_objs[hid]
+        new_initial.append(Object(id=src.id, size=src.size, location="fast", type=src.type))
 
     if mode == "legacy":
         # Pre-place any dW that no forward task / backward cascade will prefetch.
@@ -82,9 +82,9 @@ def apply_sliding_window_policy(
                 prefetched_dws.add(i - 2)
         for j in range(L):
             if j not in prefetched_dws:
-                src = host_objs[f"dW_{j}"]
+                src = backing_objs[f"dW_{j}"]
                 new_initial.append(
-                    Object(id=src.id, size=src.size, location="device", type=src.type)
+                    Object(id=src.id, size=src.size, location="fast", type=src.type)
                 )
 
     # --- annotated tasks ---
@@ -106,11 +106,11 @@ def apply_sliding_window_policy(
     return TaskChain(
         initial_memory=new_initial,
         tasks=new_tasks,
-        bandwidth_h2d=bare.bandwidth_h2d,
-        bandwidth_d2h=bare.bandwidth_d2h,
+        bandwidth_from_slow=bare.bandwidth_from_slow,
+        bandwidth_to_slow=bare.bandwidth_to_slow,
         final_locations=bare.final_locations,
-        device_capacity=device_capacity,
-        host_capacity=bare.host_capacity,
+        fast_memory_capacity=fast_memory_capacity,
+        backing_memory_capacity=bare.backing_memory_capacity,
     )
 
 
@@ -190,7 +190,7 @@ def _annotate_forward(task: Task, L: int, w: int, mode: _Mode) -> Task:
 
 def _annotate_head(task: Task, mode: _Mode) -> Task:
     # Just release y_{L-1} (already the only release; matches bare task's
-    # natural release for in-act). Head weights kept on device → no transfers.
+    # natural release for in-act). Head weights kept on compute → no transfers.
     releases = [task.inputs[0]]
     if mode == "step_aware":
         releases.extend(out.id for out in task.outputs if out.id.startswith("dW_head_"))

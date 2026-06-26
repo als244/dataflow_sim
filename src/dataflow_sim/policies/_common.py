@@ -129,18 +129,18 @@ def _object_uses_by_task_idx(
 
 def _apply_annotations(
     bare: TaskChain,
-    initial_device: set[str],
+    initial_compute: set[str],
     annotations: dict[int, dict[TriggerKind, list[str]]],
-    device_capacity: int | None,
+    fast_memory_capacity: int | None,
 ) -> TaskChain:
     """Construct the final annotated TaskChain."""
-    host_objs = {o.id: o for o in bare.initial_memory if o.location == "host"}
+    backing_objs = {o.id: o for o in bare.initial_memory if o.location == "backing"}
 
     new_initial: list[Object] = list(bare.initial_memory)
-    for oid in initial_device:
-        src = host_objs[oid]
+    for oid in initial_compute:
+        src = backing_objs[oid]
         new_initial.append(
-            Object(id=src.id, size=src.size, location="device", type=src.type)
+            Object(id=src.id, size=src.size, location="fast", type=src.type)
         )
 
     new_tasks: list[Task] = []
@@ -166,26 +166,26 @@ def _apply_annotations(
     return TaskChain(
         initial_memory=new_initial,
         tasks=new_tasks,
-        bandwidth_h2d=bare.bandwidth_h2d,
-        bandwidth_d2h=bare.bandwidth_d2h,
+        bandwidth_from_slow=bare.bandwidth_from_slow,
+        bandwidth_to_slow=bare.bandwidth_to_slow,
         final_locations=bare.final_locations,
-        device_capacity=device_capacity,
-        host_capacity=bare.host_capacity,
+        fast_memory_capacity=fast_memory_capacity,
+        backing_memory_capacity=bare.backing_memory_capacity,
     )
 
 
 def _add_gradient_writebacks(chain: TaskChain) -> TaskChain:
-    """Guarantee requested final host placements.
+    """Guarantee requested final backing placements.
 
     Historical callers use this helper name, but the behavior is now keyed by
     the general ``TaskChain.final_locations`` contract. For every object whose
-    final location is ``"host"``, replace the terminal departure at its final
-    use/production anchor with an offload so host receives the latest bytes.
+    final location is ``"backing"``, replace the terminal departure at its final
+    use/production anchor with an offload so backing receives the latest bytes.
     Earlier evictions and prefetches are left intact because they may be
     necessary for capacity; triggers after the terminal anchor are removed.
     """
     protected_objs = {
-        oid for oid, loc in chain.final_locations.items() if loc == "host"
+        oid for oid, loc in chain.final_locations.items() if loc == "backing"
     }
 
     if not protected_objs:
@@ -222,7 +222,7 @@ def _add_gradient_writebacks(chain: TaskChain) -> TaskChain:
 # ---------- verification + iterative refinement ----------
 
 _PREFETCH_CAP_ERR = re.compile(
-    r"task '(\S+)' cannot prefetch '(\S+)': insufficient device capacity"
+    r"task '(\S+)' cannot prefetch '(\S+)': insufficient compute capacity"
 )
 _OFFLOAD_IN_FLIGHT_ERR = re.compile(
     r"input '(\S+)' is being offloaded \(state=(\S+)\)"
@@ -233,7 +233,7 @@ def _verify_and_refine(chain: TaskChain, *, max_iters: int = 20) -> TaskChain:
     """Verify the chain runs in the simulator; refine on common failure modes.
 
     Handled errors:
-    - "cannot prefetch X: insufficient device capacity" -> shift prefetch
+    - "cannot prefetch X: insufficient compute capacity" -> shift prefetch
       one task earlier (or remove it if it's an over-eager re-prefetch).
     - "input X is being offloaded" -> the planner over-evicted X. Remove
       the offload trigger for X; if X also has a paired prefetch shortly

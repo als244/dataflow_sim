@@ -37,22 +37,22 @@ def _emit_chain(
     for oid, ivs in intervals.items():
         ivs = sorted(ivs)
         p = facts.producer.get(oid, -1)
-        has_host = oid in facts.host_ids
+        has_backing = oid in facts.backing_ids
 
         for idx, (a, b) in enumerate(ivs):
             if idx == 0 and a == -1:
-                if has_host:
+                if has_backing:
                     pre_placed.add(oid)
             elif idx == 0 and p == a and p >= 0:
                 pass
             else:
                 job = _prefetch_job(
-                    oid, idx, ivs, facts, bare.bandwidth_h2d,
+                    oid, idx, ivs, facts, bare.bandwidth_from_slow,
                     respect_interval_start=respect_interval_start,
                 )
                 if job is None or not pack_inbound:
                     fire = _prefetch_fire_task(
-                        oid, idx, ivs, facts, bare.bandwidth_h2d,
+                        oid, idx, ivs, facts, bare.bandwidth_from_slow,
                         respect_interval_start=respect_interval_start,
                     )
                     unscheduled_prefetches[fire].append(oid)
@@ -68,10 +68,10 @@ def _emit_chain(
             mutated = any(a <= m - 1 <= b for m in facts.mutators.get(oid, set()))
             is_last = idx == len(ivs) - 1
             final_location = facts.final_locations.get(oid)
-            if final_location == "device" and is_last:
+            if final_location == "fast" and is_last:
                 continue
-            if final_location == "host" and is_last:
-                if mutated or not has_host:
+            if final_location == "backing" and is_last:
+                if mutated or not has_backing:
                     offloads[fire_task].append(oid)
                 else:
                     releases[fire_task].append(oid)
@@ -79,21 +79,21 @@ def _emit_chain(
                 offloads[fire_task].append(oid)
             elif mutated:
                 releases[fire_task].append(oid)
-            elif (not is_last) and (oid not in facts.host_ids):
+            elif (not is_last) and (oid not in facts.backing_ids):
                 offloads[fire_task].append(oid)
             else:
                 releases[fire_task].append(oid)
 
     pool = (
         _pool_size(facts, intervals)
-        if clamp_inbound and pack_inbound and bare.device_capacity is not None
+        if clamp_inbound and pack_inbound and bare.fast_memory_capacity is not None
         else None
     )
     prefetches, prefetch_order = _assign_prefetch_jobs(
         prefetch_jobs,
         facts,
         pool=pool,
-        cap=bare.device_capacity,
+        cap=bare.fast_memory_capacity,
         extra_pressure=extra_pressure,
     )
     for i, oids in enumerate(unscheduled_prefetches):
@@ -118,14 +118,14 @@ def _emit_chain(
             offloads[i] = [o for o in offloads[i] if o not in wasteful]
             prefetches[i] = [o for o in prefetches[i] if o not in wasteful]
 
-    host_objs = {o.id: o for o in bare.initial_memory if o.location == "host"}
+    backing_objs = {o.id: o for o in bare.initial_memory if o.location == "backing"}
     new_initial = list(bare.initial_memory)
     for oid in sorted(pre_placed):
-        src = host_objs[oid]
+        src = backing_objs[oid]
         new_initial.append(Object(
             id=src.id,
             size=src.size,
-            location="device",
+            location="fast",
             type=src.type,
         ))
 

@@ -19,14 +19,14 @@ from dataflow_sim.core.schema import TaskChain
 _PHYSICAL_REPAIR_LIMIT = 12
 
 _DEADLOCK_RE = re.compile(
-    r"task '([^']+)' deadlocked .* device (\d+)\+(\d+) bytes > cap (\d+)"
+    r"task '([^']+)' deadlocked .* compute (\d+)\+(\d+) bytes > cap (\d+)"
 )
 _OUTPUT_NEED_RE = re.compile(
-    r"task '([^']+)' cannot satisfy device memory need of (\d+) bytes "
+    r"task '([^']+)' cannot satisfy fast memory need of (\d+) bytes "
     r"\(current free \+ all scheduled offloads = (\d+), capacity=(\d+)\)"
 )
 _MISSING_INPUTS_RE = re.compile(
-    r"task '([^']+)' deadlocked .* inputs \[([^\]]+)\] not live on device"
+    r"task '([^']+)' deadlocked .* inputs \[([^\]]+)\] not live on compute"
 )
 
 
@@ -46,7 +46,7 @@ def _apply_physical_repair(
 ) -> bool:
     """Convert one simulator failure into extra pressure for one boundary."""
     physical = _physical_pressure_from_error(msg, facts, bare)
-    if physical is None or bare.device_capacity is None:
+    if physical is None or bare.fast_memory_capacity is None:
         return False
     boundary_idx, observed_need, observed_overage = physical
     modeled_need = _modeled_boundary_need(facts, intervals, boundary_idx)
@@ -64,7 +64,7 @@ def _physical_pressure_from_error(
 ) -> tuple[int, int, int] | None:
     """Translate simulator capacity failures into boundary repair pressure.
 
-    Returns `(boundary_index, observed_device_need, observed_overage)`.
+    Returns `(boundary_index, observed_compute_need, observed_overage)`.
     `boundary_index == task_idx`, representing boundary `task_idx - 1` in
     PressureFit's +1 boundary-array convention.
     """
@@ -89,11 +89,11 @@ def _parse_physical_pressure_need(
         need = parser(msg)
         if need is not None:
             return need
-    return _parse_missing_input_need(msg, facts, bare.device_capacity)
+    return _parse_missing_input_need(msg, facts, bare.fast_memory_capacity)
 
 
 def _parse_deadlock_capacity_need(msg: str) -> _PhysicalPressureNeed | None:
-    """Parse simulator deadlock: current device bytes plus requested bytes."""
+    """Parse simulator deadlock: current compute bytes plus requested bytes."""
     m = _DEADLOCK_RE.search(msg)
     if not m:
         return None
@@ -123,11 +123,11 @@ def _parse_output_reservation_need(msg: str) -> _PhysicalPressureNeed | None:
 def _parse_missing_input_need(
     msg: str,
     facts: _Facts,
-    device_capacity: int | None,
+    fast_memory_capacity: int | None,
 ) -> _PhysicalPressureNeed | None:
     """Parse deadlock where queued transfers left task inputs unavailable."""
     m = _MISSING_INPUTS_RE.search(msg)
-    if not m or device_capacity is None:
+    if not m or fast_memory_capacity is None:
         return None
     task_id, inputs_s = m.groups()
     missing = re.findall(r"'([^']+)'", inputs_s)
@@ -136,7 +136,7 @@ def _parse_missing_input_need(
         return None
     return _PhysicalPressureNeed(
         task_id=task_id,
-        actual_need=device_capacity + overage,
+        actual_need=fast_memory_capacity + overage,
         overage=overage,
     )
 

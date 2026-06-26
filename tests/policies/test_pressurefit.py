@@ -18,17 +18,17 @@ from conftest import build_bare_training_chain
 def _initial_choice_chain() -> TaskChain:
     return TaskChain(
         initial_memory=[
-            Object(id="early", size=10, location="host", type="weight"),
-            Object(id="late", size=10, location="host", type="weight"),
+            Object(id="early", size=10, location="backing", type="weight"),
+            Object(id="late", size=10, location="backing", type="weight"),
         ],
         tasks=[
             Task(id="t0", inputs=["early"], outputs=[], runtime=50),
             Task(id="t1", inputs=[], outputs=[], runtime=100),
             Task(id="t2", inputs=["late"], outputs=[], runtime=1),
         ],
-        device_capacity=15,
-        bandwidth_h2d=10,
-        bandwidth_d2h=10,
+        fast_memory_capacity=15,
+        bandwidth_from_slow=10,
+        bandwidth_to_slow=10,
     )
 
 
@@ -39,7 +39,7 @@ def test_pressure_initial_placement_skips_hidden_future_use():
     uses_by_task = _object_uses_by_task_idx(bare, ideal)
 
     placement = _pressure_initial_placement(
-        bare, bare.device_capacity, sizes, uses_by_task,
+        bare, bare.fast_memory_capacity, sizes, uses_by_task,
     )
 
     assert "early" in placement  # task-0 input, no prior trigger slot
@@ -51,9 +51,9 @@ def test_pressurefit_prefetches_late_object_instead_of_preplacing():
     annotated = apply_pressurefit_policy(bare)
     run(annotated)
 
-    initial_device = {o.id for o in annotated.initial_memory if o.location == "device"}
-    assert "early" in initial_device
-    assert "late" not in initial_device
+    initial_compute = {o.id for o in annotated.initial_memory if o.location == "fast"}
+    assert "early" in initial_compute
+    assert "late" not in initial_compute
     assert any(
         trig.obj_id == "late"
         for task in annotated.tasks
@@ -63,7 +63,7 @@ def test_pressurefit_prefetches_late_object_instead_of_preplacing():
 
 def test_pressurefit_runs_training_chain_at_moderate_cap():
     bare = build_bare_training_chain(L=5)
-    annotated = apply_pressurefit_policy(bare, device_capacity=800)
+    annotated = apply_pressurefit_policy(bare, fast_memory_capacity=800)
     log = run(annotated)
     compute_ids = {iv.task_id for iv in log.task_intervals if iv.track == "compute"}
     assert "f_0" in compute_ids
@@ -72,7 +72,7 @@ def test_pressurefit_runs_training_chain_at_moderate_cap():
 
 def test_pressurefit_diagnostics_describe_selected_candidate():
     bare = build_bare_training_chain(L=5)
-    annotated, diagnostics = plan_pressurefit_policy(bare, device_capacity=800)
+    annotated, diagnostics = plan_pressurefit_policy(bare, fast_memory_capacity=800)
     log = run(annotated)
     makespan = max(iv.end for iv in log.task_intervals)
 
@@ -86,7 +86,7 @@ def test_pressurefit_diagnostics_describe_selected_candidate():
 
 def test_pressurefit_evaluates_exactly_four_inbound_schedules():
     bare = build_bare_training_chain(L=5)
-    _annotated, diagnostics = plan_pressurefit_policy(bare, device_capacity=800)
+    _annotated, diagnostics = plan_pressurefit_policy(bare, fast_memory_capacity=800)
 
     assert [c.name for c in diagnostics.candidates] == [
         "packed-fifo",
@@ -103,20 +103,20 @@ def test_pressurefit_evaluates_exactly_four_inbound_schedules():
 def test_pressurefit_can_release_disposable_mutation_after_final_use():
     bare = TaskChain(
         initial_memory=[
-            Object(id="buf", size=10, location="host", type="other"),
+            Object(id="buf", size=10, location="backing", type="other"),
         ],
         tasks=[
             Task(
                 id="mut",
                 inputs=["buf"],
-                outputs=[OutputAlloc(id="out", size=1, location="device")],
+                outputs=[OutputAlloc(id="out", size=1, location="fast")],
                 runtime=1,
                 mutates_inputs=["buf"],
             ),
         ],
-        device_capacity=32,
-        bandwidth_h2d=10,
-        bandwidth_d2h=10,
+        fast_memory_capacity=32,
+        bandwidth_from_slow=10,
+        bandwidth_to_slow=10,
     )
 
     annotated = apply_pressurefit_policy(bare)
@@ -127,24 +127,24 @@ def test_pressurefit_can_release_disposable_mutation_after_final_use():
     run(annotated)
 
 
-def test_pressurefit_preserves_final_host_mutation_writeback():
+def test_pressurefit_preserves_final_backing_mutation_writeback():
     bare = TaskChain(
         initial_memory=[
-            Object(id="buf", size=10, location="host", type="other"),
+            Object(id="buf", size=10, location="backing", type="other"),
         ],
         tasks=[
             Task(
                 id="mut",
                 inputs=["buf"],
-                outputs=[OutputAlloc(id="out", size=1, location="device")],
+                outputs=[OutputAlloc(id="out", size=1, location="fast")],
                 runtime=1,
                 mutates_inputs=["buf"],
             ),
         ],
-        final_locations={"buf": "host"},
-        device_capacity=32,
-        bandwidth_h2d=10,
-        bandwidth_d2h=10,
+        final_locations={"buf": "backing"},
+        fast_memory_capacity=32,
+        bandwidth_from_slow=10,
+        bandwidth_to_slow=10,
     )
 
     annotated = apply_pressurefit_policy(bare)
@@ -158,30 +158,30 @@ def test_pressurefit_preserves_final_host_mutation_writeback():
 def test_pressurefit_uses_timing_relief_when_static_boundary_is_impossible():
     bare = TaskChain(
         initial_memory=[
-            Object(id="x", size=1, location="device", type="activation"),
+            Object(id="x", size=1, location="fast", type="activation"),
         ],
         tasks=[
             Task(
                 id="t0",
                 inputs=["x"],
                 outputs=[
-                    OutputAlloc(id="A", size=60, location="device"),
-                    OutputAlloc(id="y", size=1, location="device"),
+                    OutputAlloc(id="A", size=60, location="fast"),
+                    OutputAlloc(id="y", size=1, location="fast"),
                 ],
                 runtime=10,
             ),
             Task(
                 id="t1",
                 inputs=["y"],
-                outputs=[OutputAlloc(id="B", size=60, location="device")],
+                outputs=[OutputAlloc(id="B", size=60, location="fast")],
                 runtime=10,
             ),
             Task(id="t2", inputs=[], outputs=[], runtime=10),
             Task(id="t3", inputs=["A"], outputs=[], runtime=10),
         ],
-        device_capacity=100,
-        bandwidth_h2d=10,
-        bandwidth_d2h=10,
+        fast_memory_capacity=100,
+        bandwidth_from_slow=10,
+        bandwidth_to_slow=10,
     )
 
     annotated = apply_pressurefit_policy(bare)
@@ -204,8 +204,8 @@ def test_packed_fifo_clamps_prefetch_fire_to_pressure():
         initial_memory=[
             # `hog` pins boundaries -1..1 (anchors at every gap), leaving no
             # room for x's 30 bytes before boundary 2.
-            Object(id="hog", size=90, location="device", type="other"),
-            Object(id="x", size=30, location="host", type="other"),
+            Object(id="hog", size=90, location="fast", type="other"),
+            Object(id="x", size=30, location="backing", type="other"),
         ],
         tasks=[
             Task(id="t0", inputs=["hog"], outputs=[], runtime=10),
@@ -214,13 +214,13 @@ def test_packed_fifo_clamps_prefetch_fire_to_pressure():
             Task(id="t3", inputs=[], outputs=[], runtime=10),
             Task(id="t4", inputs=["x"], outputs=[], runtime=10),
         ],
-        device_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
     facts = _build_facts(bare)
-    intervals = _initial_residency(facts, initial_device=set())
-    _reduce_to_fit(facts, intervals, bare.device_capacity)
+    intervals = _initial_residency(facts, initial_compute=set())
+    _reduce_to_fit(facts, intervals, bare.fast_memory_capacity)
     assert intervals["x"] == [(3, 3)]
 
     unclamped = _emit_chain(bare, facts, intervals, pack_inbound=True)
@@ -244,8 +244,8 @@ def test_packed_fifo_clamps_prefetch_fire_to_pressure():
 def test_pressurefit_extends_prefetch_intervals_under_strict_cap():
     bare = TaskChain(
         initial_memory=[
-            Object(id="x", size=25, location="host", type="other"),
-            Object(id="y", size=25, location="host", type="other"),
+            Object(id="x", size=25, location="backing", type="other"),
+            Object(id="y", size=25, location="backing", type="other"),
         ],
         tasks=[
             Task(id="t0", inputs=[], outputs=[], runtime=10),
@@ -254,19 +254,19 @@ def test_pressurefit_extends_prefetch_intervals_under_strict_cap():
             Task(id="t3", inputs=["x"], outputs=[], runtime=10),
             Task(id="t4", inputs=["y"], outputs=[], runtime=10),
         ],
-        device_capacity=50,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=50,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
     facts = _build_facts(bare)
-    intervals = _initial_residency(facts, initial_device=set())
-    _reduce_to_fit(facts, intervals, bare.device_capacity)
+    intervals = _initial_residency(facts, initial_compute=set())
+    _reduce_to_fit(facts, intervals, bare.fast_memory_capacity)
 
     assert intervals["x"] == [(2, 2)]
     assert intervals["y"] == [(3, 3)]
 
     _extend_inbound_lead_time(
-        facts, intervals, bare.device_capacity, bare.bandwidth_h2d,
+        facts, intervals, bare.fast_memory_capacity, bare.bandwidth_from_slow,
     )
 
     assert intervals["x"] == [(1, 2)]

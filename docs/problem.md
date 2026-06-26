@@ -7,7 +7,7 @@ Policy-agnostic problem statement for the dataflow_sim. Any auto-policy (`belady
 ## 1. Setting
 
 ### Compute graph
-A linear-ish DAG of compute tasks, all executed on a single GPU **compute stream** (serial, no compute-parallelism):
+A linear-ish DAG of compute tasks, all executed on a single **compute stream** (serial, no compute-parallelism):
 
 - `f_1, ..., f_L` (forward per layer)
 - `head` (combined head fwd+bwd)
@@ -18,30 +18,30 @@ For an L=32 model: **2L+1 = 65 active compute tasks**, plus L recompute placehol
 
 Each task has fixed (known at planning time) attributes:
 - `runtime` (deterministic, µs)
-- `reads`: object IDs whose bytes must be device-resident at task start
-- `writes`: object IDs produced on-device by this task
+- `reads`: object IDs whose bytes must be compute-resident at task start
+- `writes`: object IDs produced on-compute by this task
 - `mutates_inputs`: subset of `reads` whose bytes are overwritten in place (canonical case: backward writes into the pre-allocated `dW_i`)
 
 ### Object set
 Roughly `~5L` objects of widely varying size (MBs to GBs):
-- `input` (host-init, used by `f_1`)
-- `W_1..W_L` (host-init weights; read by both `f_i` and `b_i`; mutated nowhere in step — re-loadable from host)
-- `dW_1..dW_L` (pre-allocated grads; mutated by `b_i`; must be offloaded to host at end of step — not re-loadable as-was)
-- `A_1..A_L` (saved activations; produced by `f_i`, consumed by `b_i`; on-device origin)
-- `y_1..y_{L-1}`, `dy_1..dy_{L-1}` (layer outputs / output grads; on-device origin)
+- `input` (backing-init, used by `f_1`)
+- `W_1..W_L` (backing-init weights; read by both `f_i` and `b_i`; mutated nowhere in step — re-loadable from backing)
+- `dW_1..dW_L` (pre-allocated grads; mutated by `b_i`; must be offloaded to backing at end of step — not re-loadable as-was)
+- `A_1..A_L` (saved activations; produced by `f_i`, consumed by `b_i`; on-compute origin)
+- `y_1..y_{L-1}`, `dy_1..dy_{L-1}` (layer outputs / output grads; on-compute origin)
 - A few head-specific objects (`head_W`, `head_dW`, `head_A`, etc.)
 
-Each object has a known `size_bytes`, a known set of producing/consuming tasks, and (for host-init objects) a known host source.
+Each object has a known `size_bytes`, a known set of producing/consuming tasks, and (for backing-init objects) a known backing source.
 
 ### Hardware abstraction
-- **Compute stream**: serial; task `T` cannot start until (a) prior compute task ended AND (b) all `T.reads ∪ T.writes ∪ T.mutates_inputs` are device-resident.
-- **H2D stream**: FIFO; serves prefetches host→device; one transfer at a time; transfer time = `bytes / h2d_bandwidth`.
-- **D2H stream**: FIFO; serves offloads device→host; same model.
+- **Compute stream**: serial; task `T` cannot start until (a) prior compute task ended AND (b) all `T.reads ∪ T.writes ∪ T.mutates_inputs` are compute-resident.
+- **from-slow stream**: FIFO; serves prefetches backing→compute; one transfer at a time; transfer time = `bytes / from_slow_bandwidth`.
+- **to-slow stream**: FIFO; serves offloads compute→backing; same model.
 - All three streams run in **parallel** with each other.
-- **Device memory pool**: hard cap (bytes); the sum of resident-or-in-transit object bytes must not exceed the cap at any continuous-time instant.
+- **Compute memory pool**: hard cap (bytes); the sum of resident-or-in-transit object bytes must not exceed the cap at any continuous-time instant.
 
 ### Lifecycle semantics (one nuance that bites)
-An object is "in the pool" from the moment its **h2d starts** (not finishes) until the moment its **release or d2h finishes** (not starts). The pool is debited by an in-flight outbound transit until the d2h completes — this "d2h tail" is one of the main contention sources policies must reason about.
+An object is "in the pool" from the moment its **from_slow starts** (not finishes) until the moment its **release or to_slow finishes** (not starts). The pool is debited by an in-flight outbound transit until the to_slow completes — this "to_slow tail" is one of the main contention sources policies must reason about.
 
 ---
 
@@ -50,9 +50,9 @@ An object is "in the pool" from the moment its **h2d starts** (not finishes) unt
 ### Decision variables
 Given the inputs above, a **schedule** is a tuple `(R, H, D)` where:
 
-- `R ⊆ HostInitObjects` — the subset pre-placed on device at `t=0`.
-- `H = [(obj_id, start_time)]` — sequence of h2d events on the inbound FIFO.
-- `D = [(obj_id, start_time)]` — sequence of d2h events on the outbound FIFO.
+- `R ⊆ BackingInitObjects` — the subset pre-placed on compute at `t=0`.
+- `H = [(obj_id, start_time)]` — sequence of from_slow events on the inbound FIFO.
+- `D = [(obj_id, start_time)]` — sequence of to_slow events on the outbound FIFO.
 
 A schedule implicitly determines:
 - The compute task start times (each task starts at the latest of its predecessor's end and its inputs' arrival).
@@ -63,8 +63,8 @@ A schedule implicitly determines:
 1. **Residency at use**: for every compute task `T` and every `o ∈ T.reads ∪ T.writes ∪ T.mutates_inputs`, `o` is resident at `T.start`.
 2. **Cap**: for every instant `t`, `Σ size(o) for o resident-or-in-transit at t ≤ cap`.
 3. **Stream FIFO**: events on H and D do not overlap (one transfer per stream at a time).
-4. **Conservation**: every prefetched object must have a host source available; every offloaded object's bytes are durably valid (writeback for mutated objects, no-op for un-mutated host-source objects).
-5. **Mutation correctness**: a mutated object's writeback must happen **after** the mutating task and **before** the host's next read of it (in our setup: end of step).
+4. **Conservation**: every prefetched object must have a backing source available; every offloaded object's bytes are durably valid (writeback for mutated objects, no-op for un-mutated backing-source objects).
+5. **Mutation correctness**: a mutated object's writeback must happen **after** the mutating task and **before** the backing's next read of it (in our setup: end of step).
 
 ### Objective
 `minimize M(R, H, D)`
@@ -77,13 +77,13 @@ A non-trivial fraction of the schedule is **forced** by the workload and not sub
 
 - **Forced residency**: at task `T`, `T.reads ∪ T.writes ∪ T.mutates_inputs` are all resident — no algorithm has a choice.
 - **Forced presence interval**: the *minimum* residency interval of an object is `[first_use, last_use]`. Any contiguous "always resident" plan is feasible; any plan that releases mid-interval must arrange a prefetch back in time for the next use.
-- **Forced production**: outputs of compute tasks materialize on device at task end. They cannot be "scheduled elsewhere."
+- **Forced production**: outputs of compute tasks materialize on compute at task end. They cannot be "scheduled elsewhere."
 - **Forced consumption order**: the compute DAG is fixed (no task reordering in scope).
-- **Forced minimum writeback**: every mutated object with a host home (i.e., every `dW_i`) must complete a d2h at some point before the step's end. The *time* is a decision; the *occurrence* is not.
+- **Forced minimum writeback**: every mutated object with a backing home (i.e., every `dW_i`) must complete a to_slow at some point before the step's end. The *time* is a decision; the *occurrence* is not.
 
 The **actual decision space** is therefore:
-1. Which host-init objects to pre-place (yes/no per object).
-2. For each non-host-init or "release-and-reload-eligible" object, which of its inter-use gaps to drop residency in (and via what mechanism: release vs offload).
+1. Which backing-init objects to pre-place (yes/no per object).
+2. For each non-backing-init or "release-and-reload-eligible" object, which of its inter-use gaps to drop residency in (and via what mechanism: release vs offload).
 3. The temporal ordering of the resulting H and D transfer queues.
 
 For a transformer training chain this is on the order of a few hundred binary decisions plus their scheduling — small in absolute terms, but combinatorially explosive when coupled with the timing constraints below.
@@ -95,13 +95,13 @@ For a transformer training chain this is on the order of a few hundred binary de
 The natural intuition — "we know all sizes, runtimes, dependencies ahead of time, so we should be able to plan optimally" — is misleading. Perfect information removes online uncertainty, but doesn't remove the structural combinatorics. Three reasons:
 
 ### 4.1 Self-referential timing
-The cost of a decision depends on the schedule, and the schedule depends on the decisions. Concretely: "should I evict object `o` at boundary `k`?" depends on "how busy will the h2d FIFO be when I need to reload `o`?", which depends on "what else did I evict?". `max_reduce` breaks this loop by using a static heuristic (residency intervals modeled at task-boundary granularity, transit time ignored) — which is also why it can mispredict in regimes with heavy stream contention.
+The cost of a decision depends on the schedule, and the schedule depends on the decisions. Concretely: "should I evict object `o` at boundary `k`?" depends on "how busy will the from_slow FIFO be when I need to reload `o`?", which depends on "what else did I evict?". `max_reduce` breaks this loop by using a static heuristic (residency intervals modeled at task-boundary granularity, transit time ignored) — which is also why it can mispredict in regimes with heavy stream contention.
 
 ### 4.2 Continuous-time pool constraint
-The cap is enforced at every continuous-time instant, not just at task boundaries. A schedule that looks fine at every `task.start` can still violate the cap *during* a task because of in-flight transit (the d2h tail). The simulator's drain loop catches this and stalls, but a planner that ignores it predicts a wrong makespan.
+The cap is enforced at every continuous-time instant, not just at task boundaries. A schedule that looks fine at every `task.start` can still violate the cap *during* a task because of in-flight transit (the to_slow tail). The simulator's drain loop catches this and stalls, but a planner that ignores it predicts a wrong makespan.
 
 ### 4.3 Two parallel transfer streams with shared resource budget
-H and D are independent in terms of bandwidth (no contention between them) but coupled through the pool: a d2h that's "running for free in parallel" still occupies bytes until it lands. Optimizing H and D separately and then composing them gives the wrong answer.
+H and D are independent in terms of bandwidth (no contention between them) but coupled through the pool: a to_slow that's "running for free in parallel" still occupies bytes until it lands. Optimizing H and D separately and then composing them gives the wrong answer.
 
 ---
 
@@ -115,7 +115,7 @@ There is **no exact match** in the classical literature. The closest analogues, 
 **Why it doesn't fit**:
 - **Uniform page size** vs. our MB–GB variable-size objects → ours is a *weighted* problem (NP-hard even offline when sizes are arbitrary; this is **Weighted Caching**, solvable optimally via LP but not in linear time and the value model is different).
 - **Instantaneous misses** vs. our bandwidth-bound transfers → minimizing miss *count* ≠ minimizing makespan. A single huge miss can be worse than many small ones.
-- **One operation at a time** vs. our compute+H2D+D2H parallelism → Belady doesn't address overlap.
+- **One operation at a time** vs. our compute+from-slow+to-slow parallelism → Belady doesn't address overlap.
 
 ### 5.2 Weighted caching / k-server
 Generalizes Belady to weighted pages. Offline optimum solvable via LP (assignment-style). Still assumes instantaneous fetches and a single serial machine — same gap as 5.1 on the parallelism and continuous-time fronts.
@@ -137,7 +137,7 @@ DAG of tasks with durations, renewable resource pool (e.g., `R` units of resourc
 - RCPSP has no notion of "data" — we additionally have to schedule the H and D streams (which are themselves RCPSP-like) and link them to the compute stream via residency.
 
 ### 5.5 Job-shop scheduling with precedence (3-machine variant)
-Treat compute / h2d / d2h as three "machines"; tasks need to visit machines in some order with precedence. NP-hard for `≥3` machines. Doesn't model the shared cap constraint.
+Treat compute / from_slow / to_slow as three "machines"; tasks need to visit machines in some order with precedence. NP-hard for `≥3` machines. Doesn't model the shared cap constraint.
 
 ### 5.6 Register allocation with spilling
 Classic compiler problem: graph coloring + spill cost optimization. NP-hard. The "spill / reload" mechanic is structurally identical to our offload/prefetch. The crucial differences:
@@ -151,7 +151,7 @@ This **is** the field our problem lives in. The relevant works:
 - **SwapAdvisor** (Huang et al., ASPLOS 2020) — genetic algorithm over swap decisions; bandwidth-aware; heuristic, no optimality claim.
 - **Capuchin** (Peng et al., ASPLOS 2020) — online + measurement-driven; greedy.
 - **ZeRO-Offload / ZeRO-Infinity** — engineering-driven, not formally optimal.
-- **POET** (Patil et al., ICML 2022) — MILP for joint paging+recompute on edge devices.
+- **POET** (Patil et al., ICML 2022) — MILP for joint paging+recompute on edge computes.
 
 The literature's **consistent verdict**: optimal MILP is intractable past ~100 graph nodes; production systems use greedy or learned heuristics. **Our problem is exactly this problem**, with the added wrinkle that we want offline planning (not online), which moves us closer to Checkmate's regime — but Checkmate ignores bandwidth, which is the bottleneck in our regressions.
 
@@ -176,7 +176,7 @@ Any single one of these is well-studied in isolation; their combination has no c
 
 The problem **is** expressible as a mathematical program — there's no formal barrier to writing down an exact solver. The questions are (a) which formulation is least painful, (b) how big the resulting program is at our scale, and (c) how long it would take to solve. (a) and (b) we can answer now; (c) is genuinely uncertain in a way worth explaining.
 
-Notation used below for L=32, num_seqs=4 (our target config): `T = 2L+1 = 65` compute tasks, `O ≈ 5L = 160` objects (input, weights, grads, activations, layer outputs/grads, head objects), `E` = the number of potential transfer events (h2d + d2h) the schedule might include. `E` is itself a function of the policy — worst case it's `O · K` where `K` is the maximum times an object is fetched, but for our workload `K ≤ 2` per object (e.g., W_i fetched at most for `f_i` and `b_i`), so `E ≲ 4·L ≈ 130` is a reasonable upper bound.
+Notation used below for L=32, num_seqs=4 (our target config): `T = 2L+1 = 65` compute tasks, `O ≈ 5L = 160` objects (input, weights, grads, activations, layer outputs/grads, head objects), `E` = the number of potential transfer events (from_slow + to_slow) the schedule might include. `E` is itself a function of the policy — worst case it's `O · K` where `K` is the maximum times an object is fetched, but for our workload `K ≤ 2` per object (e.g., W_i fetched at most for `f_i` and `b_i`), so `E ≲ 4·L ≈ 130` is a reasonable upper bound.
 
 ### 7.1 Three candidate formulations
 
@@ -187,11 +187,11 @@ Discretize time to a grid of `P` ticks (e.g., µs granularity over a ~1-second m
 | Variable | Meaning | Count |
 |---|---|---|
 | `x[o, p] ∈ {0,1}` | object `o` resident at tick `p` | `O · P ≈ 1.6·10⁸` |
-| `start_h[o, p] ∈ {0,1}` | h2d for `o` starts at tick `p` | `O · P` |
-| `start_d[o, p] ∈ {0,1}` | d2h for `o` starts at tick `p` | `O · P` |
+| `start_h[o, p] ∈ {0,1}` | from_slow for `o` starts at tick `p` | `O · P` |
+| `start_d[o, p] ∈ {0,1}` | to_slow for `o` starts at tick `p` | `O · P` |
 | `start_t[task, p] ∈ {0,1}` | task starts at tick `p` | `T · P ≈ 6.5·10⁷` |
 
-Constraints linearize cleanly (cap is a sum at each `p`, FIFO is a sum over active transfers at each `p`). Hopeless in this form — hundreds of millions of binaries. **Coarsening the grid** (e.g., ticks at multiples of 100 µs, or at task-boundary granularity) cuts `P` to `T` or `2T`, giving `~30k` binaries — tractable in principle but loses the continuous-time cap constraint that the d2h-tail problem hinges on.
+Constraints linearize cleanly (cap is a sum at each `p`, FIFO is a sum over active transfers at each `p`). Hopeless in this form — hundreds of millions of binaries. **Coarsening the grid** (e.g., ticks at multiples of 100 µs, or at task-boundary granularity) cuts `P` to `T` or `2T`, giving `~30k` binaries — tractable in principle but loses the continuous-time cap constraint that the to_slow-tail problem hinges on.
 
 #### 7.1.2 Event-time MILP (continuous time, discrete events — most compact)
 
@@ -202,9 +202,9 @@ Don't discretize time at all. Introduce continuous start-time variables and use 
 | `s_task[t] ∈ ℝ⁺` | start time of compute task `t` | `T = 65` |
 | `s_h[e] ∈ ℝ⁺`, `s_d[e] ∈ ℝ⁺` | start times of transfer events | `E ≈ 130` |
 | `present[o, k] ∈ {0,1}` | object `o` resident at task-boundary `k` | `O · T ≈ 10⁴` |
-| `use_h[o, k] ∈ {0,1}` | h2d for `o` occurs before boundary `k` | `O · T ≈ 10⁴` |
-| `order_h[e1, e2] ∈ {0,1}` | h2d event `e1` precedes `e2` (FIFO order) | `O(E²) ≈ 1.7·10⁴` |
-| `order_d[e1, e2] ∈ {0,1}` | same for d2h | `O(E²) ≈ 1.7·10⁴` |
+| `use_h[o, k] ∈ {0,1}` | from_slow for `o` occurs before boundary `k` | `O · T ≈ 10⁴` |
+| `order_h[e1, e2] ∈ {0,1}` | from_slow event `e1` precedes `e2` (FIFO order) | `O(E²) ≈ 1.7·10⁴` |
+| `order_d[e1, e2] ∈ {0,1}` | same for to_slow | `O(E²) ≈ 1.7·10⁴` |
 
 **Total integer variables: ~5·10⁴.** Continuous variables: ~200. This is a reasonable size — comparable to mid-difficulty RCPSP benchmarks that commercial solvers handle.
 
@@ -217,10 +217,10 @@ Constraint Programming solvers (Google OR-Tools CP-SAT, IBM CP Optimizer) have *
 - An `IntervalVar` per compute task (fixed duration, decision = start time).
 - An optional `IntervalVar` per potential transfer event (existence is a decision, duration is fixed given the object).
 - `Cumulative` constraint on the compute stream with capacity 1 (serial).
-- `Cumulative` constraint on h2d with capacity 1 (serial FIFO).
-- `Cumulative` constraint on d2h with capacity 1.
-- `Cumulative` constraint on the pool, where each object's "demand interval" is the union of `[h2d.start, d2h.end]` segments (where present) and demand height = `size_bytes`.
-- Precedence: every task's input transfer events must complete before task start; every output's d2h must start after task end.
+- `Cumulative` constraint on from_slow with capacity 1 (serial FIFO).
+- `Cumulative` constraint on to_slow with capacity 1.
+- `Cumulative` constraint on the pool, where each object's "demand interval" is the union of `[from_slow.start, to_slow.end]` segments (where present) and demand height = `size_bytes`.
+- Precedence: every task's input transfer events must complete before task start; every output's to_slow must start after task end.
 
 CP-SAT is **purpose-built** for exactly this constraint shape. The model is dramatically more compact than MILP (no big-M, no order-pair binaries) and CP-SAT's learning + propagation often beats MILP on scheduling. But — and this is the honest part — **CP-SAT performance on novel scheduling instances is hard to predict without running it.**
 
@@ -278,7 +278,7 @@ Solve the full integer program. **Not pursued** for production; useful only as a
 - For a single stream with hard deadlines: **EDF (earliest-deadline-first) is provably optimal** (Liu & Layland, 1973; for our case: one stream as a single-machine real-time problem).
 - For two streams with shared cap: combined heuristics, but the search space is small (`|H|! × |D|!`) at our scale and pruneable.
 
-This is the regime `max_reduce`'s trigger-placement phase operates in (h2d only). Extending to d2h and adding contention-aware guards would close most of the gap.
+This is the regime `max_reduce`'s trigger-placement phase operates in (from_slow only). Extending to to_slow and adding contention-aware guards would close most of the gap.
 
 ### 9.3 Optimal-by-search-over-plans
 **Tractable with the right structure.** Enumerate or beam-search over residency plans; for each, derive the optimal-given-residency schedule (9.2); pick the lowest-makespan plan via simulator replay.
@@ -310,9 +310,9 @@ Each per-policy design doc lays out the specific algorithm (search structure, pl
 | `S` | seqlen; affects tensor sizes |
 | `f_i`, `b_i`, `r_i`, `head` | forward / backward / recompute / head compute tasks |
 | `W_i`, `dW_i`, `A_i`, `y_i`, `dy_i` | weights, gradients, saved activations, layer outputs, output grads |
-| H2D / D2H | inbound / outbound transfer streams |
-| Residency interval `[a, b]` | object is on device between task boundaries `a` and `b` |
-| Cap | hard device memory limit (bytes) |
+| from-slow / to-slow | inbound / outbound transfer streams |
+| Residency interval `[a, b]` | object is on compute between task boundaries `a` and `b` |
+| Cap | hard fast memory limit (bytes) |
 | Belady | optimal offline page-replacement (evict furthest-in-future) |
 | RCPSP | Resource-Constrained Project Scheduling Problem |
 | EDF | Earliest Deadline First scheduling |

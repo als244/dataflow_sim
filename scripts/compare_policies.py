@@ -3,7 +3,7 @@
 
 Usage:
     python scripts/compare_policies.py [--L 3] [--cap 800] [--window 2]
-                                       [--bw-h2d 8] [--bw-d2h 8]
+                                       [--bw-from-slow 8] [--bw-to-slow 8]
     python scripts/compare_policies.py --sweep
 
 The single-config mode runs both policies on one parameter combination and
@@ -30,9 +30,9 @@ class Metrics:
     error: str | None
     makespan: int | None
     compute_stall: int | None
-    peak_device: int | None
-    bytes_h2d: int | None
-    bytes_d2h: int | None
+    peak_fast_memory: int | None
+    bytes_from_slow: int | None
+    bytes_to_slow: int | None
     n_releases: int | None
     n_offloads: int | None
     n_prefetches: int | None
@@ -51,31 +51,31 @@ def measure(annotated) -> Metrics:
     makespan = max(iv.end for iv in log.task_intervals)
     stall = sum(max(0, cur.start - prev.end) for prev, cur in zip(compute, compute[1:]))
 
-    # Peak device usage: walk through snapshots, sum device sizes
+    # Peak fast-memory usage: walk through snapshots, sum fast-tier sizes.
     peak = 0
     for ev in log.events:
-        dev = sum(m.size for m in ev.snapshot.memory if m.location == "device")
-        peak = max(peak, dev)
+        fast = sum(m.size for m in ev.snapshot.memory if m.location == "fast")
+        peak = max(peak, fast)
 
     # Transfer bytes: sum sizes for each transfer_start event
-    bytes_h2d = bytes_d2h = 0
+    bytes_from_slow = bytes_to_slow = 0
     for ev in log.events:
         if ev.kind == "transfer_start":
-            if ev.transfer_direction == "h2d":
+            if ev.transfer_direction == "from_slow":
                 for m in ev.snapshot.memory:
-                    if m.id == ev.transfer_obj and m.location == "device":
-                        bytes_h2d += m.size
+                    if m.id == ev.transfer_obj and m.location == "fast":
+                        bytes_from_slow += m.size
                         break
-            elif ev.transfer_direction == "d2h":
+            elif ev.transfer_direction == "to_slow":
                 for m in ev.snapshot.memory:
-                    if m.id == ev.transfer_obj and m.location == "device":
-                        bytes_d2h += m.size
+                    if m.id == ev.transfer_obj and m.location == "fast":
+                        bytes_to_slow += m.size
                         break
 
     n_rel = sum(len(t.releases_after) for t in annotated.tasks)
     n_off = sum(len(t.offload_after) for t in annotated.tasks)
     n_pre = sum(len(t.prefetch_after) for t in annotated.tasks)
-    return Metrics(True, None, makespan, stall, peak, bytes_h2d, bytes_d2h, n_rel, n_off, n_pre)
+    return Metrics(True, None, makespan, stall, peak, bytes_from_slow, bytes_to_slow, n_rel, n_off, n_pre)
 
 
 def _safe_apply(fn, *args, **kwargs) -> Metrics | None:
@@ -87,16 +87,16 @@ def _safe_apply(fn, *args, **kwargs) -> Metrics | None:
     return measure(chain)
 
 
-def run_one(L: int, cap: int | None, window: int, bw_h2d: int, bw_d2h: int) -> dict[str, Metrics]:
-    bare = build_layerwise_training_chain(L=L, bandwidth_h2d=bw_h2d, bandwidth_d2h=bw_d2h)
+def run_one(L: int, cap: int | None, window: int, bw_from_slow: int, bw_to_slow: int) -> dict[str, Metrics]:
+    bare = build_layerwise_training_chain(L=L, bandwidth_from_slow=bw_from_slow, bandwidth_to_slow=bw_to_slow)
     from dataclasses import replace
-    bare_with_cap = replace(bare, device_capacity=cap)
+    bare_with_cap = replace(bare, fast_memory_capacity=cap)
     return {
-        "sliding": _safe_apply(apply_sliding_window_policy, bare, window_size=window, device_capacity=cap),
-        "auto": _safe_apply(apply_belady_reactive_policy, bare, device_capacity=cap),
+        "sliding": _safe_apply(apply_sliding_window_policy, bare, window_size=window, fast_memory_capacity=cap),
+        "auto": _safe_apply(apply_belady_reactive_policy, bare, fast_memory_capacity=cap),
         "v4": _safe_apply(apply_max_reduce_policy, bare_with_cap),
         "v5": _safe_apply(apply_min_grow_policy, bare_with_cap, time_budget_s=10.0),
-        "pressurefit": _safe_apply(apply_pressurefit_policy, bare, device_capacity=cap),
+        "pressurefit": _safe_apply(apply_pressurefit_policy, bare, fast_memory_capacity=cap),
     }
 
 
@@ -104,12 +104,12 @@ def _fmt(v):
     return "—" if v is None else str(v)
 
 
-def print_one(L: int, cap: int | None, window: int, bw_h2d: int, bw_d2h: int) -> None:
-    print(f"\n=== L={L}, cap={cap}, window={window}, bw_h2d={bw_h2d}, bw_d2h={bw_d2h} ===\n")
-    res = run_one(L, cap, window, bw_h2d, bw_d2h)
+def print_one(L: int, cap: int | None, window: int, bw_from_slow: int, bw_to_slow: int) -> None:
+    print(f"\n=== L={L}, cap={cap}, window={window}, bw_from_slow={bw_from_slow}, bw_to_slow={bw_to_slow} ===\n")
+    res = run_one(L, cap, window, bw_from_slow, bw_to_slow)
     cols = ["sliding", "auto", "v4", "v5", "pressurefit"]
     rows = [("status", *("OK" if res[c].ok else "FAIL" for c in cols))]
-    for metric in ("makespan", "compute_stall", "peak_device", "bytes_h2d", "bytes_d2h",
+    for metric in ("makespan", "compute_stall", "peak_fast_memory", "bytes_from_slow", "bytes_to_slow",
                    "n_releases", "n_offloads", "n_prefetches"):
         rows.append((metric, *(_fmt(getattr(res[c], metric)) for c in cols)))
     header = f"  {'metric':<16}" + "".join(f" {c:>10}" for c in cols)
@@ -122,7 +122,7 @@ def print_one(L: int, cap: int | None, window: int, bw_h2d: int, bw_d2h: int) ->
             print(f"\n  {c} error: {res[c].error}")
 
 
-def sweep(bw_h2d: int = 8, bw_d2h: int = 8) -> None:
+def sweep(bw_from_slow: int = 8, bw_to_slow: int = 8) -> None:
     Ls = [3, 5, 10]
     windows = [2]   # window matters only for sliding; reduce noise by fixing it
     rows: list[dict] = []
@@ -130,7 +130,7 @@ def sweep(bw_h2d: int = 8, bw_d2h: int = 8) -> None:
         caps = [None, 1500, 1200, 1000, 800, 600]
         for cap in caps:
             for w in windows:
-                res = run_one(L, cap, w, bw_h2d, bw_d2h)
+                res = run_one(L, cap, w, bw_from_slow, bw_to_slow)
                 rows.append({
                     "L": L, "cap": cap, "w": w,
                     "sliding": res["sliding"], "auto": res["auto"],
@@ -138,7 +138,7 @@ def sweep(bw_h2d: int = 8, bw_d2h: int = 8) -> None:
                     "pressurefit": res["pressurefit"],
                 })
 
-    print(f"\n# Sweep (bw_h2d={bw_h2d}, bw_d2h={bw_d2h})\n")
+    print(f"\n# Sweep (bw_from_slow={bw_from_slow}, bw_to_slow={bw_to_slow})\n")
     print("| L | cap | sliding | v2 | v4 | v5 | pressurefit | best | pressurefit vs best |")
     print("|---|-----|---------|-----|-----|-----|----------|------|------------------|")
     n_v5_wins = n_v5_ties = n_v5_loses = 0
@@ -171,14 +171,14 @@ def main() -> int:
     p.add_argument("--L", type=int, default=3)
     p.add_argument("--cap", type=int, default=None)
     p.add_argument("--window", type=int, default=2)
-    p.add_argument("--bw-h2d", type=int, default=8, dest="bw_h2d")
-    p.add_argument("--bw-d2h", type=int, default=8, dest="bw_d2h")
+    p.add_argument("--bw-from-slow", type=int, default=8, dest="bw_from_slow")
+    p.add_argument("--bw-to-slow", type=int, default=8, dest="bw_to_slow")
     p.add_argument("--sweep", action="store_true")
     args = p.parse_args()
     if args.sweep:
-        sweep(args.bw_h2d, args.bw_d2h)
+        sweep(args.bw_from_slow, args.bw_to_slow)
     else:
-        print_one(args.L, args.cap, args.window, args.bw_h2d, args.bw_d2h)
+        print_one(args.L, args.cap, args.window, args.bw_from_slow, args.bw_to_slow)
     return 0
 
 

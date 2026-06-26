@@ -1,7 +1,7 @@
-"""Event-driven simulator with compute + H→D + D→H streams.
+"""Event-driven simulator with compute + from-slow + to-slow streams.
 
 Three resources, each a single-server FIFO queue. Compute tasks may stall waiting
-for inputs to become device-live or for device capacity to free up. Transfers
+for inputs to become fast-resident or for fast memory capacity to free up. Transfers
 themselves never stall — their preconditions are validated at trigger fire time
 and raise on failure (treated as policy / authoring errors).
 """
@@ -28,7 +28,7 @@ from dataflow_sim.core.schema import (
     TransferDirection,
 )
 
-COMPUTE_INPUT_LOC: Location = "device"
+COMPUTE_INPUT_LOC: Location = "fast"
 INF = sys.maxsize
 
 
@@ -49,7 +49,7 @@ PoolKey = tuple[str, Location]
 class _InFlight:
     obj_id: str
     direction: TransferDirection
-    src_size: int  # bytes freed on device at completion (d2h only)
+    src_size: int  # bytes freed on compute at completion (to_slow only)
     start_t: int
     end_t: int
 
@@ -60,10 +60,10 @@ class _Queued:
     direction: TransferDirection
     src_size: int
     runtime: int
-    # Destination-object type, used to instantiate the device entry at h2d
-    # start (h2d allocation is deferred — pending h2d transfers consume no
-    # device bytes until they actually begin on the stream). None for d2h
-    # (the device entry already exists in pending_outbound state).
+    # Destination-object type, used to instantiate the fast-memory entry at from_slow
+    # start (from_slow allocation is deferred — pending from_slow transfers consume no
+    # fast bytes until they actually begin on the stream). None for to_slow
+    # (the fast entry already exists in pending_outbound state).
     dst_type: ObjectType | None = None
 
 
@@ -80,7 +80,7 @@ def _precompute_task_starts(chain: TaskChain) -> dict[str, int]:
     return starts
 
 
-def _device_memory_bands(pool: dict[PoolKey, _PoolEntry]) -> dict[str, int]:
+def _fast_memory_bands(pool: dict[PoolKey, _PoolEntry]) -> dict[str, int]:
     bands = {
         "weight": 0,
         "activation": 0,
@@ -92,7 +92,7 @@ def _device_memory_bands(pool: dict[PoolKey, _PoolEntry]) -> dict[str, int]:
         "pending_outbound": 0,
     }
     for (_oid, loc), entry in pool.items():
-        if loc != "device":
+        if loc != COMPUTE_INPUT_LOC:
             continue
         if entry.state in ("pending_inbound", "inbound"):
             band = "inbound"
@@ -156,7 +156,7 @@ def run(
     Set ``snapshots=False`` for policy scoring: the simulator still validates
     runtime behavior and returns task/transfer intervals, but skips event
     snapshots and reference streams. Set ``memory_trace=True`` to retain a
-    compact device-memory plot trace without full snapshots.
+    compact fast-memory plot trace without full snapshots.
 
     Set ``validate=False`` to skip the static prepass — useful for tests that
     deliberately exercise runtime error paths or for benchmarking the inner
@@ -202,12 +202,12 @@ def _run_impl(
     memory_points: list[MemoryTracePoint] = []
 
     # Stream state — each may be idle (None) or have a single in-flight transfer.
-    in_flight: dict[TransferDirection, _InFlight | None] = {"h2d": None, "d2h": None}
-    queue: dict[TransferDirection, list[_Queued]] = {"h2d": [], "d2h": []}
+    in_flight: dict[TransferDirection, _InFlight | None] = {"from_slow": None, "to_slow": None}
+    queue: dict[TransferDirection, list[_Queued]] = {"from_slow": [], "to_slow": []}
     compute_busy_until = 0
-    # Prefetches waiting for their host source to become live (because a d2h
+    # Prefetches waiting for their backing source to become live (because a to_slow
     # is still writing it). Keyed by the source obj_id; activated when the
-    # corresponding d2h completes inside `complete("d2h", ...)`.
+    # corresponding to_slow completes inside `complete("to_slow", ...)`.
     deferred_prefetches: dict[str, list[_Queued]] = {}
     # Per-(direction, obj_id) instance counter so re-prefetches/re-offloads
     # of the same object produce DISTINCT TaskInterval.task_ids — the UI
@@ -216,7 +216,7 @@ def _run_impl(
     transfer_seq: dict[tuple[TransferDirection, str], int] = {}
 
     # --- initial memory ---
-    initial_alloc = {"host": 0, "device": 0}
+    initial_alloc = {"backing": 0, COMPUTE_INPUT_LOC: 0}
     for obj in chain.initial_memory:
         key: PoolKey = (obj.id, obj.location)
         if key in pool:
@@ -224,10 +224,10 @@ def _run_impl(
         pool[key] = _PoolEntry(size=obj.size, state="live", location=obj.location, type=obj.type)
         initial_alloc[obj.location] += obj.size
     _check_initial_capacity(chain, initial_alloc)
-    peak_device_bytes = initial_alloc["device"]
+    peak_fast_memory_bytes = initial_alloc["fast"]
     # Running per-location byte totals, kept in sync at every pool add/del so
     # capacity checks and peak tracking are O(1) instead of summing the pool.
-    loc_total = {"host": initial_alloc["host"], "device": initial_alloc["device"]}
+    loc_total = {"backing": initial_alloc["backing"], COMPUTE_INPUT_LOC: initial_alloc[COMPUTE_INPUT_LOC]}
 
     # Reference-stream timestamps are only needed for UI-grade snapshots.
     ref_starts = (
@@ -243,18 +243,18 @@ def _run_impl(
             return
         point = MemoryTracePoint(
             t=t,
-            device_bytes_by_band=_device_memory_bands(pool),
+            fast_bytes_by_band=_fast_memory_bands(pool),
         )
         if (
             memory_points
             and memory_points[-1].t == point.t
-            and memory_points[-1].device_bytes_by_band == point.device_bytes_by_band
+            and memory_points[-1].fast_bytes_by_band == point.fast_bytes_by_band
         ):
             return
         memory_points.append(point)
 
     def loc_free(loc: Location) -> int:
-        cap = chain.device_capacity if loc == "device" else chain.host_capacity
+        cap = chain.fast_memory_capacity if loc == "fast" else chain.backing_memory_capacity
         if cap is None:
             return INF
         return cap - loc_total[loc]
@@ -262,7 +262,7 @@ def _run_impl(
     def transfer_runtime(direction: TransferDirection, size: int, override: int | None) -> int:
         if override is not None:
             return max(int(override), 0)
-        bw = chain.bandwidth_h2d if direction == "h2d" else chain.bandwidth_d2h
+        bw = chain.bandwidth_from_slow if direction == "from_slow" else chain.bandwidth_to_slow
         if bw is None:
             raise ValueError(
                 f"transfer ({direction}) needs bandwidth_{direction} set on TaskChain "
@@ -292,8 +292,8 @@ def _run_impl(
         active: ActiveTask | None = None,
         **kwargs,
     ) -> None:
-        nonlocal peak_device_bytes
-        peak_device_bytes = max(peak_device_bytes, loc_total["device"])
+        nonlocal peak_fast_memory_bytes
+        peak_fast_memory_bytes = max(peak_fast_memory_bytes, loc_total["fast"])
         emit_memory_trace(t)
         if not snapshots:
             return
@@ -318,8 +318,8 @@ def _run_impl(
             return
         tx = queue[direction][0]  # peek (don't pop yet)
 
-        dst_loc: Location = "device" if direction == "h2d" else "host"
-        dst_cap = chain.device_capacity if dst_loc == "device" else chain.host_capacity
+        dst_loc: Location = "fast" if direction == "from_slow" else "backing"
+        dst_cap = chain.fast_memory_capacity if dst_loc == "fast" else chain.backing_memory_capacity
         existing_dst = pool.get((tx.obj_id, dst_loc))
         # Capacity check at start time. If overwriting an existing entry of
         # the same size, those bytes are already counted — don't double-count.
@@ -331,31 +331,31 @@ def _run_impl(
 
         queue[direction].pop(0)
 
-        # Create / update destination entry. Source state flips here for d2h
+        # Create / update destination entry. Source state flips here for to_slow
         # (was pending_outbound, becomes outbound).
-        if direction == "h2d":
+        if direction == "from_slow":
             if existing_dst is None:
-                pool[(tx.obj_id, "device")] = _PoolEntry(
+                pool[(tx.obj_id, COMPUTE_INPUT_LOC)] = _PoolEntry(
                     size=tx.src_size, state="inbound",
-                    location="device", type=tx.dst_type or "other",
+                    location="fast", type=tx.dst_type or "other",
                 )
-                loc_total["device"] += tx.src_size
+                loc_total["fast"] += tx.src_size
             else:
                 existing_dst.state = "inbound"
-        else:  # d2h
-            pool[(tx.obj_id, "device")].state = "outbound"
+        else:  # to_slow
+            pool[(tx.obj_id, COMPUTE_INPUT_LOC)].state = "outbound"
             if existing_dst is None:
-                pool[(tx.obj_id, "host")] = _PoolEntry(
+                pool[(tx.obj_id, "backing")] = _PoolEntry(
                     size=tx.src_size, state="inbound",
-                    location="host", type=tx.dst_type or "other",
+                    location="backing", type=tx.dst_type or "other",
                 )
-                loc_total["host"] += tx.src_size
+                loc_total["backing"] += tx.src_size
             else:
                 if existing_dst.size != tx.src_size:
                     raise ValueError(
-                        f"d2h overwrite size mismatch for {tx.obj_id!r}: "
-                        f"existing host entry {existing_dst.size} bytes vs "
-                        f"device source {tx.src_size} bytes"
+                        f"to_slow overwrite size mismatch for {tx.obj_id!r}: "
+                        f"existing backing entry {existing_dst.size} bytes vs "
+                        f"fast-memory source {tx.src_size} bytes"
                     )
                 existing_dst.state = "inbound"
 
@@ -369,7 +369,7 @@ def _run_impl(
         seq_key = (direction, tx.obj_id)
         seq = transfer_seq.get(seq_key, 0)
         transfer_seq[seq_key] = seq + 1
-        # First instance keeps the bare "h2d:obj" id; subsequent ones get
+        # First instance keeps the bare "from_slow:obj" id; subsequent ones get
         # a "#N" suffix so timeline bars don't collide on React keys. The
         # UI's displayLabel strips the suffix when rendering the bar text.
         task_id = (
@@ -396,12 +396,12 @@ def _run_impl(
         ifl = in_flight[direction]
         assert ifl is not None
         obj_id = ifl.obj_id
-        if direction == "h2d":
-            pool[(obj_id, "device")].state = "live"
-        else:  # d2h: free device source, host dest becomes live
-            loc_total["device"] -= pool[(obj_id, "device")].size
-            del pool[(obj_id, "device")]
-            pool[(obj_id, "host")].state = "live"
+        if direction == "from_slow":
+            pool[(obj_id, COMPUTE_INPUT_LOC)].state = "live"
+        else:  # to_slow: free fast-memory source, backing dest becomes live
+            loc_total[COMPUTE_INPUT_LOC] -= pool[(obj_id, COMPUTE_INPUT_LOC)].size
+            del pool[(obj_id, COMPUTE_INPUT_LOC)]
+            pool[(obj_id, "backing")].state = "live"
         in_flight[direction] = None
         emit(
             "transfer_end",
@@ -411,88 +411,88 @@ def _run_impl(
             transfer_direction=direction,
         )
         # Activate any prefetches that were waiting on this source becoming
-        # live. Device entry was just deleted (above); we just append to the
-        # h2d queue — destination allocation + cap check happens at try_start.
-        if direction == "d2h":
+        # live. Compute entry was just deleted (above); we just append to the
+        # from_slow queue — destination allocation + cap check happens at try_start.
+        if direction == "to_slow":
             waiters = deferred_prefetches.pop(obj_id, [])
             for tx in waiters:
-                queue["h2d"].append(tx)
+                queue["from_slow"].append(tx)
                 emit(
                     "transfer_enqueue",
                     t,
                     snap_idx,
                     transfer_obj=tx.obj_id,
-                    transfer_direction="h2d",
+                    transfer_direction="from_slow",
                 )
 
     def advance(target_t: int, snap_idx: int) -> None:
         """Process any transfer completions with end_t <= target_t (in time order)."""
         while True:
-            h2d_end = in_flight["h2d"].end_t if in_flight["h2d"] else INF
-            d2h_end = in_flight["d2h"].end_t if in_flight["d2h"] else INF
-            next_end = min(h2d_end, d2h_end)
+            from_slow_end = in_flight["from_slow"].end_t if in_flight["from_slow"] else INF
+            to_slow_end = in_flight["to_slow"].end_t if in_flight["to_slow"] else INF
+            next_end = min(from_slow_end, to_slow_end)
             if next_end > target_t:
                 break
-            # tie-breaker: process h2d before d2h if equal
-            if h2d_end <= d2h_end:
-                complete("h2d", h2d_end, snap_idx)
-                try_start("h2d", h2d_end, snap_idx)
+            # tie-breaker: process from_slow before to_slow if equal
+            if from_slow_end <= to_slow_end:
+                complete("from_slow", from_slow_end, snap_idx)
+                try_start("from_slow", from_slow_end, snap_idx)
             else:
-                complete("d2h", d2h_end, snap_idx)
-                try_start("d2h", d2h_end, snap_idx)
-                # A d2h completion may have unblocked a deferred prefetch on h2d.
-                try_start("h2d", d2h_end, snap_idx)
+                complete("to_slow", to_slow_end, snap_idx)
+                try_start("to_slow", to_slow_end, snap_idx)
+                # A to_slow completion may have unblocked a deferred prefetch on from_slow.
+                try_start("from_slow", to_slow_end, snap_idx)
 
     def _deferred_prefetch_ready_t(inp: str, now: int) -> int:
         """When will the deferred prefetch for `inp` complete? Computes
-        `d2h_end → h2d_start (= max(d2h_end, h2d_busy_until)) → h2d_end`."""
+        `to_slow_end → from_slow_start (= max(to_slow_end, from_slow_busy_until)) → from_slow_end`."""
         waiters = deferred_prefetches.get(inp)
         if not waiters:
             raise RuntimeError(
                 f"inconsistent state: no deferred prefetch for {inp!r}"
             )
-        d2h_end = None
-        for obj_id, _s, end, _sz in predict_schedule("d2h", now):
+        to_slow_end = None
+        for obj_id, _s, end, _sz in predict_schedule("to_slow", now):
             if obj_id == inp:
-                d2h_end = end
+                to_slow_end = end
                 break
-        if d2h_end is None:
+        if to_slow_end is None:
             raise RuntimeError(
                 f"inconsistent state: input {inp!r} has a deferred prefetch "
-                f"but no d2h is scheduled to make its source live"
+                f"but no to_slow is scheduled to make its source live"
             )
-        # h2d availability at d2h_end (use the latest end of currently
-        # scheduled h2d transfers as a lower bound for stream-busy).
-        h2d_sched = predict_schedule("h2d", now)
-        h2d_busy_until = max((end for _, _, end, _ in h2d_sched), default=now)
-        h2d_start = max(d2h_end, h2d_busy_until)
-        return h2d_start + waiters[0].runtime
+        # from_slow availability at to_slow_end (use the latest end of currently
+        # scheduled from_slow transfers as a lower bound for stream-busy).
+        from_slow_sched = predict_schedule("from_slow", now)
+        from_slow_busy_until = max((end for _, _, end, _ in from_slow_sched), default=now)
+        from_slow_start = max(to_slow_end, from_slow_busy_until)
+        return from_slow_start + waiters[0].runtime
 
     def input_ready_t(inp: str, now: int) -> int:
-        entry = pool.get((inp, "device"))
+        entry = pool.get((inp, COMPUTE_INPUT_LOC))
         if entry is None:
-            # No device entry. Either: (a) a deferred prefetch is pending,
-            # (b) a normal prefetch is queued but hasn't started yet (device
+            # No fast-memory entry. Either: (a) a deferred prefetch is pending,
+            # (b) a normal prefetch is queued but hasn't started yet (fast-memory
             # entry creation is now deferred to try_start), or (c) input
             # isn't scheduled at all.
             if inp in deferred_prefetches:
                 return _deferred_prefetch_ready_t(inp, now)
-            for obj_id, _start, end, _size in predict_schedule("h2d", now):
+            for obj_id, _start, end, _size in predict_schedule("from_slow", now):
                 if obj_id == inp:
                     return end
-            if (inp, "host") in pool:
+            if (inp, "backing") in pool:
                 raise ValueError(
-                    f"input {inp!r} is on host only (no device copy and no scheduled prefetch)"
+                    f"input {inp!r} is on backing only (no fast copy and no scheduled prefetch)"
                 )
             raise ValueError(f"input {inp!r} is not present in pool")
         if entry.state == "live":
             return now
         if entry.state == "inbound":
-            for obj_id, _start, end, _size in predict_schedule("h2d", now):
+            for obj_id, _start, end, _size in predict_schedule("from_slow", now):
                 if obj_id == inp:
                     return end
             raise RuntimeError(
-                f"inconsistent state: input {inp!r} state={entry.state} but no scheduled h2d found"
+                f"inconsistent state: input {inp!r} state={entry.state} but no scheduled from_slow found"
             )
         if entry.state in ("pending_outbound", "outbound"):
             # An offload is in flight. If a prefetch is queued to bring it
@@ -507,21 +507,21 @@ def _run_impl(
             raise ValueError(f"input {inp!r} is reserved by another task (unexpected mid-chain)")
         raise ValueError(f"input {inp!r} has unknown state {entry.state!r}")
 
-    def device_outputs_ready_t(needed: int, now: int, task_id: str) -> int:
-        if chain.device_capacity is None:
+    def compute_outputs_ready_t(needed: int, now: int, task_id: str) -> int:
+        if chain.fast_memory_capacity is None:
             return now
-        free = loc_free("device")
+        free = loc_free(COMPUTE_INPUT_LOC)
         if free >= needed:
             return now
-        # walk through scheduled d2h completions, accumulating freed bytes
-        d2h_schedule = sorted(predict_schedule("d2h", now), key=lambda x: x[2])
-        for _obj_id, _start, end, src_size in d2h_schedule:
+        # walk through scheduled to_slow completions, accumulating freed bytes
+        to_slow_schedule = sorted(predict_schedule("to_slow", now), key=lambda x: x[2])
+        for _obj_id, _start, end, src_size in to_slow_schedule:
             free += src_size
             if free >= needed:
                 return end
         raise ValueError(
-            f"task {task_id!r} cannot satisfy device memory need of {needed} bytes "
-            f"(current free + all scheduled offloads = {free}, capacity={chain.device_capacity})"
+            f"task {task_id!r} cannot satisfy fast memory need of {needed} bytes "
+            f"(current free + all scheduled offloads = {free}, capacity={chain.fast_memory_capacity})"
         )
 
     # ---------- main loop ----------
@@ -532,21 +532,21 @@ def _run_impl(
         readiness_probe_t = target_start
         for inp in task.inputs:
             target_start = max(target_start, input_ready_t(inp, readiness_probe_t))
-        device_outputs_size = sum(out.size for out in task.outputs if out.location == "device")
-        if device_outputs_size > 0:
+        compute_outputs_size = sum(out.size for out in task.outputs if out.location == "fast")
+        if compute_outputs_size > 0:
             target_start = max(
                 target_start,
-                device_outputs_ready_t(device_outputs_size, readiness_probe_t, task.id),
+                compute_outputs_ready_t(compute_outputs_size, readiness_probe_t, task.id),
             )
 
         # 2. advance time to target_start (emit any transfer events that complete in [now, target_start])
         advance(target_start, i)
 
         # 2b. After advance, re-verify the task can actually run: every input
-        # must be live on device AND the device must have room for outputs.
-        # `predict_schedule` (used by input_ready_t / device_outputs_ready_t)
+        # must be live in fast memory AND fast memory must have room for outputs.
+        # `predict_schedule` (used by input_ready_t / compute_outputs_ready_t)
         # assumes queued transfers run back-to-back ignoring capacity, but a
-        # queued h2d head can be BLOCKED until a d2h completion frees device
+            # queued from_slow head can be BLOCKED until a to_slow completion frees fast
         # bytes. When that happens the optimistic prediction is too early —
         # drain in-flight transfers one at a time until the preconditions
         # actually hold.
@@ -555,8 +555,8 @@ def _run_impl(
                 e = pool.get((inp, COMPUTE_INPUT_LOC))
                 if e is None or e.state != "live":
                     return False
-            if device_outputs_size > 0 and chain.device_capacity is not None:
-                if loc_total["device"] + device_outputs_size > chain.device_capacity:
+            if compute_outputs_size > 0 and chain.fast_memory_capacity is not None:
+                if loc_total["fast"] + compute_outputs_size > chain.fast_memory_capacity:
                     return False
             return True
 
@@ -565,11 +565,11 @@ def _run_impl(
             # (advance only fires try_start on completions; standalone calls
             # here catch the case where memory was released but no in-flight
             # transfer just ended).
-            try_start("h2d", target_start, i)
-            try_start("d2h", target_start, i)
-            h2d_end = in_flight["h2d"].end_t if in_flight["h2d"] else INF
-            d2h_end = in_flight["d2h"].end_t if in_flight["d2h"] else INF
-            next_end = min(h2d_end, d2h_end)
+            try_start("from_slow", target_start, i)
+            try_start("to_slow", target_start, i)
+            from_slow_end = in_flight["from_slow"].end_t if in_flight["from_slow"] else INF
+            to_slow_end = in_flight["to_slow"].end_t if in_flight["to_slow"] else INF
+            next_end = min(from_slow_end, to_slow_end)
             if next_end == INF:
                 missing_inputs = [
                     inp for inp in task.inputs
@@ -578,13 +578,13 @@ def _run_impl(
                 ]
                 msg = []
                 if missing_inputs:
-                    msg.append(f"inputs {missing_inputs} not live on device")
-                if device_outputs_size > 0 and chain.device_capacity is not None:
-                    used = loc_total["device"]
-                    if used + device_outputs_size > chain.device_capacity:
+                    msg.append(f"inputs {missing_inputs} not live in fast memory")
+                if compute_outputs_size > 0 and chain.fast_memory_capacity is not None:
+                    used = loc_total["fast"]
+                    if used + compute_outputs_size > chain.fast_memory_capacity:
                         msg.append(
-                            f"device {used}+{device_outputs_size} bytes > cap "
-                            f"{chain.device_capacity}, no offloads in flight"
+                            f"fast memory {used}+{compute_outputs_size} bytes > cap "
+                            f"{chain.fast_memory_capacity}, no offloads in flight"
                         )
                 raise ValueError(
                     f"task {task.id!r} deadlocked at t={target_start}: "
@@ -593,12 +593,12 @@ def _run_impl(
             target_start = next_end
             advance(target_start, i)
 
-        # 3. host-output capacity check (no host stall mechanism; raise if insufficient)
-        host_outputs_size = sum(out.size for out in task.outputs if out.location == "host")
-        if chain.host_capacity is not None and loc_total["host"] + host_outputs_size > chain.host_capacity:
+        # 3. backing-output capacity check (no backing stall mechanism; raise if insufficient)
+        backing_outputs_size = sum(out.size for out in task.outputs if out.location == "backing")
+        if chain.backing_memory_capacity is not None and loc_total["backing"] + backing_outputs_size > chain.backing_memory_capacity:
             raise ValueError(
-                f"task {task.id!r} cannot allocate {host_outputs_size} on host: "
-                f"used={loc_total['host']}, capacity={chain.host_capacity}"
+                f"task {task.id!r} cannot allocate {backing_outputs_size} on backing: "
+                f"used={loc_total['backing']}, capacity={chain.backing_memory_capacity}"
             )
 
         # 4. reserve outputs
@@ -614,19 +614,19 @@ def _run_impl(
             )
             loc_total[out.location] += out.size
 
-        # Hard invariant: after reserving outputs, device pool must not
+        # Hard invariant: after reserving outputs, fast memory must not
         # exceed capacity. The drain loop above should have ensured this;
         # this assertion catches any subtle bug in the drain/prediction
-        # logic where a plan slipped past unchecked and over-committed the
-        # device. Without this, the simulator could silently keep running
+            # logic where a plan slipped past unchecked and over-committed
+            # fast memory. Without this, the simulator could silently keep running
         # with pool > cap (subsequent triggers would emit weird errors
         # later, far from the root cause).
-        if chain.device_capacity is not None:
-            used = loc_total["device"]
-            if used > chain.device_capacity:
+        if chain.fast_memory_capacity is not None:
+            used = loc_total["fast"]
+            if used > chain.fast_memory_capacity:
                 raise ValueError(
-                    f"task {task.id!r} over-committed device: pool={used} bytes "
-                    f"exceeds capacity={chain.device_capacity}. This is a plan or "
+                    f"task {task.id!r} over-committed fast memory: pool={used} bytes "
+                    f"exceeds capacity={chain.fast_memory_capacity}. This is a plan or "
                     f"simulator invariant violation — every task must be reachable "
                     f"under cap given the schedule. Plan needs more aggressive "
                     f"offloads or a higher cap."
@@ -654,7 +654,7 @@ def _run_impl(
                 entry = pool.get(release_key)
                 if entry is None:
                     raise ValueError(
-                        f"task {task.id!r} cannot release {obj_id!r}: no device copy in pool"
+                        f"task {task.id!r} cannot release {obj_id!r}: no fast copy in pool"
                     )
                 if entry.state != "live":
                     raise ValueError(
@@ -669,36 +669,36 @@ def _run_impl(
                 object_ids=list(task.releases_after),
             )
 
-        # 9. offloads: validate, mark device pending_outbound, enqueue D→H.
-        # Host destination is DEFERRED to try_start("d2h") — a queued
-        # offload consumes no host bytes until it actually begins on the
-        # stream. For an overwrite (host entry already live, will be updated
-        # by this transfer), the existing host entry stays in place in its
+        # 9. offloads: validate, mark fast memory pending_outbound, enqueue to-slow.
+        # Backing destination is DEFERRED to try_start("to_slow") — a queued
+        # offload consumes no backing bytes until it actually begins on the
+        # stream. For an overwrite (backing entry already live, will be updated
+        # by this transfer), the existing backing entry stays in place in its
         # 'live' state and try_start will flip it to 'inbound'.
         for trig in task.offload_after:
-            src = pool.get((trig.obj_id, "device"))
+            src = pool.get((trig.obj_id, COMPUTE_INPUT_LOC))
             if src is None or src.state != "live":
                 cur = src.state if src else "absent"
                 raise ValueError(
                     f"task {task.id!r} cannot offload {trig.obj_id!r}: "
-                    f"device entry state={cur!r} (must be 'live')"
+                    f"fast entry state={cur!r} (must be 'live')"
                 )
-            existing_host = pool.get((trig.obj_id, "host"))
-            if existing_host is not None:
-                if existing_host.state != "live":
+            existing_backing = pool.get((trig.obj_id, "backing"))
+            if existing_backing is not None:
+                if existing_backing.state != "live":
                     raise ValueError(
                         f"task {task.id!r} cannot offload {trig.obj_id!r}: "
-                        f"existing host entry not 'live' (state={existing_host.state!r})"
+                        f"existing backing entry not 'live' (state={existing_backing.state!r})"
                     )
-                if existing_host.size != src.size:
+                if existing_backing.size != src.size:
                     raise ValueError(
                         f"task {task.id!r} cannot offload {trig.obj_id!r}: "
-                        f"size mismatch (device={src.size}, host={existing_host.size})"
+                        f"size mismatch (fast={src.size}, backing={existing_backing.size})"
                     )
-            rt = transfer_runtime("d2h", src.size, trig.runtime)
+            rt = transfer_runtime("to_slow", src.size, trig.runtime)
             src.state = "pending_outbound"
-            queue["d2h"].append(_Queued(
-                obj_id=trig.obj_id, direction="d2h", src_size=src.size,
+            queue["to_slow"].append(_Queued(
+                obj_id=trig.obj_id, direction="to_slow", src_size=src.size,
                 runtime=rt, dst_type=src.type,
             ))
             emit(
@@ -706,40 +706,40 @@ def _run_impl(
                 end_t,
                 i + 1,
                 transfer_obj=trig.obj_id,
-                transfer_direction="d2h",
+                transfer_direction="to_slow",
             )
 
-        # 10. prefetches: validate. Device destination is DEFERRED to
-        #     try_start("h2d") — a queued prefetch consumes no device bytes
-        #     until it actually begins on the stream. If a d2h for the same
-        #     object is still in flight (device pending_outbound/outbound OR
-        #     host pending_inbound/inbound), DEFER until the d2h completes
-        #     via complete("d2h"). Only truly unrecoverable cases (host
-        #     absent with no scheduled d2h, or device already present) raise.
+        # 10. prefetches: validate. Fast-memory destination is DEFERRED to
+        #     try_start("from_slow") — a queued prefetch consumes no fast bytes
+        #     until it actually begins on the stream. If a to_slow for the same
+        #     object is still in flight (fast pending_outbound/outbound OR
+        #     backing pending_inbound/inbound), DEFER until the to_slow completes
+        #     via complete("to_slow"). Only truly unrecoverable cases (backing
+        #     absent with no scheduled to_slow, or compute already present) raise.
         for trig in task.prefetch_after:
-            src = pool.get((trig.obj_id, "host"))
-            dev = pool.get((trig.obj_id, "device"))
+            src = pool.get((trig.obj_id, "backing"))
+            dev = pool.get((trig.obj_id, COMPUTE_INPUT_LOC))
 
-            # Already on (or coming onto) the device — can't re-prefetch.
+            # Already in (or coming into) fast memory — can't re-prefetch.
             if dev is not None and dev.state in ("live", "inbound"):
                 raise ValueError(
                     f"task {task.id!r} cannot prefetch {trig.obj_id!r}: "
-                    f"device copy already exists (state={dev.state!r})"
+                    f"fast copy already exists (state={dev.state!r})"
                 )
 
-            in_flight_d2h = (
+            in_flight_to_slow = (
                 (dev is not None and dev.state in ("pending_outbound", "outbound"))
                 or (src is not None and src.state in ("pending_inbound", "inbound"))
             )
 
-            if in_flight_d2h:
-                # d2h in flight for this object — defer enqueue until d2h
+            if in_flight_to_slow:
+                # to_slow in flight for this object — defer enqueue until to_slow
                 # completes. dst_type carried so try_start can allocate.
                 dst_type = src.type if src is not None else dev.type  # type: ignore[union-attr]
                 size = src.size if src is not None else dev.size      # type: ignore[union-attr]
-                rt = transfer_runtime("h2d", size, trig.runtime)
+                rt = transfer_runtime("from_slow", size, trig.runtime)
                 deferred_prefetches.setdefault(trig.obj_id, []).append(_Queued(
-                    obj_id=trig.obj_id, direction="h2d",
+                    obj_id=trig.obj_id, direction="from_slow",
                     src_size=size, runtime=rt, dst_type=dst_type,
                 ))
                 emit(
@@ -747,7 +747,7 @@ def _run_impl(
                     end_t,
                     i + 1,
                     transfer_obj=trig.obj_id,
-                    transfer_direction="h2d",
+                    transfer_direction="from_slow",
                 )
                 continue
 
@@ -755,12 +755,12 @@ def _run_impl(
                 state_str = src.state if src is not None else "absent"
                 raise ValueError(
                     f"task {task.id!r} cannot prefetch {trig.obj_id!r}: "
-                    f"no recoverable host source (state={state_str!r})"
+                    f"no recoverable backing source (state={state_str!r})"
                 )
 
-            rt = transfer_runtime("h2d", src.size, trig.runtime)
-            queue["h2d"].append(_Queued(
-                obj_id=trig.obj_id, direction="h2d", src_size=src.size,
+            rt = transfer_runtime("from_slow", src.size, trig.runtime)
+            queue["from_slow"].append(_Queued(
+                obj_id=trig.obj_id, direction="from_slow", src_size=src.size,
                 runtime=rt, dst_type=src.type,
             ))
             emit(
@@ -768,50 +768,50 @@ def _run_impl(
                 end_t,
                 i + 1,
                 transfer_obj=trig.obj_id,
-                transfer_direction="h2d",
+                transfer_direction="from_slow",
             )
 
         # 11. pop queues if streams are idle
-        try_start("h2d", end_t, i + 1)
-        try_start("d2h", end_t, i + 1)
+        try_start("from_slow", end_t, i + 1)
+        try_start("to_slow", end_t, i + 1)
 
     # ---------- final drain ----------
-    while in_flight["h2d"] is not None or in_flight["d2h"] is not None:
-        h2d_end = in_flight["h2d"].end_t if in_flight["h2d"] else INF
-        d2h_end = in_flight["d2h"].end_t if in_flight["d2h"] else INF
-        if h2d_end <= d2h_end:
-            complete("h2d", h2d_end, len(tasks))
-            try_start("h2d", h2d_end, len(tasks))
+    while in_flight["from_slow"] is not None or in_flight["to_slow"] is not None:
+        from_slow_end = in_flight["from_slow"].end_t if in_flight["from_slow"] else INF
+        to_slow_end = in_flight["to_slow"].end_t if in_flight["to_slow"] else INF
+        if from_slow_end <= to_slow_end:
+            complete("from_slow", from_slow_end, len(tasks))
+            try_start("from_slow", from_slow_end, len(tasks))
         else:
-            complete("d2h", d2h_end, len(tasks))
-            try_start("d2h", d2h_end, len(tasks))
-            # d2h completion may unblock deferred h2d prefetches.
-            try_start("h2d", d2h_end, len(tasks))
+            complete("to_slow", to_slow_end, len(tasks))
+            try_start("to_slow", to_slow_end, len(tasks))
+            # to_slow completion may unblock deferred from_slow prefetches.
+            try_start("from_slow", to_slow_end, len(tasks))
 
     # Deadlock check. With destination allocation deferred until transfer
     # start, a queued transfer that never fits its destination would silently
     # vanish from the schedule. Raise a clear error instead.
-    if queue["h2d"] or queue["d2h"] or deferred_prefetches:
-        stuck_h2d = [tx.obj_id for tx in queue["h2d"]]
-        stuck_d2h = [tx.obj_id for tx in queue["d2h"]]
+    if queue["from_slow"] or queue["to_slow"] or deferred_prefetches:
+        stuck_from_slow = [tx.obj_id for tx in queue["from_slow"]]
+        stuck_to_slow = [tx.obj_id for tx in queue["to_slow"]]
         stuck_deferred = sorted(deferred_prefetches.keys())
         raise ValueError(
             f"simulator finished with transfers still queued — destination "
             f"capacity is too tight for them to ever start. "
-            f"h2d queue: {stuck_h2d}, d2h queue: {stuck_d2h}, "
+            f"from_slow queue: {stuck_from_slow}, to_slow queue: {stuck_to_slow}, "
             f"deferred prefetches: {stuck_deferred}"
         )
 
     return EventLog(
         task_intervals=intervals,
         events=events,
-        peak_device_bytes=peak_device_bytes,
+        peak_fast_memory_bytes=peak_fast_memory_bytes,
         memory_trace=memory_points,
     )
 
 
 def _check_initial_capacity(chain: TaskChain, alloc: dict[str, int]) -> None:
-    for loc, cap in (("device", chain.device_capacity), ("host", chain.host_capacity)):
+    for loc, cap in ((COMPUTE_INPUT_LOC, chain.fast_memory_capacity), ("backing", chain.backing_memory_capacity)):
         if cap is None:
             continue
         if alloc[loc] > cap:

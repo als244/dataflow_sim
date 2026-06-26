@@ -64,7 +64,7 @@ class SubOp:
     backward) the actual op does 5× fwd flops while only 4× is non-recompute
     work; the extra 1× is forward-recompute that doesn't contribute to the
     effective-TFLOPS rate. `flops` still drives the math_us calculation
-    (the GPU genuinely executes them), but `effective_flops` is what's
+    (the selected hardware genuinely executes them), but `effective_flops` is what's
     aggregated into the model-wide effective-TFLOPS metric.
 
     `compute_eff` / `mem_eff` are optional per-op efficiency overrides. When
@@ -572,9 +572,9 @@ def time_subop(subop: SubOp, hw: HardwareSpec) -> SubOpTiming:
     """
     eff_flops = subop.effective_flops if subop.effective_flops is not None else subop.flops
     mem_eff = subop.mem_eff if subop.mem_eff is not None else hw.mem_eff
-    # Memory time (always computed; uses gpu_membw × mem_eff).
-    if subop.bytes > 0 and hw.gpu_membw_gbs > 0 and mem_eff > 0:
-        mem_seconds = subop.bytes / (hw.gpu_membw_gbs * 1e9 * mem_eff)
+    # Memory time (always computed; uses fast_memory_bw × mem_eff).
+    if subop.bytes > 0 and hw.fast_memory_bw_gbs > 0 and mem_eff > 0:
+        mem_seconds = subop.bytes / (hw.fast_memory_bw_gbs * 1e9 * mem_eff)
         mem_us_exact = mem_seconds * 1e6
         mem_us = max(1, math.ceil(mem_us_exact))
     else:
@@ -658,14 +658,21 @@ _RECOMPUTE_SKIP_SUBOPS = frozenset({
 })
 
 
+def recompute_subops(spec: TransformerSpec, cfg: TrainingConfig) -> list[SubOp]:
+    """Forward sub-ops needed to reproduce a layer's saved activation."""
+    return [
+        subop for subop in forward_subops(spec, cfg)
+        if subop.name not in _RECOMPUTE_SKIP_SUBOPS
+    ]
+
+
 def layer_recompute_microseconds(spec: TransformerSpec, hw: HardwareSpec,
                                  cfg: TrainingConfig) -> int:
     """Runtime of re-running a layer's forward compute minus the final down
     projection(s), used when the layer's saved activations are recomputed."""
-    return max(1, sum(
-        t.total_us for t in layer_fwd_breakdown(spec, hw, cfg)
-        if t.name not in _RECOMPUTE_SKIP_SUBOPS
-    ))
+    return max(1, sum(t.total_us for t in [
+        time_subop(subop, hw) for subop in recompute_subops(spec, cfg)
+    ]))
 
 
 def layer_bwd_microseconds(spec: TransformerSpec, hw: HardwareSpec,

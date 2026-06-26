@@ -14,7 +14,28 @@ export interface SubOpTimingRow {
   effective_tflops: number | null;
 }
 
+export interface ComputeBlockSummary {
+  key: string;
+  name: string;
+  category: string;
+  instance_count: number;
+  per_instance_runtime_us: number;
+  total_runtime_us: number;
+  per_instance_flops: number;
+  total_flops: number;
+  per_instance_effective_flops: number;
+  total_effective_flops: number;
+  per_instance_bytes: number;
+  total_bytes: number;
+  bound_by: string;
+  subops: SubOpTimingRow[];
+  task_ids: string[];
+  task_labels: string[];
+  metadata?: Record<string, unknown>;
+}
+
 export interface Breakdown {
+  compute_blocks?: ComputeBlockSummary[];
   fwd: SubOpTimingRow[];
   bwd: SubOpTimingRow[];
   head: SubOpTimingRow[];
@@ -24,11 +45,13 @@ export interface Breakdown {
     layer_bwd: number;
     head: number;
     optimizer_step: number;
+    layer_recompute?: number;
   };
 }
 
 interface Props {
   breakdown: Breakdown | null;
+  compact?: boolean;
 }
 
 function fmtFlops(n: number): string {
@@ -67,7 +90,7 @@ function sectionEffectiveTflops(rows: SubOpTimingRow[]): number | null {
   return effFlops / (totalUsExact * 1e6);
 }
 
-function Section({ title, rows, total_us }: { title: string; rows: SubOpTimingRow[]; total_us: number }) {
+function Section({ title, rows, total_us, compact = false }: { title: string; rows: SubOpTimingRow[]; total_us: number; compact?: boolean }) {
   const sectionTflops = sectionEffectiveTflops(rows);
   return (
     <div className="breakdown-section">
@@ -80,28 +103,27 @@ function Section({ title, rows, total_us }: { title: string; rows: SubOpTimingRo
           )}
         </span>
       </div>
-      <table className="breakdown-table">
+      <table className={`breakdown-table${compact ? " breakdown-table-compact" : ""}`}>
         <thead>
           <tr>
             <th>op</th>
-            <th>kind</th>
             <th className="num">flops</th>
-            <th className="num">eff. flops</th>
-            <th className="num">bytes</th>
-            <th className="num">math µs</th>
-            <th className="num">mem µs</th>
+            {!compact && <th className="num">eff. flops</th>}
+            <th className="num">bytes accessed</th>
+            {!compact && <th className="num">math µs</th>}
+            {!compact && <th className="num">mem µs</th>}
             <th className="num">time µs</th>
             <th>bound by</th>
-            <th className="num">eff. TFLOPS</th>
-            <th className="num">% of layer</th>
+            {!compact && <th className="num">eff. TFLOPS</th>}
+            {!compact && <th className="num">% of layer</th>}
           </tr>
         </thead>
         <tbody>
           {rows.map((r, i) => {
             const totalCount = r.count > 1 ? <span className="dim"> × {r.count}</span> : null;
-            const isMemKind = r.kind === "memory";
+            const boundBy = r.flops <= 0 ? "memory" : r.bound_by;
             const boundChip = (
-              <span className={`bound-chip bound-${r.bound_by}`}>{r.bound_by}</span>
+              <span className={`bound-chip bound-${boundBy}`}>{boundBy}</span>
             );
             const effFlopsTotal = r.effective_flops * r.count;
             const flopsTotal = r.flops * r.count;
@@ -114,18 +136,15 @@ function Section({ title, rows, total_us }: { title: string; rows: SubOpTimingRo
                   {r.name}
                   {totalCount}
                 </td>
-                <td>
-                  <span className={`kind-chip kind-${r.kind}`}>{r.kind}</span>
-                </td>
                 <td className="num">{fmtFlops(flopsTotal)}</td>
-                <td className={effFlopsClass}>{fmtFlops(effFlopsTotal)}</td>
+                {!compact && <td className={effFlopsClass}>{fmtFlops(effFlopsTotal)}</td>}
                 <td className="num">{fmtBytes(r.bytes * r.count)}</td>
-                <td className="num">{r.math_us === null ? "—" : (r.math_us * r.count).toLocaleString()}</td>
-                <td className="num">{(r.mem_us * r.count).toLocaleString()}</td>
+                {!compact && <td className="num">{r.math_us === null ? "—" : (r.math_us * r.count).toLocaleString()}</td>}
+                {!compact && <td className="num">{(r.mem_us * r.count).toLocaleString()}</td>}
                 <td className="num">{r.total_us.toLocaleString()}</td>
-                <td>{isMemKind ? <span className="dim">—</span> : boundChip}</td>
-                <td className="num">{fmtTflops(r.effective_tflops)}</td>
-                <td className="num">{fmtPct(layerPct)}</td>
+                <td>{boundChip}</td>
+                {!compact && <td className="num">{fmtTflops(r.effective_tflops)}</td>}
+                {!compact && <td className="num">{fmtPct(layerPct)}</td>}
               </tr>
             );
           })}
@@ -135,14 +154,81 @@ function Section({ title, rows, total_us }: { title: string; rows: SubOpTimingRo
   );
 }
 
-export function SubOpBreakdownPanel({ breakdown }: Props) {
+function ComputeBlockBreakdown({ blocks, compact }: { blocks: ComputeBlockSummary[]; compact: boolean }) {
+  const visibleBlocks = blocks.filter((block) =>
+    block.total_runtime_us > 0 || block.subops.some((subop) => subop.total_us > 0),
+  );
+  const totalInstances = visibleBlocks.reduce((sum, block) => sum + block.instance_count, 0);
+  const totalRuntime = visibleBlocks.reduce((sum, block) => sum + block.total_runtime_us, 0);
+  return (
+    <>
+      <div className="panel-header">
+        <h3>Compute Block Breakdown</h3>
+        <span className="dim">
+          {visibleBlocks.length} blocks · {totalInstances.toLocaleString()} instances · {totalRuntime.toLocaleString()} µs
+        </span>
+      </div>
+      <div className="compute-block-list">
+        {visibleBlocks.map((block) => (
+          compact ? (
+            <div key={block.key} className="compute-block-card compute-block-card-compact">
+              <div className="compute-block-summary compute-block-summary-static">
+                <span className="compute-block-name">{block.name}</span>
+                <code>{block.key}</code>
+                <span className={`bound-chip bound-${block.bound_by}`}>{block.bound_by}</span>
+              </div>
+              <div className="compute-block-metrics">
+                <span>{block.instance_count.toLocaleString()} instances</span>
+                <span>{block.per_instance_runtime_us.toLocaleString()} µs each</span>
+                <span>{block.total_runtime_us.toLocaleString()} µs total</span>
+                <span>{fmtBytes(block.total_bytes)} moved/read</span>
+                <span>{fmtFlops(block.total_effective_flops)} effective FLOPs</span>
+              </div>
+            </div>
+          ) : (
+            <details key={block.key} className="compute-block-card">
+              <summary className="compute-block-summary">
+                <span className="compute-block-name">{block.name}</span>
+                <code>{block.key}</code>
+                <span className={`bound-chip bound-${block.bound_by}`}>{block.bound_by}</span>
+              </summary>
+              <div className="compute-block-metrics">
+                <span>{block.instance_count.toLocaleString()} instances</span>
+                <span>{block.per_instance_runtime_us.toLocaleString()} µs each</span>
+                <span>{block.total_runtime_us.toLocaleString()} µs total</span>
+                <span>{fmtBytes(block.total_bytes)} moved/read</span>
+                <span>{fmtFlops(block.total_effective_flops)} effective FLOPs</span>
+              </div>
+              <Section
+                title="Sub-ops"
+                rows={block.subops}
+                total_us={block.per_instance_runtime_us}
+                compact={compact}
+              />
+            </details>
+          )
+        ))}
+      </div>
+    </>
+  );
+}
+
+export function SubOpBreakdownPanel({ breakdown, compact = false }: Props) {
   if (!breakdown) {
     return (
       <div className="panel breakdown-panel">
         <div className="panel-header">
-          <h3>Op Breakdown</h3>
+          <h3>Compute Block Breakdown</h3>
         </div>
-        <p className="dim">no breakdown — submit to see live timings.</p>
+        <p className="dim">Create a workload to see resolved block timings.</p>
+      </div>
+    );
+  }
+  const computeBlocks = breakdown.compute_blocks ?? [];
+  if (computeBlocks.length > 0) {
+    return (
+      <div className="panel breakdown-panel">
+        <ComputeBlockBreakdown blocks={computeBlocks} compact={compact} />
       </div>
     );
   }
@@ -166,11 +252,11 @@ export function SubOpBreakdownPanel({ breakdown }: Props) {
           )}
         </span>
       </div>
-      <Section title="forward (per layer)" rows={breakdown.fwd} total_us={breakdown.totals_us.layer_fwd} />
-      <Section title="head" rows={breakdown.head} total_us={breakdown.totals_us.head} />
-      <Section title="backward (per layer)" rows={breakdown.bwd} total_us={breakdown.totals_us.layer_bwd} />
+      <Section title="Forward (per layer)" rows={breakdown.fwd} total_us={breakdown.totals_us.layer_fwd} compact={compact} />
+      <Section title="Head" rows={breakdown.head} total_us={breakdown.totals_us.head} compact={compact} />
+      <Section title="Backward (per layer)" rows={breakdown.bwd} total_us={breakdown.totals_us.layer_bwd} compact={compact} />
       {optimizerRows.length > 0 && (
-        <Section title="optimizer step (per layer)" rows={optimizerRows} total_us={optimizerStepUs} />
+        <Section title="Optimizer Step (per layer)" rows={optimizerRows} total_us={optimizerStepUs} compact={compact} />
       )}
     </div>
   );

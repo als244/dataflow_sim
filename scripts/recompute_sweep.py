@@ -58,7 +58,7 @@ FIELDS = [
     "tasks", "ideal", "none", "all", "half", "greedy", "best",
     "gap_vs_ideal_pct", "greedy_recomputed", "greedy_evals", "greedy_wall_s",
     "stall_pct", "input_wait_pct", "capacity_wait_pct",
-    "h2d_busy_pct", "d2h_busy_pct", "w_blame_pct", "a_blame_pct", "errors",
+    "from_slow_busy_pct", "to_slow_busy_pct", "w_blame_pct", "a_blame_pct", "errors",
 ]
 
 
@@ -110,7 +110,7 @@ def _run_one(payload):
 
     def build(levels, _cap=cap):
         w = build_transformer_training_workload(spec, hw, cfg, recompute=levels)
-        return replace(w.chain, device_capacity=_cap)
+        return replace(w.chain, fast_memory_capacity=_cap)
 
     t0 = time.perf_counter()
     try:
@@ -144,8 +144,8 @@ def _run_one(payload):
         row["stall_pct"] = round(rep.stall_us / mk * 100, 1)
         row["input_wait_pct"] = round(iw / mk * 100, 1)
         row["capacity_wait_pct"] = round(rep.capacity_wait_us / mk * 100, 1)
-        row["h2d_busy_pct"] = round(rep.stream_busy_us["h2d"] / mk * 100, 1)
-        row["d2h_busy_pct"] = round(rep.stream_busy_us["d2h"] / mk * 100, 1)
+        row["from_slow_busy_pct"] = round(rep.stream_busy_us["from_slow"] / mk * 100, 1)
+        row["to_slow_busy_pct"] = round(rep.stream_busy_us["to_slow"] / mk * 100, 1)
         row["w_blame_pct"] = round(w_blame / max(1, iw) * 100, 1)
         row["a_blame_pct"] = round(a_blame / max(1, iw) * 100, 1)
         if row.get("ideal"):

@@ -25,17 +25,17 @@ from conftest import build_bare_training_chain
 def _tiny_chain() -> TaskChain:
     return TaskChain(
         initial_memory=[
-            Object(id="h0", size=10, location="host", type="weight"),
-            Object(id="h1", size=20, location="host", type="weight"),
+            Object(id="h0", size=10, location="backing", type="weight"),
+            Object(id="h1", size=20, location="backing", type="weight"),
         ],
         tasks=[
             Task(id="t0", inputs=["h0"], outputs=[OutputAlloc(id="o0", size=5)], runtime=10),
             Task(id="t1", inputs=["h1"], outputs=[], runtime=10),
             Task(id="t2", inputs=["o0"], outputs=[], runtime=10),
         ],
-        device_capacity=None,
-        bandwidth_h2d=10,
-        bandwidth_d2h=10,
+        fast_memory_capacity=None,
+        bandwidth_from_slow=10,
+        bandwidth_to_slow=10,
     )
 
 
@@ -61,15 +61,15 @@ def test_min_plan_output_merges_with_downstream_input():
 
 def test_min_plan_separates_non_adjacent_uses():
     bare = TaskChain(
-        initial_memory=[Object(id="x", size=10, location="host", type="weight")],
+        initial_memory=[Object(id="x", size=10, location="backing", type="weight")],
         tasks=[
             Task(id="t0", inputs=["x"], outputs=[], runtime=1),
             Task(id="t1", inputs=[], outputs=[], runtime=1),
             Task(id="t2", inputs=["x"], outputs=[], runtime=1),
         ],
-        device_capacity=None,
-        bandwidth_h2d=10,
-        bandwidth_d2h=10,
+        fast_memory_capacity=None,
+        bandwidth_from_slow=10,
+        bandwidth_to_slow=10,
     )
     facts = _build_facts(bare)
     plan = _min_plan(facts)
@@ -80,13 +80,13 @@ def test_min_plan_separates_non_adjacent_uses():
 # MAX plan
 # ============================================================================
 
-def test_max_plan_pre_places_host_init_with_a_minus_1():
-    """MAX should pre-place every host-init object — a = -1 for its first interval."""
+def test_max_plan_pre_places_backing_init_with_a_minus_1():
+    """MAX should pre-place every backing-init object — a = -1 for its first interval."""
     bare = _tiny_chain()
     facts = _build_facts(bare)
     plan = _max_plan(facts)
     for oid in ("h0", "h1"):
-        assert plan.intervals[oid][0].a == -1, f"host-init {oid} should pre-place"
+        assert plan.intervals[oid][0].a == -1, f"backing-init {oid} should pre-place"
 
 
 def test_max_plan_releases_after_last_use():
@@ -103,7 +103,7 @@ def test_max_plan_releases_after_last_use():
 
 
 def test_max_plan_produced_starts_at_producer():
-    """For produced objects (no host source), MAX's `a` = producer task index."""
+    """For produced objects (no backing source), MAX's `a` = producer task index."""
     bare = _tiny_chain()
     facts = _build_facts(bare)
     plan = _max_plan(facts)
@@ -112,19 +112,19 @@ def test_max_plan_produced_starts_at_producer():
 
 
 def test_max_plan_mutated_grad_exits_at_mutator():
-    """For host-init mutated only at task k (e.g., dW_i at b_i): MAX interval [-1, k).
+    """For backing-init mutated only at task k (e.g., dW_i at b_i): MAX interval [-1, k).
     This makes derive_schedule fire the offload at task k, the mutation task —
     the 'offload ASAP after mutation' behavior the user asked for.
     """
     bare = TaskChain(
-        initial_memory=[Object(id="dW", size=10, location="host", type="gradient")],
+        initial_memory=[Object(id="dW", size=10, location="backing", type="gradient")],
         tasks=[
             Task(id="t0", inputs=[], outputs=[OutputAlloc(id="x", size=5)], runtime=1),
             Task(id="t1", inputs=["x", "dW"], outputs=[], runtime=1, mutates_inputs=["dW"]),
         ],
-        device_capacity=None,
-        bandwidth_h2d=10,
-        bandwidth_d2h=10,
+        fast_memory_capacity=None,
+        bandwidth_from_slow=10,
+        bandwidth_to_slow=10,
     )
     facts = _build_facts(bare)
     plan = _max_plan(facts)
@@ -145,19 +145,19 @@ def test_respects_static_cap_passes_with_unlimited():
 
 def test_respects_static_cap_includes_next_outputs_reservation():
     bare = TaskChain(
-        initial_memory=[Object(id="h", size=10, location="host", type="weight")],
+        initial_memory=[Object(id="h", size=10, location="backing", type="weight")],
         tasks=[
             Task(id="t0", inputs=["h"], outputs=[OutputAlloc(id="o", size=5)], runtime=1),
         ],
-        device_capacity=None,
-        bandwidth_h2d=10, bandwidth_d2h=10,
+        fast_memory_capacity=None,
+        bandwidth_from_slow=10, bandwidth_to_slow=10,
     )
     # MIN: at boundary -1, pool = 10 (h). Task 0 reserves o (5). Need cap >= 15.
-    bare_14 = replace(bare, device_capacity=14)
+    bare_14 = replace(bare, fast_memory_capacity=14)
     facts_14 = _build_facts(bare_14)
     assert _respects_static_cap(_min_plan(facts_14), facts_14) is False
 
-    bare_15 = replace(bare, device_capacity=15)
+    bare_15 = replace(bare, fast_memory_capacity=15)
     facts_15 = _build_facts(bare_15)
     assert _respects_static_cap(_min_plan(facts_15), facts_15) is True
 
@@ -181,15 +181,15 @@ def test_enumerate_reductions_generates_shrink_for_extended_interval():
 def test_enumerate_reductions_generates_split_for_gappable_interval():
     """For an object with non-forced internal boundaries, split should appear."""
     bare = TaskChain(
-        initial_memory=[Object(id="x", size=10, location="host", type="weight")],
+        initial_memory=[Object(id="x", size=10, location="backing", type="weight")],
         tasks=[
             Task(id="t0", inputs=["x"], outputs=[], runtime=1),
             Task(id="t1", inputs=[], outputs=[], runtime=1),
             Task(id="t2", inputs=[], outputs=[], runtime=1),
             Task(id="t3", inputs=["x"], outputs=[], runtime=1),
         ],
-        device_capacity=None,
-        bandwidth_h2d=10, bandwidth_d2h=10,
+        fast_memory_capacity=None,
+        bandwidth_from_slow=10, bandwidth_to_slow=10,
     )
     facts = _build_facts(bare)
     plan = _max_plan(facts)
@@ -202,7 +202,7 @@ def test_enumerate_reductions_generates_split_for_gappable_interval():
 # Schedule derivation
 # ============================================================================
 
-def test_derive_schedule_pre_places_host_init_with_a_minus_1():
+def test_derive_schedule_pre_places_backing_init_with_a_minus_1():
     bare = _tiny_chain()
     facts = _build_facts(bare)
     plan = Plan(intervals={
@@ -211,11 +211,11 @@ def test_derive_schedule_pre_places_host_init_with_a_minus_1():
         "o0": (Interval(0, 2),),
     })
     ann = _derive_schedule(plan, bare, facts)
-    pre_placed = [o.id for o in ann.initial_memory if o.location == "device"]
+    pre_placed = [o.id for o in ann.initial_memory if o.location == "fast"]
     assert "h0" in pre_placed
 
 
-def test_derive_schedule_emits_prefetch_for_non_pre_placed_host_init():
+def test_derive_schedule_emits_prefetch_for_non_pre_placed_backing_init():
     bare = _tiny_chain()
     facts = _build_facts(bare)
     plan = Plan(intervals={
@@ -228,18 +228,18 @@ def test_derive_schedule_emits_prefetch_for_non_pre_placed_host_init():
     assert "h1" in prefetches_t0
 
 
-def test_derive_schedule_mutated_host_init_offloads_at_mutator():
+def test_derive_schedule_mutated_backing_init_offloads_at_mutator():
     """User's 'offload dW_i ASAP after mutation' requirement.
     For dW mutated at task 1 with MAX interval [-1, 1), offload trigger on task 1.
     """
     bare = TaskChain(
-        initial_memory=[Object(id="dW", size=10, location="host", type="gradient")],
+        initial_memory=[Object(id="dW", size=10, location="backing", type="gradient")],
         tasks=[
             Task(id="t0", inputs=[], outputs=[], runtime=1),
             Task(id="t1", inputs=["dW"], outputs=[], runtime=1, mutates_inputs=["dW"]),
         ],
-        device_capacity=None,
-        bandwidth_h2d=10, bandwidth_d2h=10,
+        fast_memory_capacity=None,
+        bandwidth_from_slow=10, bandwidth_to_slow=10,
     )
     facts = _build_facts(bare)
     plan = _max_plan(facts)
@@ -251,16 +251,16 @@ def test_derive_schedule_mutated_host_init_offloads_at_mutator():
 
 def test_derive_schedule_released_after_last_use():
     """User's 'release W_i after last use' requirement.
-    For a non-mutated host-init last used at task k, release on task k.
+    For a non-mutated backing-init last used at task k, release on task k.
     """
     bare = TaskChain(
-        initial_memory=[Object(id="W", size=10, location="host", type="weight")],
+        initial_memory=[Object(id="W", size=10, location="backing", type="weight")],
         tasks=[
             Task(id="t0", inputs=["W"], outputs=[], runtime=1),
             Task(id="t1", inputs=[], outputs=[], runtime=1),
         ],
-        device_capacity=None,
-        bandwidth_h2d=10, bandwidth_d2h=10,
+        fast_memory_capacity=None,
+        bandwidth_from_slow=10, bandwidth_to_slow=10,
     )
     facts = _build_facts(bare)
     plan = _max_plan(facts)
@@ -290,11 +290,11 @@ def test_score_with_peak_returns_both_values():
 
 def test_infeasible_raises_with_forced_footprint_exceeding_cap():
     bare = TaskChain(
-        initial_memory=[Object(id="big", size=200, location="host", type="weight")],
+        initial_memory=[Object(id="big", size=200, location="backing", type="weight")],
         tasks=[Task(id="t0", inputs=["big"], outputs=[], runtime=1)],
-        device_capacity=100,
-        bandwidth_h2d=10,
-        bandwidth_d2h=10,
+        fast_memory_capacity=100,
+        bandwidth_from_slow=10,
+        bandwidth_to_slow=10,
     )
     with pytest.raises(ValueError, match="infeasible"):
         apply_min_grow_policy(bare, time_budget_s=1.0)
@@ -306,7 +306,7 @@ def test_infeasible_raises_with_forced_footprint_exceeding_cap():
 
 def test_end_to_end_unlimited_cap_returns_max_immediately():
     """Unlimited cap → MAX is optimal; min_grow returns it directly without search."""
-    bare = build_bare_training_chain(L=3, bandwidth_h2d=8, bandwidth_d2h=8)
+    bare = build_bare_training_chain(L=3, bandwidth_from_slow=8, bandwidth_to_slow=8)
     ann = apply_min_grow_policy(bare, time_budget_s=5.0)
     log = simulator_run(ann)
     ms = max(iv.end for iv in log.task_intervals)
@@ -315,14 +315,14 @@ def test_end_to_end_unlimited_cap_returns_max_immediately():
 
 
 def test_end_to_end_returns_runnable_chain():
-    bare = build_bare_training_chain(L=2, bandwidth_h2d=8, bandwidth_d2h=8)
+    bare = build_bare_training_chain(L=2, bandwidth_from_slow=8, bandwidth_to_slow=8)
     ann = apply_min_grow_policy(bare, time_budget_s=2.0)
     log = simulator_run(ann)
     assert log.task_intervals
 
 
 def test_bare_invariant_check():
-    bare = build_bare_training_chain(L=2, bandwidth_h2d=8, bandwidth_d2h=8)
+    bare = build_bare_training_chain(L=2, bandwidth_from_slow=8, bandwidth_to_slow=8)
     new_tasks = list(bare.tasks)
     new_tasks[0] = replace(new_tasks[0], releases_after=["something"])
     bad = replace(bare, tasks=new_tasks)
@@ -336,31 +336,31 @@ def test_bare_invariant_check():
 
 def test_smart_prefetch_avoids_zero_runtime_task():
     """Smart prefetch placement walks back past zero-runtime tasks to find
-    a task whose end gives enough lead time for h2d.
+    a task whose end gives enough lead time for from_slow.
     """
     # Chain: t0 (runtime 100) → t1 (runtime 0) → t2 (runtime 100, reads W)
-    # W is host-init; plan needs W resident at boundary 1 (= when t2 reads it).
+    # W is backing-init; plan needs W resident at boundary 1 (= when t2 reads it).
     # MIN-plan interval would be [1, 2). Trigger SHOULD be at task whose end
-    # gives h2d time. h2d takes 10 ticks (size 100 / bw 10).
-    # - Task 1 ends at boundary 1 (= time 100). t2 starts at 100. h2d would
+    # gives from_slow time. from_slow takes 10 ticks (size 100 / bw 10).
+    # - Task 1 ends at boundary 1 (= time 100). t2 starts at 100. from_slow would
     #   start at 100 and need 10 ticks → t2 stalls.
-    # - Task 0 ends at time 100. h2d starts at 100, takes 10, completes at 110.
+    # - Task 0 ends at time 100. from_slow starts at 100, takes 10, completes at 110.
     #   t1 has 0 runtime so t2 starts at 100 too. STILL STALLS.
     # Hmm — for this to test the "walk back past zero runtime" we need more layers.
 
     bare = TaskChain(
-        initial_memory=[Object(id="W", size=100, location="host", type="weight")],
+        initial_memory=[Object(id="W", size=100, location="backing", type="weight")],
         tasks=[
             Task(id="t0", inputs=[], outputs=[OutputAlloc(id="o0", size=10)], runtime=100),
             Task(id="t1", inputs=[], outputs=[], runtime=0),  # zero-runtime
             Task(id="t2", inputs=["W"], outputs=[], runtime=10),
         ],
-        device_capacity=None,  # no cap → MAX is optimal (pre-place W) — different test
-        bandwidth_h2d=10, bandwidth_d2h=10,
+        fast_memory_capacity=None,  # no cap → MAX is optimal (pre-place W) — different test
+        bandwidth_from_slow=10, bandwidth_to_slow=10,
     )
     # With cap=None min_grow returns MAX (pre-place W); not a useful test of trigger placement.
     # Set cap to force shrink.
-    bare = replace(bare, device_capacity=110)  # 100 (W) + 10 (o0 reservation) = 110
+    bare = replace(bare, fast_memory_capacity=110)  # 100 (W) + 10 (o0 reservation) = 110
     ann = apply_min_grow_policy(bare, time_budget_s=2.0)
     # With cap=110, MAX (pre-place W at -1) puts pool at 100 + 10 (next-output) = 110. OK.
     # So min_grow should still pre-place W. Let me just check the chain runs.
@@ -372,13 +372,13 @@ def test_smart_prefetch_returns_int_in_range():
     """Smoke test the _smart_prefetch_task helper directly."""
     from dataflow_sim.policies.min_grow import _smart_prefetch_task
     bare = TaskChain(
-        initial_memory=[Object(id="W", size=10, location="host", type="weight")],
+        initial_memory=[Object(id="W", size=10, location="backing", type="weight")],
         tasks=[
             Task(id="t0", inputs=[], outputs=[], runtime=100),
             Task(id="t1", inputs=[], outputs=[], runtime=0),
             Task(id="t2", inputs=["W"], outputs=[], runtime=10),
         ],
-        device_capacity=None, bandwidth_h2d=10, bandwidth_d2h=10,
+        fast_memory_capacity=None, bandwidth_from_slow=10, bandwidth_to_slow=10,
     )
     facts = _build_facts(bare)
     # tentative starts/ends
@@ -387,7 +387,7 @@ def test_smart_prefetch_returns_int_in_range():
     # interval for W: [1, 2) (= MIN, used at task 2)
     iv = Interval(1, 2)
     fire = _smart_prefetch_task("W", iv, facts, t_start, t_end)
-    # h2d takes 1 tick (10 bytes / 10 bw). Deadline = t_start[2] = 100.
+    # from_slow takes 1 tick (10 bytes / 10 bw). Deadline = t_start[2] = 100.
     # Firing at task 1: t_end[1] + 1 = 101 > 100. Not enough.
     # Firing at task 0: t_end[0] + 1 = 101 > 100. Also not enough!
     # So returns whichever's earliest tried — function should fall back to iv.a or 0.
@@ -404,10 +404,10 @@ def test_analytic_pre_pass_reaches_static_feasibility():
     from dataflow_sim.policies.min_grow import _greedy_shrink_to_static_cap, _max_plan, _static_peak
     bare = TaskChain(
         initial_memory=[
-            Object(id="W_0", size=100, location="host", type="weight"),
-            Object(id="W_1", size=100, location="host", type="weight"),
-            Object(id="W_2", size=100, location="host", type="weight"),
-            Object(id="W_3", size=100, location="host", type="weight"),
+            Object(id="W_0", size=100, location="backing", type="weight"),
+            Object(id="W_1", size=100, location="backing", type="weight"),
+            Object(id="W_2", size=100, location="backing", type="weight"),
+            Object(id="W_3", size=100, location="backing", type="weight"),
         ],
         tasks=[
             Task(id="t0", inputs=["W_0"], outputs=[], runtime=10),
@@ -416,8 +416,8 @@ def test_analytic_pre_pass_reaches_static_feasibility():
             Task(id="t3", inputs=["W_3"], outputs=[], runtime=10),
         ],
         # MAX would pre-place all 4 = 400 bytes. Cap=200 forces 2 evictions.
-        device_capacity=200,
-        bandwidth_h2d=10, bandwidth_d2h=10,
+        fast_memory_capacity=200,
+        bandwidth_from_slow=10, bandwidth_to_slow=10,
     )
     facts = _build_facts(bare)
     max_p = _max_plan(facts)

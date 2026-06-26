@@ -1,6 +1,6 @@
-// Mirrors simulator/src/dataflow_sim/schema.py. Keep field names in sync.
+// Mirrors the JSON shape of dataflow_sim.core.schema.EventLog.
 
-export type Location = "host" | "device";
+export type Location = "backing" | "fast";
 export type ObjectType = "weight" | "activation" | "gradient" | "optimizer" | "other";
 export type MemoryState =
   | "live"
@@ -37,7 +37,7 @@ export interface Snapshot {
   reference_stream: Reference[];
 }
 
-export type TransferDirection = "h2d" | "d2h";
+export type TransferDirection = "from_slow" | "to_slow";
 export type EventKind =
   | "task_start"
   | "task_end"
@@ -57,7 +57,7 @@ export interface SimEvent {
   transfer_direction: TransferDirection | null;
 }
 
-export type Track = "compute" | "h2d" | "d2h";
+export type Track = "compute" | "from_slow" | "to_slow";
 
 export interface TaskInterval {
   task_id: string;
@@ -68,12 +68,12 @@ export interface TaskInterval {
 
 export interface MemoryTracePoint {
   t: number;
-  device_bytes_by_band: Record<string, number>;
+  fast_bytes_by_band: Record<string, number>;
 }
 
 export interface EventLog {
   task_intervals: TaskInterval[];
   events: SimEvent[];
-  peak_device_bytes: number;
+  peak_fast_memory_bytes: number;
   memory_trace: MemoryTracePoint[];
 }

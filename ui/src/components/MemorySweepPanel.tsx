@@ -34,12 +34,22 @@ interface XTick {
   inf: boolean;
 }
 
+interface HoverDatum {
+  x: number;
+  y: number;
+  color: string;
+  seriesLabel: string;
+  budgetLabel: string;
+  valueText: string;
+  secondaryText?: string;
+}
+
 const DEFAULT_STEP_GB = 5;
 const DEFAULT_MIN_GB = 10;
 const DEFAULT_MAX_GB = 80;
 const CHART_W = 520;
-const CHART_H = 260;
-const PLOT = { left: 62, right: 64, top: 30, bottom: 42 };
+const CHART_H = 300;
+const PLOT = { left: 68, right: 70, top: 34, bottom: 58 };
 const PLOT_W = CHART_W - PLOT.left - PLOT.right;
 const PLOT_H = CHART_H - PLOT.top - PLOT.bottom;
 
@@ -71,6 +81,42 @@ function niceMax(value: number, floor: number): number {
   const norm = raw / mag;
   const nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
   return nice * mag;
+}
+
+function niceTickStep(range: number, maxTicks: number): number {
+  const raw = Math.max(range / Math.max(maxTicks - 1, 1), 1e-9);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+  return nice * mag;
+}
+
+function buildFiniteXTicks(min: number, max: number, maxTicks: number): XTick[] {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
+  if (Math.abs(max - min) < 1e-9) {
+    return [{ key: `gb-${min}`, value: min, label: fmtGb(min), inf: false }];
+  }
+  const step = niceTickStep(max - min, maxTicks);
+  const ticks: number[] = [];
+  const push = (value: number) => {
+    const rounded = Number(value.toFixed(6));
+    if (!ticks.some((tick) => Math.abs(tick - rounded) < 1e-6)) {
+      ticks.push(rounded);
+    }
+  };
+  push(min);
+  for (let value = Math.ceil(min / step) * step; value <= max + 1e-9; value += step) {
+    if (value > min + 1e-9 && value < max - 1e-9) push(value);
+  }
+  push(max);
+  return ticks
+    .sort((a, b) => a - b)
+    .map((value) => ({
+      key: `gb-${value}`,
+      value,
+      label: fmtGb(value),
+      inf: false,
+    }));
 }
 
 function buildBudgets(stepGb: number, minGb: number, maxGb: number, includeInf: boolean): (number | null)[] {
@@ -130,12 +176,13 @@ function LineChart({
   secondaryValueLabel?: (v: number) => string;
   secondaryFromPrimary?: (v: number) => number;
 }) {
+  const [hover, setHover] = useState<HoverDatum | null>(null);
   const allValues = series.flatMap((s) => s.values);
   if (allValues.length === 0) {
     return (
       <div className="sweep-chart">
         <div className="sweep-chart-title">{title}</div>
-        <div className="sweep-chart-empty dim">no successful points</div>
+        <div className="sweep-chart-empty dim">No successful points</div>
       </div>
     );
   }
@@ -167,25 +214,38 @@ function LineChart({
     PLOT.top + PLOT_H - (y / Math.max(yMax, 1)) * PLOT_H
   );
 
+  const makeHover = (s: ChartSeries, v: ChartSeries["values"][number]): HoverDatum => {
+    const secondaryValue = (
+      v.point.summary.primary_rate_per_second
+      ?? (secondaryFromPrimary ? secondaryFromPrimary(v.y) : undefined)
+    );
+    return {
+      x: xFor(v.point.budgetGb),
+      y: yFor(v.y),
+      color: s.color,
+      seriesLabel: s.label,
+      budgetLabel: v.point.budgetGb === null ? "Unlimited" : `${fmtGb(v.point.budgetGb)} GB`,
+      valueText: valueLabel(v.y),
+      secondaryText: secondaryLabel && secondaryValueLabel && secondaryValue !== undefined
+        ? `${secondaryLabel}: ${secondaryValueLabel(secondaryValue)}`
+        : undefined,
+    };
+  };
+
   const xTicks: XTick[] = [
-    ...Array.from(
-      new Set(
-        allValues
-          .map((v) => v.point.budgetGb)
-          .filter((v): v is number => v !== null),
-      ),
-    )
-      .sort((a, b) => a - b)
-      .map((value) => ({
-        key: `gb-${value}`,
-        value,
-        label: `${fmtGb(value)}G`,
-        inf: false,
-      })),
-    ...(hasInf ? [{ key: "inf", value: null, label: "inf", inf: true }] : []),
+    ...buildFiniteXTicks(xMin, finiteMax, 6),
+    ...(hasInf ? [{ key: "inf", value: null, label: "Unlimited", inf: true }] : []),
   ];
   const yTicks = Array.from({ length: 5 }, (_, i) => (yMax * i) / 4);
   const axisBreakX = hasInf ? (xFor(finiteMax) + xFor(null)) / 2 : null;
+  const tooltipWidth = 178;
+  const tooltipHeight = hover?.secondaryText ? 72 : 56;
+  const tooltip = hover ? {
+    x: Math.min(Math.max(PLOT.left + 4, hover.x + 12), CHART_W - tooltipWidth - 8),
+    y: Math.min(Math.max(PLOT.top + 4, hover.y - tooltipHeight - 12), CHART_H - PLOT.bottom - tooltipHeight - 4),
+    width: tooltipWidth,
+    height: tooltipHeight,
+  } : null;
 
   return (
     <div className="sweep-chart">
@@ -219,7 +279,7 @@ function LineChart({
         })}
         {xTicks.map((tick) => {
           const x = xFor(tick.value);
-          const labelY = CHART_H - 14;
+          const labelY = CHART_H - 24;
           return (
             <g key={tick.key}>
               <line
@@ -231,9 +291,9 @@ function LineChart({
               />
               {tick.inf && (
                 <rect
-                  x={x - 17}
+                  x={x - 38}
                   y={labelY - 12}
-                  width={34}
+                  width={76}
                   height={17}
                   rx={3}
                   className="sweep-inf-label-bg"
@@ -252,6 +312,9 @@ function LineChart({
         })}
         <line x1={PLOT.left} x2={CHART_W - PLOT.right} y1={PLOT.top + PLOT_H} y2={PLOT.top + PLOT_H} className="sweep-axis" />
         <line x1={PLOT.left} x2={PLOT.left} y1={PLOT.top} y2={PLOT.top + PLOT_H} className="sweep-axis" />
+        <text x={PLOT.left + PLOT_W / 2} y={CHART_H - 6} textAnchor="middle" className="sweep-axis-title">
+          Fast memory budget (GB)
+        </text>
         {secondaryLabel && (
           <line x1={CHART_W - PLOT.right} x2={CHART_W - PLOT.right} y1={PLOT.top} y2={PLOT.top + PLOT_H} className="sweep-axis sweep-secondary-axis" />
         )}
@@ -274,19 +337,52 @@ function LineChart({
             <g key={s.label}>
               <polyline points={path} fill="none" stroke={s.color} strokeWidth={3.5} strokeLinecap="round" strokeLinejoin="round" />
               {sorted.map((v) => (
-                <circle
-                  key={`${s.label}-${v.point.key}`}
-                  cx={xFor(v.point.budgetGb)}
-                  cy={yFor(v.y)}
-                  r={4.5}
-                  fill={s.color}
-                >
-                  <title>{`${v.point.label}: ${valueLabel(v.y)}`}</title>
-                </circle>
+                <g key={`${s.label}-${v.point.key}`}>
+                  <circle
+                    cx={xFor(v.point.budgetGb)}
+                    cy={yFor(v.y)}
+                    r={4.8}
+                    fill={s.color}
+                    className="sweep-point"
+                  />
+                  <circle
+                    cx={xFor(v.point.budgetGb)}
+                    cy={yFor(v.y)}
+                    r={12}
+                    className="sweep-hit-dot"
+                    onMouseEnter={() => setHover(makeHover(s, v))}
+                    onMouseMove={() => setHover(makeHover(s, v))}
+                    onMouseLeave={() => setHover(null)}
+                  />
+                </g>
               ))}
             </g>
           );
         })}
+        {hover && tooltip && (
+          <g className="sweep-tooltip" pointerEvents="none">
+            <line
+              x1={hover.x}
+              x2={hover.x}
+              y1={PLOT.top}
+              y2={PLOT.top + PLOT_H}
+              className="sweep-hover-line"
+            />
+            <circle cx={hover.x} cy={hover.y} r={7} fill={hover.color} className="sweep-hover-point" />
+            <rect x={tooltip.x} y={tooltip.y} width={tooltip.width} height={tooltip.height} rx={7} />
+            <text x={tooltip.x + 10} y={tooltip.y + 18} className="sweep-tooltip-title">
+              {hover.budgetLabel}
+            </text>
+            <text x={tooltip.x + 10} y={tooltip.y + 36} className="sweep-tooltip-row">
+              {hover.seriesLabel}: {hover.valueText}
+            </text>
+            {hover.secondaryText && (
+              <text x={tooltip.x + 10} y={tooltip.y + 54} className="sweep-tooltip-row">
+                {hover.secondaryText}
+              </text>
+            )}
+          </g>
+        )}
       </svg>
       <div className="sweep-legend">
         {series.map((s) => (
@@ -337,7 +433,10 @@ export function MemorySweepPanel({ params }: Props) {
       try {
         const summary = await fetchSummary({
           ...params,
-          device_capacity_gb: budgetGb,
+          planner: {
+            ...params.planner,
+            fast_memory_capacity_gb: budgetGb,
+          },
         });
         setPoints((prev) => [...prev, { key, label, budgetGb, summary }]);
       } catch (e) {
@@ -360,10 +459,12 @@ export function MemorySweepPanel({ params }: Props) {
     },
   ], [points]);
 
-  const tokPerTflop = useMemo(() => {
+  const primaryUnit = points.find((point) => point.summary.primary_unit)?.summary.primary_unit;
+  const primaryPerTflop = useMemo(() => {
     const ratios = points
       .filter((point) => point.summary.effective_tflops > 0)
-      .map((point) => point.summary.tokens_per_second / point.summary.effective_tflops);
+      .map((point) => (point.summary.primary_rate_per_second ?? 0) / point.summary.effective_tflops)
+      .filter((ratio) => ratio > 0);
     if (ratios.length === 0) return 0;
     return ratios.reduce((sum, ratio) => sum + ratio, 0) / ratios.length;
   }, [points]);
@@ -383,25 +484,11 @@ export function MemorySweepPanel({ params }: Props) {
 
   return (
     <details className="panel collapsible-panel sweep-panel">
-      <summary className="collapsible-summary">Throughput vs. GPU Memory Budget</summary>
+      <summary className="collapsible-summary">Throughput vs. Fast Memory Budget</summary>
       <div className="collapsible-content">
         <div className="sweep-controls">
           <label className="form-field">
-            <span className="form-field-label">point spacing (GB)</span>
-            <input
-              type="number"
-              min={1}
-              step="any"
-              value={String(stepGb)}
-              disabled={running}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (Number.isFinite(v) && v > 0) setStepGb(v);
-              }}
-            />
-          </label>
-          <label className="form-field">
-            <span className="form-field-label">min budget (GB)</span>
+            <span className="form-field-label">Minimum Budget (GB)</span>
             <input
               type="number"
               min={0}
@@ -415,7 +502,7 @@ export function MemorySweepPanel({ params }: Props) {
             />
           </label>
           <label className="form-field">
-            <span className="form-field-label">max budget (GB)</span>
+            <span className="form-field-label">Maximum Budget (GB)</span>
             <input
               type="number"
               min={1}
@@ -428,6 +515,20 @@ export function MemorySweepPanel({ params }: Props) {
               }}
             />
           </label>
+          <label className="form-field">
+            <span className="form-field-label">Point Spacing (GB)</span>
+            <input
+              type="number"
+              min={1}
+              step="any"
+              value={String(stepGb)}
+              disabled={running}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                if (Number.isFinite(v) && v > 0) setStepGb(v);
+              }}
+            />
+          </label>
           <label className={`sweep-inf-toggle${running ? " sweep-inf-toggle-disabled" : ""}`}>
             <input
               type="checkbox"
@@ -435,10 +536,10 @@ export function MemorySweepPanel({ params }: Props) {
               disabled={running}
               onChange={(e) => setIncludeInf(e.target.checked)}
             />
-            <span>include inf</span>
+            <span>Include Unlimited</span>
           </label>
           <button className="submit-btn sweep-run-btn" onClick={runSweep} disabled={running}>
-            {running ? `running ${done}/${total}` : "run sweep"}
+            {running ? `Running ${done}/${total}` : "Run Sweep"}
           </button>
         </div>
 
@@ -451,9 +552,9 @@ export function MemorySweepPanel({ params }: Props) {
               valueLabel={fmtTflops}
               stepGb={stepGb}
               minGb={minGb}
-              secondaryLabel="tok/sec"
-              secondaryValueLabel={fmtToks}
-              secondaryFromPrimary={(v) => v * tokPerTflop}
+              secondaryLabel={primaryUnit ? `${primaryUnit}/sec` : undefined}
+              secondaryValueLabel={primaryUnit ? fmtToks : undefined}
+              secondaryFromPrimary={primaryUnit ? (v) => v * primaryPerTflop : undefined}
             />
             <LineChart
               title="Throughput Degradation"

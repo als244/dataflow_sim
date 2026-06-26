@@ -22,7 +22,7 @@ def test_stall_report_attributes_input_wait_to_object():
     from dataflow_sim.core.schema import TransferTrigger
 
     annotated = TaskChain(
-        initial_memory=[Object(id="x", size=100, location="host", type="other")],
+        initial_memory=[Object(id="x", size=100, location="backing", type="other")],
         tasks=[
             Task(
                 id="t0", inputs=[], outputs=[], runtime=10,
@@ -30,9 +30,9 @@ def test_stall_report_attributes_input_wait_to_object():
             ),
             Task(id="t1", inputs=["x"], outputs=[], runtime=10),
         ],
-        device_capacity=200,
-        bandwidth_h2d=1,   # x takes 100us; t1 must stall
-        bandwidth_d2h=1,
+        fast_memory_capacity=200,
+        bandwidth_from_slow=1,   # x takes 100us; t1 must stall
+        bandwidth_to_slow=1,
     )
     log = run(annotated, snapshots=False)
     report = build_stall_report(annotated, log)
@@ -46,20 +46,20 @@ def test_stall_report_attributes_input_wait_to_object():
 def test_stall_report_attributes_capacity_wait():
     # t1's output cannot be reserved until big's offload completes.
     bare = TaskChain(
-        initial_memory=[Object(id="big", size=90, location="device", type="other")],
+        initial_memory=[Object(id="big", size=90, location="fast", type="other")],
         tasks=[
             Task(id="t0", inputs=["big"], outputs=[], runtime=1),
             Task(
                 id="t1",
                 inputs=[],
-                outputs=[OutputAlloc(id="out", size=50, location="device")],
+                outputs=[OutputAlloc(id="out", size=50, location="fast")],
                 runtime=1,
             ),
         ],
-        final_locations={"big": "host"},
-        device_capacity=100,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,   # offload of big takes 90us
+        final_locations={"big": "backing"},
+        fast_memory_capacity=100,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,   # offload of big takes 90us
     )
     annotated = apply_pressurefit_policy(bare)
     log = run(annotated, snapshots=False)
@@ -75,8 +75,8 @@ def test_stall_report_backlog_windows_cover_queued_transfers():
 
     annotated = TaskChain(
         initial_memory=[
-            Object(id="x", size=50, location="host", type="other"),
-            Object(id="y", size=50, location="host", type="other"),
+            Object(id="x", size=50, location="backing", type="other"),
+            Object(id="y", size=50, location="backing", type="other"),
         ],
         tasks=[
             Task(
@@ -88,14 +88,14 @@ def test_stall_report_backlog_windows_cover_queued_transfers():
             ),
             Task(id="t1", inputs=["x", "y"], outputs=[], runtime=1),
         ],
-        device_capacity=200,
-        bandwidth_h2d=1,
-        bandwidth_d2h=1,
+        fast_memory_capacity=200,
+        bandwidth_from_slow=1,
+        bandwidth_to_slow=1,
     )
     log = run(annotated, snapshots=False)
     report = build_stall_report(annotated, log)
 
-    assert report.backlog_us["h2d"] >= 50  # second transfer waits ~50us
+    assert report.backlog_us["from_slow"] >= 50  # second transfer waits ~50us
     assert sum(report.transfer_backlog_overlap.values()) > 0
 
 
@@ -123,6 +123,15 @@ def test_recompute_variant_rewires_activation_producer():
     assert [o.id for o in var_tasks["r_0_0_3"].outputs] == ["A_0_0_3"]
     assert var_tasks["r_0_0_3"].runtime > 0
     assert "y_0_0_2" in var_tasks["r_0_0_3"].inputs
+    recompute_blocks = [
+        block for block in var.metadata["compute_blocks"]
+        if block["category"] == "recompute" and block["total_runtime_us"] > 0
+    ]
+    assert len(recompute_blocks) == 1
+    assert recompute_blocks[0]["name"] == "Layer Recompute"
+    assert recompute_blocks[0]["subops"]
+    assert recompute_blocks[0]["total_flops"] > 0
+    assert recompute_blocks[0]["total_effective_flops"] == 0
     # Backward runtimes are identical across variants.
     assert var_tasks["b_0_0_3"].runtime == base_tasks["b_0_0_3"].runtime
     # Rewrite table declares binary options for every activation.
@@ -164,8 +173,8 @@ def _structural_family(L, cap, *, activation_size, recompute_us, bandwidth):
             fwd_runtime=10,
             head_runtime=2,
             bwd_runtime=20,
-            bandwidth_h2d=bandwidth,
-            bandwidth_d2h=bandwidth,
+            bandwidth_from_slow=bandwidth,
+            bandwidth_to_slow=bandwidth,
             recompute=instances,
             recompute_runtime=recompute_us,
         )
@@ -173,10 +182,10 @@ def _structural_family(L, cap, *, activation_size, recompute_us, bandwidth):
             initial_memory=chain.initial_memory,
             tasks=chain.tasks,
             final_locations=chain.final_locations,
-            device_capacity=cap,
-            host_capacity=None,
-            bandwidth_h2d=chain.bandwidth_h2d,
-            bandwidth_d2h=chain.bandwidth_d2h,
+            fast_memory_capacity=cap,
+            backing_memory_capacity=None,
+            bandwidth_from_slow=chain.bandwidth_from_slow,
+            bandwidth_to_slow=chain.bandwidth_to_slow,
         )
 
     options = (

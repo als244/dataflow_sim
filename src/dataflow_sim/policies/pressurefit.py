@@ -89,11 +89,11 @@ class _CandidateResult:
 def apply_pressurefit_policy(
     bare: TaskChain,
     *,
-    device_capacity: int | None = None,
+    fast_memory_capacity: int | None = None,
 ) -> TaskChain:
     """Return an annotated chain using the standalone PressureFit policy."""
     chain, _diagnostics = plan_pressurefit_policy(
-        bare, device_capacity=device_capacity,
+        bare, fast_memory_capacity=fast_memory_capacity,
     )
     return chain
 
@@ -101,7 +101,7 @@ def apply_pressurefit_policy(
 def plan_pressurefit_policy(
     bare: TaskChain,
     *,
-    device_capacity: int | None = None,
+    fast_memory_capacity: int | None = None,
 ) -> tuple[TaskChain, PressureFitDiagnostics]:
     """Return an annotated chain and per-schedule planning diagnostics.
 
@@ -110,21 +110,21 @@ def plan_pressurefit_policy(
       schedules -> fastest valid annotated chain.
     """
     planning_start = time.perf_counter()
-    if device_capacity is not None:
-        bare = replace(bare, device_capacity=device_capacity)
+    if fast_memory_capacity is not None:
+        bare = replace(bare, fast_memory_capacity=fast_memory_capacity)
 
     ideal = _compute_ideal_starts(bare)
     sizes = _object_sizes(bare)
     uses_by_task = _object_uses_by_task_idx(bare, ideal)
-    initial_device = _pressure_initial_placement(
-        bare, bare.device_capacity, sizes, uses_by_task,
+    initial_compute = _pressure_initial_placement(
+        bare, bare.fast_memory_capacity, sizes, uses_by_task,
     )
     facts = _build_facts(bare)
-    seed = _initial_residency(facts, initial_device)
+    seed = _initial_residency(facts, initial_compute)
     # All schedules start from the same pressure-fit interval set (same seed,
     # zero extra pressure), so reduce once and hand each schedule a copy.
     base_fit = _copy_intervals(seed)
-    _reduce_to_fit(facts, base_fit, bare.device_capacity)
+    _reduce_to_fit(facts, base_fit, bare.fast_memory_capacity)
 
     results, candidate_diagnostics, first_error = _evaluate_schedules(
         bare, facts, base_fit,
@@ -143,7 +143,7 @@ def plan_pressurefit_policy(
         planning_time_s=time.perf_counter() - planning_start,
         task_count=facts.n,
         object_count=len(facts.sizes),
-        device_capacity=bare.device_capacity,
+        fast_memory_capacity=bare.fast_memory_capacity,
         candidate_count=len(selected_candidates),
         valid_candidate_count=sum(
             1 for diag in selected_candidates if diag.status == "valid"
@@ -162,10 +162,10 @@ def _reduce_intervals(
     spec: _ScheduleSpec,
     extra_pressure: list[int],
 ) -> None:
-    _reduce_to_fit(facts, intervals, bare.device_capacity, extra_pressure)
+    _reduce_to_fit(facts, intervals, bare.fast_memory_capacity, extra_pressure)
     if spec.extend_inbound:
         _extend_inbound_lead_time(
-            facts, intervals, bare.device_capacity, bare.bandwidth_h2d,
+            facts, intervals, bare.fast_memory_capacity, bare.bandwidth_from_slow,
             extra_pressure,
         )
 
@@ -187,7 +187,7 @@ def _verify_schedule_plan(
     # interval-entry schedule has per-schedule planning work left up front.
     if spec.extend_inbound:
         _extend_inbound_lead_time(
-            facts, intervals, bare.device_capacity, bare.bandwidth_h2d,
+            facts, intervals, bare.fast_memory_capacity, bare.bandwidth_from_slow,
             extra_pressure,
         )
 

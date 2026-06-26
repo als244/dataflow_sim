@@ -2,7 +2,10 @@ import pytest
 
 from dataflow_sim.engine.simulator import run
 from dataflow_sim.policies.pressurefit import apply_pressurefit_policy
-from dataflow_sim.workloads.training.transformer import build_layerwise_training_chain
+from dataflow_sim.workloads.training.transformer import (
+    build_layerwise_training_chain,
+    build_layerwise_training_program,
+)
 
 
 def _pressurefit_chain(*args, **kwargs):
@@ -33,10 +36,26 @@ def test_bare_chain_uses_step_accum_layer_task_ids():
 def test_inputs_are_per_step_and_accumulation_round():
     bare = build_layerwise_training_chain(L=2, grad_accum_rounds=2, num_steps=2)
     initial = {o.id: o for o in bare.initial_memory}
-    assert initial["input_0_0"].location == "device"
-    assert initial["input_0_1"].location == "host"
-    assert initial["input_1_0"].location == "host"
-    assert initial["input_1_1"].location == "host"
+    assert initial["input_0_0"].location == "fast"
+    assert initial["input_0_1"].location == "backing"
+    assert initial["input_1_0"].location == "backing"
+    assert initial["input_1_1"].location == "backing"
+
+
+def test_recompute_slot_tasks_depend_on_layer_input_and_weight():
+    bare = build_layerwise_training_chain(L=2)
+    tasks = {t.id: t for t in bare.tasks}
+    assert tasks["r_0_0_1"].inputs == ["y_0_0_0", "W_1"]
+    assert tasks["r_0_0_1"].outputs == []
+    assert tasks["r_0_0_0"].inputs == ["input_0_0", "W_0"]
+    assert tasks["r_0_0_0"].outputs == []
+
+    program = build_layerwise_training_program(L=2)
+    program_tasks = {t.id: t for t in program.tasks}
+    assert program_tasks["r_0_0_1"].inputs == ["y_0_0_0", "W_1"]
+    assert program_tasks["r_0_0_1"].outputs == []
+    assert program_tasks["r_0_0_0"].inputs == ["input_0_0", "W_0"]
+    assert program_tasks["r_0_0_0"].outputs == []
 
 
 def test_step_gradients_are_produced_then_mutated_within_step():
@@ -76,11 +95,11 @@ def test_optimizer_steps_are_per_training_step_and_mutate_persistent_state():
         num_steps=2,
         optimizer_state_size=128,
         optimizer_runtime=7,
-        final_model_state_on_host=True,
+        final_model_state_on_backing=True,
     )
     assert finalized.final_locations == {
-        "W_0": "host", "O_0": "host",
-        "W_1": "host", "O_1": "host",
+        "W_0": "backing", "O_0": "backing",
+        "W_1": "backing", "O_1": "backing",
     }
 
 
@@ -108,8 +127,8 @@ def test_r_i_immediately_precedes_b_i():
         assert bi == ri + 1, f"r_0_0_{i} should immediately precede b_0_0_{i}"
 
 
-def test_activations_released_from_device_after_their_backward():
+def test_activations_released_to_slow_after_their_backward():
     chain = _pressurefit_chain(L=3)
     log = run(chain)
-    final_device_ids = {m.id for m in log.events[-1].snapshot.memory if m.location == "device"}
-    assert final_device_ids.isdisjoint({"A_0_0_0", "A_0_0_1", "A_0_0_2"})
+    final_compute_ids = {m.id for m in log.events[-1].snapshot.memory if m.location == "fast"}
+    assert final_compute_ids.isdisjoint({"A_0_0_0", "A_0_0_1", "A_0_0_2"})

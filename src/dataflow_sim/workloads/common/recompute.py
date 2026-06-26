@@ -26,7 +26,7 @@ class RecomputeOption:
 
 @dataclass(frozen=True)
 class RecomputeRewrite:
-    """Discrete rematerialization choices for one saved-activation object."""
+    """Discrete recompute choices for one saved-activation object."""
     object_id: str                          # e.g. "A_0_0_5"
     f_task_id: str                          # producer when level == 0
     r_task_id: str                          # recompute slot (producer when level > 0)
