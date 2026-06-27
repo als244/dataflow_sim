@@ -1,6 +1,33 @@
-# dataflow_sim
+# Dataflow Sim
 
-A discrete-event simulator for memory-constrained dataflow workloads on a two-tier memory hierarchy. The model has three parallel streams (compute, backing-from-slow, compute-to-backing) sharing a hard fast-memory cap, executing ordered compute tasks that read/write/mutate variably-sized objects. The scheduling problem — decide what to pre-place, what to evict, and when to fire each transfer so the cap holds at every continuous-time instant while makespan is minimized — has no clean classical analogue, so this repo exists to prototype and compare planning policies. DNN training is provided as a higher-level workload builder on top of the generic dataflow schema.
+A discrete-event simulator for memory-constrained dataflow workloads on a two-tier memory hierarchy. The simulator uses three parallel streams (compute, slow->fast memory, fast->slow memory). Our model was originally intended for CPU<-->GPU compute/communication overlap planning; however, it is also practical for HBM<-->SRAM heirarchy (just the units differ; same higher level problem). We assume workloads are constructed as a sequential list of abstract tasks where each task contains lists of input, output, and mutated object identifiers (we assume object sizes are specified, and task runtimes can be derived). The simulator enforces that all input and mutated objects are present in fast memory before starting the task and enforces that the task stalls until there is sufficient fast memory capacity to create all output objects. The simulator manages queues to track fast<-->slow transfer requests and only one transfer (per direction) can be in-flight at a time. ***Our primary objective is to minimize overall runtime when there is a hard constraint on fast memory capacity. This means ensuring a combination of (a) avoiding idle time and (b) avoiding recomputation.***
+
+We formulate this problem as annotating a *task-chain* with **release**, **offload**, and **prefetch** directives where each contains a list of 0 or more object identifiers. After a task completes, the runtime (or simulated runtime) triggers execution of such directives. 
+
+- **Release**: Free fast-memory associated with that object
+- **Offload**: Enqueue object in the fast->slow transfer queue. Upon completition of transfer, the object is released
+- **Prefetch**: Enqueue object in the slow->fast transfer queue. Waits until sufficient fast memory to contain object before starting transfer. 
+
+
+Our main policy (methodology for deciding annotations) is called [PressureFit](docs/policy/pressurefit.md). 
+
+## Webapp
+
+The policy is quite effective and can be [visualized](https://dataflowsim.sunshein.net/) for carrying out transformer training in memory constrained regimes. 
+
+You can also [create your own dataflow program](examples/README.md) and export it to a schema that the webapp can ingest and simulate.
+
+## Setup
+
+For creating custom workloads or accessing simulator API.
+
+```bash
+# 0. Activate any python environment you want to work from
+
+# 1. Install the Python package
+pip install -e
+```
+
 
 ## Repo Layout
 
@@ -14,43 +41,3 @@ A discrete-event simulator for memory-constrained dataflow workloads on a two-ti
 - `scripts/` — repo-level experiment and utility scripts.
 - `docs/` — design + recipe docs.
 
-## Setup
-
-```bash
-# 0. Activate any python environment you want to work from
-
-# 1. Install the Python package
-pip install -e
-
-# 2. Install UI deps
-cd ui && npm install
-```
-
-## Run the webapp
-
-```bash
-# Terminal 1: backend
-uvicorn dataflow_sim.app.server.main:app --reload --port 8000
-
-# Terminal 2: frontend
-cd ui && npm run dev
-```
-
-Then open the URL printed by `npm run dev`.
-
-## Run tests
-
-```bash
-pytest
-```
-
-## Where to go next
-
-- [docs/problem.md](docs/problem.md) — the scheduling problem the simulator solves
-- [src/dataflow_sim/workloads/README.md](src/dataflow_sim/workloads/README.md) — generic workload schema and authoring guide
-- [examples/](examples/) — custom dataflow and transformer-training schema exporters
-- [docs/workload-recipe.md](docs/workload-recipe.md) — low-level `TaskChain` reference
-- [docs/transformer-recipe.md](docs/transformer-recipe.md) — how the example app maps transformer training onto the simulator
-- [docs/policy/README.md](docs/policy/README.md) — the six built-in scheduling policies and which to use
-- [docs/policy/pressurefit.md](docs/policy/pressurefit.md) — ***PressureFit***: An automatic policy that determines initial object placement and annotates task chains with release, offload, and prefetch triggers.
-- [docs/recompute.md](docs/recompute.md) — activation recomputation: chain variants, the stall/backlog report, and evidence-directed selection layered above the policies.

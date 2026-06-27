@@ -36,3 +36,6 @@ docs/internal/
 # Logs / sweep outputs
 *.log
 /tmp/v5_*.csv
+
+WEBSITE_ARCHITECTURE.md
+deploy/

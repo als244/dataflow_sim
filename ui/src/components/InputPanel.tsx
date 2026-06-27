@@ -640,6 +640,25 @@ export function InputPanel({
             </>
           ) : (
             <div className="schema-editor-wrap">
+              <p className="schema-note">
+                Please see our{" "}
+                <a
+                  href="https://github.com/als244/dataflow_sim/tree/master"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  repo
+                </a>{" "}
+                for more details on generating a dataflow program. We included some basic{" "}
+                <a
+                  href="https://github.com/als244/dataflow_sim/blob/master/examples/README.md"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  examples
+                </a>
+                .
+              </p>
               <div className="schema-editor-toolbar">
                 <span className="dim">Common schema JSON</span>
                 <label className="reset-btn schema-import-btn">

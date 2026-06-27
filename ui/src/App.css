@@ -770,6 +770,26 @@
   gap: 0.75rem;
 }
 
+.schema-note {
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #263247;
+  border-radius: 6px;
+  background: #141a24;
+  color: var(--dim);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.schema-note a {
+  color: #93c5fd;
+  text-decoration: none;
+}
+
+.schema-note a:hover {
+  text-decoration: underline;
+}
+
 .schema-import-btn {
   cursor: pointer;
 }
