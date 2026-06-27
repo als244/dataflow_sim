@@ -54,10 +54,9 @@ cd dataflow_sim && pip install -e .
 
 ## TODOs
 
-- [ ] Support distributed training simulation: Add network queues to simulator and task primivites to intiate P2P and collective communication ops (or maybe these details should be 'baked' in to intra-layer efficiency...)
-- [ ] Add finer-grained transformer block task decomposition.
-- [ ] Add batch/sequence chunking workload builders.
+- [ ] Support distributed training simulation: Add scale-up and scale-out network streams/queues to simulator. Create task primivites / directives to intiate P2P and collective communication transfers (or maybe these details should be 'baked' in to intra-layer efficiency...)
+- [ ] Add finer-grained transformer block task decomposition (both in terms of op granularity and batch/chunk granularity).
+- [ ] Enable periodic planning to handle gradient accumulation and multi-step training efficiently.
 - [ ] Expand custom dataflow examples beyond transformer training.
-- [ ] Add screenshots or a short walkthrough for the webapp workflow.
 - [ ] Build real runtime that can ingest a dataflow program of similar schema as the simulator.
 
