@@ -41,7 +41,8 @@ const AXIS_GAP = 8;
 const LABEL_GUTTER = 64;
 const BASE_WIDTH = 1100;
 const MIN_ZOOM = 1;
-const MAX_ZOOM = 2000;
+const MAX_ZOOM = 120;
+const MAX_RENDERED_TICKS = 240;
 const DRAG_MIN_PX = 6;     // ignore drags smaller than this
 
 const LANE_ORDER: Track[] = ["from_slow", "compute", "to_slow"];
@@ -115,7 +116,10 @@ function fmtDurationAndRange(startUs: number, endUs: number): string {
 
 function niceTickStep(durationUs: number, plotWidthPx: number): number {
   const minPx = 70;
-  const maxTicks = Math.max(2, Math.floor(plotWidthPx / minPx));
+  const maxTicks = Math.min(
+    MAX_RENDERED_TICKS,
+    Math.max(2, Math.floor(plotWidthPx / minPx)),
+  );
   const rawStep = durationUs / maxTicks;
   if (rawStep <= 0) return 1;
   const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));

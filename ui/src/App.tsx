@@ -66,7 +66,10 @@ interface WorkloadPreviewResponse {
   }[];
 }
 
-// Flat URL-param encoding for nested params.
+const PARAM_STORAGE_KEY = "dataflow-sim:simulation-params:v1";
+
+// Legacy flat URL-param encoding for nested params. Keep this reader so old
+// shared links still hydrate the form, but persist new edits in local storage.
 const HW_KEYS = [
   "peak_tflops", "fast_memory_bw_gbs", "from_slow_bw_gbs", "to_slow_bw_gbs",
   "matmul_eff", "attn_fwd_eff", "attn_bwd_eff", "mem_eff",
@@ -76,9 +79,50 @@ const MODEL_NUM_KEYS = [
   "expert_dim", "num_shared_experts", "num_routed_experts", "top_k",
 ] as const;
 
-function initialParams(): SimulationParams {
-  const url = new URLSearchParams(window.location.search);
-  const out: SimulationParams = JSON.parse(JSON.stringify(DEFAULT_PARAMS));
+const LEGACY_QUERY_KEYS = new Set<string>([
+  "hw_preset",
+  "workload_preset",
+  "model_preset",
+  "model_qk_norm",
+  "seqlen",
+  "num_seqs",
+  "grad_accum_rounds",
+  "num_steps",
+  "optimizer",
+  "final_model_state_on_backing",
+  "policy",
+  "pressurefit_mode",
+  "recompute",
+  "window_size",
+  "fast_memory_capacity_gb",
+  ...HW_KEYS.map((k) => `hw_${k}`),
+  ...MODEL_NUM_KEYS.map((k) => `model_${k}`),
+]);
+
+function cloneDefaultParams(): SimulationParams {
+  return JSON.parse(JSON.stringify(DEFAULT_PARAMS)) as SimulationParams;
+}
+
+function readStoredParams(): SimulationParams | null {
+  try {
+    const raw = window.localStorage.getItem(PARAM_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SimulationParams>;
+    if (!parsed || !parsed.hardware || !parsed.workload || !parsed.planner) return null;
+    return parsed as SimulationParams;
+  } catch {
+    return null;
+  }
+}
+
+function hasLegacyQueryParams(url: URLSearchParams): boolean {
+  for (const key of LEGACY_QUERY_KEYS) {
+    if (url.has(key)) return true;
+  }
+  return false;
+}
+
+function applyLegacyQueryParams(out: SimulationParams, url: URLSearchParams): void {
   const transformer = out.workload as TransformerWorkloadParams;
 
   const hwPreset = url.get("hw_preset");
@@ -162,35 +206,34 @@ function initialParams(): SimulationParams {
     const n = Number(cap);
     if (Number.isFinite(n)) out.planner.fast_memory_capacity_gb = n;
   }
+}
+
+function initialParams(): SimulationParams {
+  const url = new URLSearchParams(window.location.search);
+  const hasLegacyParams = hasLegacyQueryParams(url);
+  const out = hasLegacyParams ? cloneDefaultParams() : readStoredParams() ?? cloneDefaultParams();
+  if (hasLegacyParams) applyLegacyQueryParams(out, url);
   return out;
 }
 
-function syncUrl(params: SimulationParams): void {
-  const url = new URL(window.location.href);
-  url.searchParams.set("hw_preset", params.hardware.preset);
-  for (const k of HW_KEYS) url.searchParams.set(`hw_${k}`, String(params.hardware[k]));
-  if (params.workload.source === "training_transformer") {
-    url.searchParams.set("workload_preset", params.workload.preset);
-    for (const k of MODEL_NUM_KEYS) url.searchParams.set(`model_${k}`, String(params.workload.model[k]));
-    url.searchParams.set("model_qk_norm", params.workload.model.qk_norm ? "true" : "false");
-    url.searchParams.set("seqlen", String(params.workload.training.seqlen));
-    url.searchParams.set("num_seqs", String(params.workload.training.num_seqs));
-    url.searchParams.set("grad_accum_rounds", String(params.workload.training.grad_accum_rounds));
-    url.searchParams.set("num_steps", String(params.workload.training.num_steps));
-    url.searchParams.set("optimizer", params.workload.training.optimizer);
-    url.searchParams.set("final_model_state_on_backing", params.workload.training.final_model_state_on_backing ? "true" : "false");
-  } else {
-    url.searchParams.set("workload_preset", "schema");
+function persistParams(params: SimulationParams): void {
+  try {
+    window.localStorage.setItem(PARAM_STORAGE_KEY, JSON.stringify(params));
+  } catch {
+    /* Storage may be unavailable in private browsing or restricted contexts. */
   }
-  url.searchParams.set("policy", params.planner.policy);
-  url.searchParams.delete("pressurefit_mode");
-  url.searchParams.set("recompute", params.planner.recompute ? "true" : "false");
-  url.searchParams.set("window_size", String(params.planner.window_size));
-  url.searchParams.set(
-    "fast_memory_capacity_gb",
-    params.planner.fast_memory_capacity_gb === null ? "" : String(params.planner.fast_memory_capacity_gb),
-  );
-  window.history.replaceState(null, "", url.toString());
+}
+
+function cleanLegacyQueryParams(): void {
+  const url = new URL(window.location.href);
+  let changed = false;
+  for (const key of LEGACY_QUERY_KEYS) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
+  }
+  if (changed) window.history.replaceState(null, "", url.toString());
 }
 
 async function simulate(params: SimulationParams): Promise<SimulateResponse> {
@@ -332,10 +375,11 @@ export default function App() {
     };
   }, []);
 
-  // Sync URL on every params change. Also clear stale error so it doesn't
-  // linger after the user has edited the form.
+  // Persist form state locally on every params change. Also clear legacy query
+  // params and stale errors after the user has edited the form.
   useEffect(() => {
-    syncUrl(params);
+    persistParams(params);
+    cleanLegacyQueryParams();
     if (errorMsg) setErrorMsg(null);
     if (previewError) setPreviewError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -486,6 +530,8 @@ export default function App() {
             <>
               <SummaryPanel summary={summary} />
 
+              <AnnotatedPlanPanel chain={chain} title="Annotated Plan" />
+
               {hasMemoryTimeline && (
                 <MemoryTimelinePanel
                   log={log}
@@ -552,8 +598,6 @@ export default function App() {
                   Full memory contents and reference stream were omitted for this large chain.
                 </div>
               )}
-
-              <AnnotatedPlanPanel chain={chain} title="Annotated Plan" />
 
               <ComparePoliciesPanel params={params} policies={POLICY_OPTIONS} />
 

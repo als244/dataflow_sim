@@ -38,13 +38,13 @@ const TO_SLOW_COLOR = "#e36bff";
 
 const BAND_FILL: Record<BandKey, { color: string; opacity: number }> = {
   weight:           { color: TYPE_COLORS.weight,     opacity: 0.55 },
-  gradient:         { color: TYPE_COLORS.gradient,   opacity: 0.55 },
+  gradient:         { color: "#f43f5e",              opacity: 0.72 },
   activation:       { color: TYPE_COLORS.activation, opacity: 0.55 },
   optimizer:        { color: TYPE_COLORS.optimizer,  opacity: 0.55 },
   other:            { color: TYPE_COLORS.other,      opacity: 0.55 },
   inbound:          { color: FROM_SLOW_COLOR,         opacity: 0.65 },
   outbound:         { color: TO_SLOW_COLOR,           opacity: 0.65 },
-  pending_outbound: { color: "#e8a93b",              opacity: 0.45 },  // slightly transparent gold
+  pending_outbound: { color: "#facc15",              opacity: 0.45 },
 };
 
 const BAND_LABEL: Record<BandKey, string> = {
@@ -75,6 +75,14 @@ interface Point {
   totalBytes: number;
 }
 
+interface HoverState {
+  index: number;
+  x: number;
+  y: number;
+  clientX: number;
+  clientY: number;
+}
+
 const BASE_WIDTH = 1100;
 const Y_AXIS_W = 70;
 const PLOT_H = 220;
@@ -82,7 +90,8 @@ const PAD_TOP = 14;
 const PAD_BOT = 36;
 const PLOT_AREA_H = PLOT_H - PAD_TOP - PAD_BOT;
 const MIN_ZOOM = 1;
-const MAX_ZOOM = 2000;
+const MAX_ZOOM = 120;
+const MAX_RENDERED_TICKS = 240;
 const DRAG_MIN_PX = 6;
 
 function fmtBytesGb(n: number): string {
@@ -101,9 +110,25 @@ function fmtTime(us: number, stepUs: number): string {
   return `${(us / unitUs).toFixed(decimals)}${unit}`;
 }
 
+function fmtHoverTime(us: number): string {
+  if (us >= 1_000_000) return `${(us / 1_000_000).toFixed(3)} s`;
+  if (us >= 1_000) return `${(us / 1_000).toFixed(2)} ms`;
+  return `${Math.round(us).toLocaleString()} µs`;
+}
+
+function fmtPct(part: number, total: number): string {
+  if (total <= 0) return "0%";
+  const pct = (part / total) * 100;
+  if (pct < 1 && pct > 0) return "<1%";
+  return `${pct.toFixed(0)}%`;
+}
+
 function niceTickStep(durationUs: number, plotWidthPx: number): number {
   const minPx = 70;
-  const maxTicks = Math.max(2, Math.floor(plotWidthPx / minPx));
+  const maxTicks = Math.min(
+    MAX_RENDERED_TICKS,
+    Math.max(2, Math.floor(plotWidthPx / minPx)),
+  );
   const rawStep = durationUs / maxTicks;
   if (rawStep <= 0) return 1;
   const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
@@ -120,6 +145,19 @@ function fmtZoom(z: number): string {
   if (z >= 100) return `${z.toFixed(0)}×`;
   if (z >= 10) return `${z.toFixed(1)}×`;
   return `${z.toFixed(2)}×`;
+}
+
+function nearestPointIndex(points: Point[], t: number): number {
+  if (points.length <= 1) return 0;
+  let lo = 0;
+  let hi = points.length - 1;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (points[mid].t < t) lo = mid + 1;
+    else hi = mid;
+  }
+  const prev = Math.max(0, lo - 1);
+  return Math.abs(points[lo].t - t) < Math.abs(points[prev].t - t) ? lo : prev;
 }
 
 const ALL_KEYS_AS_RECORD = (): Record<BandKey, number> => ({
@@ -177,6 +215,7 @@ export function MemoryTimelinePanel({ log, fastMemoryCapacityGb, currentT }: Pro
   // --- zoom + drag-to-zoom ---
   const [zoom, setZoom] = useState(1.0);
   const [drag, setDrag] = useState<{ startX: number; currentX: number } | null>(null);
+  const [hover, setHover] = useState<HoverState | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(BASE_WIDTH);
@@ -253,8 +292,22 @@ export function MemoryTimelinePanel({ log, fastMemoryCapacityGb, currentT }: Pro
     if (e.button !== 0 || !innerRef.current) return;
     const rect = innerRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
+    setHover(null);
     setDrag({ startX: x, currentX: x });
     e.preventDefault();
+  }
+  function onMouseMoveInner(e: React.MouseEvent<HTMLDivElement>) {
+    if (drag || !innerRef.current || points.length === 0) return;
+    const rect = innerRef.current.getBoundingClientRect();
+    const x = Math.max(0, Math.min(contentWidth, e.clientX - rect.left));
+    const y = Math.max(PAD_TOP, Math.min(PLOT_H - PAD_BOT, e.clientY - rect.top));
+    const t = (x / Math.max(contentWidth, 1)) * tMax;
+    const index = nearestPointIndex(points, t);
+    setHover((h) => (
+      h && h.index === index && Math.abs(h.x - x) < 2 && Math.abs(h.y - y) < 2
+        ? h
+        : { index, x, y, clientX: e.clientX, clientY: e.clientY }
+    ));
   }
   function bumpZoom(factor: number) {
     setZoom((z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor)));
@@ -297,6 +350,28 @@ export function MemoryTimelinePanel({ log, fastMemoryCapacityGb, currentT }: Pro
   // Only render bands that ever have nonzero bytes (keeps legend tidy).
   const activeBands = STACK_ORDER.map((key, i) => ({ key, i }))
     .filter(({ key }) => points.some((p) => p.sumByBand[key] > 0));
+  const hoverPoint = hover ? points[hover.index] : null;
+  const hoverRows = hoverPoint
+    ? STACK_ORDER
+        .map((key) => ({ key, bytes: hoverPoint.sumByBand[key] }))
+        .filter((row) => row.bytes > 0)
+    : [];
+  const tooltipWidth = 280;
+  const tooltipHeight = Math.min(320, 58 + hoverRows.length * 22);
+  const viewportW = typeof window !== "undefined" ? window.innerWidth : 1280;
+  const viewportH = typeof window !== "undefined" ? window.innerHeight : 720;
+  const tooltipLeft = hover
+    ? Math.min(
+        Math.max(12, hover.clientX + 14),
+        Math.max(12, viewportW - tooltipWidth - 12),
+      )
+    : 0;
+  const tooltipTop = hover
+    ? Math.min(
+        Math.max(12, hover.clientY + 14),
+        Math.max(12, viewportH - tooltipHeight - 12),
+      )
+    : 0;
 
   return (
     <div className="panel memtl-panel">
@@ -361,6 +436,8 @@ export function MemoryTimelinePanel({ log, fastMemoryCapacityGb, currentT }: Pro
             className="memtl-bars-inner"
             style={{ width: contentWidth, height: PLOT_H, cursor: "crosshair" }}
             onMouseDown={onMouseDownInner}
+            onMouseMove={onMouseMoveInner}
+            onMouseLeave={() => setHover(null)}
           >
             <svg
               className="memtl-svg"
@@ -386,6 +463,7 @@ export function MemoryTimelinePanel({ log, fastMemoryCapacityGb, currentT }: Pro
                   y1={yScale(capBytes)}
                   y2={yScale(capBytes)}
                   className="memtl-cap"
+                  aria-label="Fast memory budget"
                 />
               )}
               {/* stacked bands */}
@@ -397,9 +475,7 @@ export function MemoryTimelinePanel({ log, fastMemoryCapacityGb, currentT }: Pro
                     d={stepPath(i)}
                     fill={fill.color}
                     fillOpacity={fill.opacity}
-                    stroke={fill.color}
-                    strokeOpacity={Math.min(1, fill.opacity + 0.25)}
-                    strokeWidth={0.8}
+                    stroke="none"
                   />
                 );
               })}
@@ -426,6 +502,18 @@ export function MemoryTimelinePanel({ log, fastMemoryCapacityGb, currentT }: Pro
                   y1={PAD_TOP}
                   y2={PLOT_H - PAD_BOT}
                   className="memtl-cursor"
+                  aria-label="Current event"
+                />
+              )}
+              {/* hover marker */}
+              {hoverPoint !== null && !drag && (
+                <line
+                  x1={xScale(hoverPoint.t)}
+                  x2={xScale(hoverPoint.t)}
+                  y1={PAD_TOP}
+                  y2={PLOT_H - PAD_BOT}
+                  className="memtl-hover-line"
+                  aria-label="Hovered sample"
                 />
               )}
               {/* drag overlay (selection rectangle for zoom) */}
@@ -439,12 +527,53 @@ export function MemoryTimelinePanel({ log, fastMemoryCapacityGb, currentT }: Pro
                 />
               )}
             </svg>
+            {hoverPoint !== null && !drag && (
+              <div
+                className="memtl-tooltip"
+                style={{ left: tooltipLeft, top: tooltipTop }}
+              >
+                <div className="memtl-tooltip-head">
+                  <span>{fmtHoverTime(hoverPoint.t)}</span>
+                  <strong>{fmtBytesGb(hoverPoint.totalBytes)}</strong>
+                </div>
+                <div className="memtl-tooltip-rows">
+                  {hoverRows.map(({ key, bytes }) => {
+                    const fill = BAND_FILL[key];
+                    return (
+                      <div key={key} className="memtl-tooltip-row">
+                        <span className="memtl-tooltip-label">
+                          <span
+                            className="memtl-legend-swatch"
+                            style={{ background: fill.color, opacity: fill.opacity }}
+                          />
+                          {BAND_LABEL[key]}
+                        </span>
+                        <span>{fmtBytesGb(bytes)}</span>
+                        <span className="dim">{fmtPct(bytes, hoverPoint.totalBytes)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
       {/* legend */}
       <div className="memtl-legend">
+        {capBytes !== null && (
+          <span className="memtl-legend-item">
+            <span className="memtl-legend-line memtl-legend-cap" />
+            Fast Memory Budget
+          </span>
+        )}
+        {currentT !== null && (
+          <span className="memtl-legend-item">
+            <span className="memtl-legend-line memtl-legend-cursor" />
+            Current Event
+          </span>
+        )}
         {activeBands.map(({ key }) => {
           const fill = BAND_FILL[key];
           return (
