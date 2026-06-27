@@ -59,4 +59,5 @@ cd dataflow_sim && pip install -e .
 - [ ] Add batch/sequence chunking workload builders.
 - [ ] Expand custom dataflow examples beyond transformer training.
 - [ ] Add screenshots or a short walkthrough for the webapp workflow.
+- [ ] Build real runtime that can ingest a dataflow program of similar schema as the simulator.
 
