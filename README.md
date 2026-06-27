@@ -2,11 +2,11 @@
 
 A discrete-event simulator for memory-constrained dataflow workloads on a two-tier memory hierarchy. The simulator uses three parallel streams (compute, slow->fast memory, fast->slow memory). Our model was originally intended for CPU<-->GPU compute/communication overlap planning; however, it is also practical for HBM<-->SRAM hierarchy (just the units differ; same high-level problem). We assume workloads are constructed as a sequential list of abstract tasks where each task contains lists of input, output, and mutated object identifiers (we assume object sizes are specified, and task runtimes can be derived). The simulator enforces that all input and mutated objects are present in fast memory before starting the task and enforces that the task stalls until there is sufficient fast memory capacity to create all output objects. The simulator manages queues to track fast<-->slow transfer requests and only one transfer (per direction) can be in-flight at a time. ***The primary objective is to minimize overall runtime when there is a hard constraint on fast memory capacity. This means ensuring a combination of (a) avoiding idle time and (b) avoiding recomputation.***
 
-We formulate this problem as annotating a *task-chain* with **release**, **offload**, and **prefetch** directives where each contains a list of 0 or more object identifiers. After a task completes, the runtime (or simulated runtime) triggers execution of such directives.
+We formulate this problem as annotating a *task-chain* with **release**, **offload**, and **prefetch** directives where each contains a list of 0 or more object identifiers. After a task completes, the runtime (or simulated runtime) triggers execution of such directives:
 
 - **Release**: Free fast-memory storage associated with that object.
-- **Offload**: Enqueue object in the fast->slow transfer queue. Upon completion of transfer, the object is released.
-- **Prefetch**: Enqueue object in the slow->fast transfer queue. Waits until there is sufficient fast memory to contain the object before starting transfer.
+- **Offload**: Enqueue transfer request for object in the fast->slow transfer queue. Upon completion of transfer, the object is released.
+- **Prefetch**: Enqueue transfer request for object in the slow->fast transfer queue. Fast memory is reserved for the object before initiating the transfer; transfer doesn't begin until there is sufficient fast memory capacity to reserve destination space.
 
 Our main policy (methodology for deciding annotations) is called [PressureFit](docs/policy/pressurefit.md).
 
