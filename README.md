@@ -13,22 +13,26 @@ Our main policy (methodology for deciding annotations) is called [PressureFit](d
 
 ## Webapp
 
-The policy is quite effective and can be [visualized](https://dataflowsim.sunshein.net/) for carrying out transformer training in memory constrained regimes. 
+The policy is quite effective and can be [visualized](https://dataflowsim.sunshein.net/) for carrying out transformer training in memory constrained regimes. The simulator ingests an abstract dataflow program; we take model architecture specification and translate this to a task chain that mimics reality. In the webapp you will see an 'unannotated' plan that contains all of the tasks with input/output/mutated objects along with assoicated task runtime. After you run a simulation you can see a summary of overall metrics, the annotated plan, a timeline of events on each of the streams, composition of fast memory over time, and replayable events. *The hope is to achieve a runtime close to that of unlimited fast memory capacity regime...*
 
-You can also [create your own dataflow program](examples/README.md) and export it to a schema that the webapp can ingest and simulate.
+You can also [create your own dataflow program](examples/README.md) and export it to a schema that the webapp can ingest and simulate. 
 
 ## Setup
 
 For creating custom workloads or accessing simulator API.
 
 ```bash
-# 0. Activate any python environment you want to work from
+# -1. Activate any python environment you want to work from
+
+# 0. Clone this repo:
+git clone git@github.com:als244/dataflow_sim.git
+
 
 # 1. Install the Python package
-pip install -e
+cd dataflow_sim && pip install -e
 ```
 
-
+<!-- 
 ## Repo Layout
 
 - `src/dataflow_sim/core/` — task-chain schema, validation, and reference-stream utilities.
@@ -40,4 +44,4 @@ pip install -e
 - `examples/` — runnable workload/schema export examples.
 - `scripts/` — repo-level experiment and utility scripts.
 - `docs/` — design + recipe docs.
-
+ -->
