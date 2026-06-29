@@ -20,7 +20,7 @@ from dataclasses import dataclass
 class RecomputeOption:
     level: int            # 0 = save full activation, no recompute work
     saved_bytes: int      # activation bytes forward still saves at this level
-    recompute_us: int     # runtime of the recompute slot at this level
+    recompute_us: float   # runtime of the recompute slot at this level
     label: str = ""
 
 

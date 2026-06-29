@@ -22,7 +22,9 @@ interface Props {
 function fmtTime(us: number): string {
   if (us >= 1_000_000) return `${(us / 1_000_000).toFixed(2)} s`;
   if (us >= 1_000) return `${(us / 1_000).toFixed(1)} ms`;
-  return `${us.toLocaleString()} µs`;
+  if (us >= 100) return `${us.toFixed(1)} µs`;
+  if (us >= 1) return `${us.toFixed(3)} µs`;
+  return `${us.toFixed(4)} µs`;
 }
 
 function fmtPct(p: number): string {

@@ -29,7 +29,7 @@ from dataflow_sim.core.schema import (
 )
 
 COMPUTE_INPUT_LOC: Location = "fast"
-INF = sys.maxsize
+INF = float(sys.maxsize)
 
 
 class _PoolEntry:
@@ -50,8 +50,8 @@ class _InFlight:
     obj_id: str
     direction: TransferDirection
     src_size: int  # bytes freed on compute at completion (to_slow only)
-    start_t: int
-    end_t: int
+    start_t: float
+    end_t: float
 
 
 @dataclass
@@ -59,7 +59,7 @@ class _Queued:
     obj_id: str
     direction: TransferDirection
     src_size: int
-    runtime: int
+    runtime: float
     # Destination-object type, used to instantiate the fast-memory entry at from_slow
     # start (from_slow allocation is deferred — pending from_slow transfers consume no
     # fast bytes until they actually begin on the stream). None for to_slow
@@ -67,7 +67,7 @@ class _Queued:
     dst_type: ObjectType | None = None
 
 
-def _precompute_task_starts(chain: TaskChain) -> dict[str, int]:
+def _precompute_task_starts(chain: TaskChain) -> dict[str, float]:
     """Ideal start times assuming no stalls. Used for the reference stream's
     next-use timestamps. Actual scheduled start may be later due to stalls;
     that's a documented limitation.
@@ -107,11 +107,11 @@ def _fast_memory_bands(pool: dict[PoolKey, _PoolEntry]) -> dict[str, int]:
 
 
 def _snapshot(
-    t: int,
+    t: float,
     pool: dict[PoolKey, _PoolEntry],
     active: ActiveTask | None,
     remaining_tasks: list[Task],
-    task_starts: dict[str, int],
+    task_starts: dict[str, float],
 ) -> Snapshot:
     refs = compute_reference_stream(remaining_tasks, task_starts)
     next_ref_by_id = {r.obj_id: r.ref_t for r in refs}
@@ -191,7 +191,7 @@ def run(
 
 def _run_impl(
     chain: TaskChain,
-    task_starts_override: dict[str, int] | None,
+    task_starts_override: dict[str, float] | None,
     *,
     snapshots: bool,
     memory_trace: bool,
@@ -238,7 +238,7 @@ def _run_impl(
 
     # ---------- helpers (closures over pool, in_flight, queue, events, intervals) ----------
 
-    def emit_memory_trace(t: int) -> None:
+    def emit_memory_trace(t: float) -> None:
         if not memory_trace:
             return
         point = MemoryTracePoint(
@@ -259,9 +259,9 @@ def _run_impl(
             return INF
         return cap - loc_total[loc]
 
-    def transfer_runtime(direction: TransferDirection, size: int, override: int | None) -> int:
+    def transfer_runtime(direction: TransferDirection, size: int, override: float | None) -> float:
         if override is not None:
-            return max(int(override), 0)
+            return max(float(override), 0.0)
         bw = chain.bandwidth_from_slow if direction == "from_slow" else chain.bandwidth_to_slow
         if bw is None:
             raise ValueError(
@@ -270,9 +270,9 @@ def _run_impl(
             )
         return max((size + bw - 1) // bw, 1)
 
-    def predict_schedule(direction: TransferDirection, now: int) -> list[tuple[str, int, int, int]]:
+    def predict_schedule(direction: TransferDirection, now: float) -> list[tuple[str, float, float, int]]:
         """Return [(obj_id, start_t, end_t, src_size), ...] for in-flight + queued."""
-        out: list[tuple[str, int, int, int]] = []
+        out: list[tuple[str, float, float, int]] = []
         cursor = now
         ifl = in_flight[direction]
         if ifl is not None:
@@ -287,7 +287,7 @@ def _run_impl(
 
     def emit(
         kind: str,
-        t: int,
+        t: float,
         snap_remaining_idx: int,
         active: ActiveTask | None = None,
         **kwargs,
@@ -306,7 +306,7 @@ def _run_impl(
             )
         )
 
-    def try_start(direction: TransferDirection, now: int, snap_idx: int) -> None:
+    def try_start(direction: TransferDirection, now: float, snap_idx: int) -> None:
         """Pop+start the queue head if the destination has room. Destination
         bytes are allocated HERE (not at trigger fire), so a queued transfer
         consumes no destination memory until its turn on the stream. If the
@@ -392,7 +392,7 @@ def _run_impl(
             transfer_direction=direction,
         )
 
-    def complete(direction: TransferDirection, t: int, snap_idx: int) -> None:
+    def complete(direction: TransferDirection, t: float, snap_idx: int) -> None:
         ifl = in_flight[direction]
         assert ifl is not None
         obj_id = ifl.obj_id
@@ -425,7 +425,7 @@ def _run_impl(
                     transfer_direction="from_slow",
                 )
 
-    def advance(target_t: int, snap_idx: int) -> None:
+    def advance(target_t: float, snap_idx: int) -> None:
         """Process any transfer completions with end_t <= target_t (in time order)."""
         while True:
             from_slow_end = in_flight["from_slow"].end_t if in_flight["from_slow"] else INF
@@ -443,7 +443,7 @@ def _run_impl(
                 # A to_slow completion may have unblocked a deferred prefetch on from_slow.
                 try_start("from_slow", to_slow_end, snap_idx)
 
-    def _deferred_prefetch_ready_t(inp: str, now: int) -> int:
+    def _deferred_prefetch_ready_t(inp: str, now: float) -> float:
         """When will the deferred prefetch for `inp` complete? Computes
         `to_slow_end → from_slow_start (= max(to_slow_end, from_slow_busy_until)) → from_slow_end`."""
         waiters = deferred_prefetches.get(inp)
@@ -468,7 +468,7 @@ def _run_impl(
         from_slow_start = max(to_slow_end, from_slow_busy_until)
         return from_slow_start + waiters[0].runtime
 
-    def input_ready_t(inp: str, now: int) -> int:
+    def input_ready_t(inp: str, now: float) -> float:
         entry = pool.get((inp, COMPUTE_INPUT_LOC))
         if entry is None:
             # No fast-memory entry. Either: (a) a deferred prefetch is pending,
@@ -507,7 +507,7 @@ def _run_impl(
             raise ValueError(f"input {inp!r} is reserved by another task (unexpected mid-chain)")
         raise ValueError(f"input {inp!r} has unknown state {entry.state!r}")
 
-    def compute_outputs_ready_t(needed: int, now: int, task_id: str) -> int:
+    def compute_outputs_ready_t(needed: int, now: float, task_id: str) -> float:
         if chain.fast_memory_capacity is None:
             return now
         free = loc_free(COMPUTE_INPUT_LOC)

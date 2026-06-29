@@ -30,7 +30,7 @@ from dataflow_sim.workloads.common.recompute import RecomputeRewrite
 class RecomputeStep:
     """One accepted or rejected iteration, for diagnostics."""
     converted: tuple[str, ...]
-    makespan_us: int
+    makespan_us: float
     accepted: bool
 
 
@@ -38,8 +38,8 @@ class RecomputeStep:
 class RecomputePlanResult:
     levels: dict[str, int]          # chosen option level per rewrite object
     chain: TaskChain                # annotated chain of the best plan
-    makespan_us: int
-    baseline_makespan_us: int       # levels all zero
+    makespan_us: float
+    baseline_makespan_us: float     # levels all zero
     planning_time_s: float
     history: tuple[RecomputeStep, ...]
     report: StallReport             # report of the best plan
@@ -166,9 +166,9 @@ def _ranked_candidates(
     levels: Mapping[str, int],
     rewrites_by_obj: Mapping[str, RecomputeRewrite],
     report: StallReport,
-) -> list[tuple[str, int]]:
+) -> list[tuple[str, float]]:
     """Objects worth converting, ranked by estimated net benefit (us)."""
-    out: list[tuple[str, int]] = []
+    out: list[tuple[str, float]] = []
     for obj_id, rewrite in rewrites_by_obj.items():
         current = levels.get(obj_id, 0)
         nxt = _next_level(rewrite, current)

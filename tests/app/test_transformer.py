@@ -1,8 +1,6 @@
 """Tests for `dataflow_sim.workloads.models.transformer` and `dataflow_sim.workloads.models.presets`."""
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from dataflow_sim.engine.simulator import run as sim_run
@@ -380,23 +378,23 @@ def test_per_op_mem_eff_override(h100):
 
 
 def test_per_call_us_exact_unrounded(h100):
-    """`per_call_us_exact` is the un-rounded float µs of the binding term;
-    `per_call_us` is its ceil. Equality only when the exact value happens to
-    be integer."""
+    """`per_call_us` keeps the exact float µs binding term."""
     s = SubOp(name="big_matmul", kind="compute", flops=10**14, bytes=1000,
               eff_name="matmul", count=1)
     t = time_subop(s, h100)
     expected_exact = 10**14 / (h100.peak_tflops * 1e12 * h100.matmul_eff) * 1e6
     assert t.per_call_us_exact == pytest.approx(expected_exact, rel=1e-12)
-    assert t.per_call_us == math.ceil(t.per_call_us_exact)
+    assert t.per_call_us == pytest.approx(t.per_call_us_exact, rel=1e-12)
+    assert t.total_us == pytest.approx(t.per_call_us_exact, rel=1e-12)
 
 
-def test_bound_by_uses_exact_time_not_ceil_tie(h100):
-    """Rounded µs can tie even when the roofline term does not."""
+def test_bound_by_uses_exact_time(h100):
+    """The bound decision uses the exact roofline terms."""
     s = SubOp(name="rounded_tie", kind="compute", flops=707_000_000,
               bytes=3_240_000, eff_name="matmul", count=1)
     t = time_subop(s, h100)
-    assert t.math_us == t.mem_us == 2
+    assert t.math_us == pytest.approx(1.0997899976666408, rel=1e-12)
+    assert t.mem_us == pytest.approx(1.2, rel=1e-12)
     assert t.bound_by == "memory"
 
 
@@ -413,7 +411,7 @@ def test_compute_subop_timing_memory_bound(h100):
 
 
 def test_memory_subop_timing(h100):
-    """Memory-bound sub-op: total_us = ceil(bytes / (M * mem_eff) * 1e6),
+    """Memory-bound sub-op: total_us = bytes / (M * mem_eff) * 1e6,
     math_us is None, effective_tflops is None, bound_by == 'memory'."""
     s = SubOp(name="rms_norm", kind="memory", flops=0, bytes=10**9,
               eff_name="none", count=1)
@@ -422,8 +420,8 @@ def test_memory_subop_timing(h100):
     assert t.effective_tflops is None
     assert t.bound_by == "memory"
     expected_seconds = 10**9 / (h100.fast_memory_bw_gbs * 1e9 * h100.mem_eff)
-    expected_us = max(1, math.ceil(expected_seconds * 1e6))
-    assert t.total_us == expected_us
+    expected_us = expected_seconds * 1e6
+    assert t.total_us == pytest.approx(expected_us, rel=1e-12)
 
 
 def test_routed_expert_total_is_count_times_per_call(models, h100, cfg):
@@ -710,7 +708,7 @@ def test_head_breakdown_returns_six_timings(models, h100, cfg):
 
 
 def test_head_microseconds_sums_over_all_subops(models, h100, cfg):
-    """head_microseconds is the sum of per-sub-op total_us (capped at 1)."""
+    """head_microseconds is the exact sum of per-sub-op total_us."""
     s = models["nanogpt_124M"]
     timings = head_breakdown(s, h100, cfg)
     expected = max(1, sum(t.total_us for t in timings))

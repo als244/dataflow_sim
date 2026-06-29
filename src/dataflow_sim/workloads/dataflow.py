@@ -8,7 +8,6 @@ that concrete IR once hardware is selected.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -67,7 +66,7 @@ class DataflowCost(BaseModel):
 
     kind: CostKind
     name: str | None = None
-    runtime_us: int | None = Field(default=None, ge=0)
+    runtime_us: float | None = Field(default=None, ge=0)
     flops: int = Field(default=0, ge=0)
     memory_bytes: int = Field(default=0, ge=0)
     efficiency: EfficiencyName = "memory"
@@ -250,7 +249,7 @@ ComputeBlock.model_rebuild()
 
 @dataclass(frozen=True)
 class ResolvedCost:
-    runtime_us: int
+    runtime_us: float
     rows: list[dict[str, Any]]
 
 
@@ -333,11 +332,11 @@ def _timing_row(
     effective_flops: int,
     bytes_: int,
     count: int,
-    math_us: int | None,
-    mem_us: int,
-    per_call_us: int,
+    math_us: float | None,
+    mem_us: float,
+    per_call_us: float,
     per_call_us_exact: float,
-    total_us: int,
+    total_us: float,
     bound_by: Literal["compute", "memory"],
     effective_tflops: float | None,
 ) -> dict[str, Any]:
@@ -401,7 +400,7 @@ def resolve_cost(cost: DataflowCost, hw: HardwareSpec, *, default_name: str) -> 
     if cost.memory_bytes > 0 and hw.fast_memory_bw_gbs > 0 and mem_eff > 0:
         mem_seconds = cost.memory_bytes / (hw.fast_memory_bw_gbs * 1e9 * mem_eff)
         mem_us_exact = mem_seconds * 1e6
-        mem_us = max(1, math.ceil(mem_us_exact))
+        mem_us = mem_us_exact
     else:
         mem_seconds = 0.0
         mem_us_exact = 0.0
@@ -434,7 +433,7 @@ def resolve_cost(cost: DataflowCost, hw: HardwareSpec, *, default_name: str) -> 
     eff = _eff_value(cost, hw)
     math_seconds = cost.flops / (hw.peak_tflops * 1e12 * eff)
     math_us_exact = math_seconds * 1e6
-    math_us = max(1, math.ceil(math_us_exact))
+    math_us = math_us_exact
     per_call_us = max(math_us, mem_us)
     per_call_us_exact = max(math_us_exact, mem_us_exact)
     total_us = per_call_us * cost.count

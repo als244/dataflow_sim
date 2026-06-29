@@ -8,13 +8,13 @@ Design goal: this module is the ONLY place arch-aware math lives. Adding
 new architecture features (MLA, partial recompute, datatype changes, etc.)
 should be a local edit here, not a sprawl across the codebase.
 
-All quantities are integers; time is in microseconds (`1 tick = 1 µs`).
+Tensor sizes and FLOP counts are integers; resolved runtimes are float
+microseconds so small sub-ops do not accumulate integer-tick quantization.
 bf16 = 2 bytes/element (hardcoded for now).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import TYPE_CHECKING, Literal
 
 from dataflow_sim.workloads.training.optimizers import (
@@ -92,13 +92,13 @@ class SubOpTiming:
     effective_flops: int           # 0 for memory-bound; == flops except attn_bwd
     bytes: int
     count: int
-    math_us: int | None            # None for memory-bound
-    mem_us: int
-    per_call_us: int               # max(math_us, mem_us), ceil-rounded to int µs
-    per_call_us_exact: float       # un-rounded float µs of the binding term —
+    math_us: float | None          # None for memory-bound
+    mem_us: float
+    per_call_us: float             # max(math_us, mem_us)
+    per_call_us_exact: float       # exact float µs of the binding term —
                                    # use for section-level effective-TFLOPS so
-                                   # the result doesn't accumulate ceil errors
-    total_us: int
+                                   # legacy callers can rely on the explicit field
+    total_us: float
     bound_by: SubOpKind            # exact binding term; always "memory" for memory sub-ops
     effective_tflops: float | None # None for memory-bound; uses effective_flops
                                    # and the un-rounded binding time so pure
@@ -576,7 +576,7 @@ def time_subop(subop: SubOp, hw: HardwareSpec) -> SubOpTiming:
     if subop.bytes > 0 and hw.fast_memory_bw_gbs > 0 and mem_eff > 0:
         mem_seconds = subop.bytes / (hw.fast_memory_bw_gbs * 1e9 * mem_eff)
         mem_us_exact = mem_seconds * 1e6
-        mem_us = max(1, math.ceil(mem_us_exact))
+        mem_us = mem_us_exact
     else:
         mem_seconds = 0.0
         mem_us_exact = 0.0
@@ -586,7 +586,7 @@ def time_subop(subop: SubOp, hw: HardwareSpec) -> SubOpTiming:
         eff = subop.compute_eff if subop.compute_eff is not None else _eff_value(hw, subop.eff_name)
         math_seconds = subop.flops / (hw.peak_tflops * 1e12 * eff)
         math_us_exact = math_seconds * 1e6
-        math_us = max(1, math.ceil(math_us_exact))
+        math_us = math_us_exact
         per_call_us = max(math_us, mem_us)
         per_call_us_exact = max(math_us_exact, mem_us_exact)
         total_us = per_call_us * subop.count
@@ -643,8 +643,8 @@ def optimizer_step_breakdown(spec: TransformerSpec, hw: HardwareSpec,
 
 
 def layer_fwd_microseconds(spec: TransformerSpec, hw: HardwareSpec,
-                           cfg: TrainingConfig) -> int:
-    return max(1, sum(t.total_us for t in layer_fwd_breakdown(spec, hw, cfg)))
+                           cfg: TrainingConfig) -> float:
+    return sum(t.total_us for t in layer_fwd_breakdown(spec, hw, cfg))
 
 
 # Sub-ops skipped when recomputing a layer's activations: the down
@@ -667,27 +667,27 @@ def recompute_subops(spec: TransformerSpec, cfg: TrainingConfig) -> list[SubOp]:
 
 
 def layer_recompute_microseconds(spec: TransformerSpec, hw: HardwareSpec,
-                                 cfg: TrainingConfig) -> int:
+                                 cfg: TrainingConfig) -> float:
     """Runtime of re-running a layer's forward compute minus the final down
     projection(s), used when the layer's saved activations are recomputed."""
-    return max(1, sum(t.total_us for t in [
+    return sum(t.total_us for t in [
         time_subop(subop, hw) for subop in recompute_subops(spec, cfg)
-    ]))
+    ])
 
 
 def layer_bwd_microseconds(spec: TransformerSpec, hw: HardwareSpec,
-                           cfg: TrainingConfig) -> int:
-    return max(1, sum(t.total_us for t in layer_bwd_breakdown(spec, hw, cfg)))
+                           cfg: TrainingConfig) -> float:
+    return sum(t.total_us for t in layer_bwd_breakdown(spec, hw, cfg))
 
 
 def head_microseconds(spec: TransformerSpec, hw: HardwareSpec,
-                      cfg: TrainingConfig) -> int:
-    return max(1, sum(t.total_us for t in head_breakdown(spec, hw, cfg)))
+                      cfg: TrainingConfig) -> float:
+    return sum(t.total_us for t in head_breakdown(spec, hw, cfg))
 
 
 def optimizer_step_microseconds(spec: TransformerSpec, hw: HardwareSpec,
-                                cfg: TrainingConfig) -> int:
+                                cfg: TrainingConfig) -> float:
     timings = optimizer_step_breakdown(spec, hw, cfg)
     if not timings:
         return 0
-    return max(1, sum(t.total_us for t in timings))
+    return sum(t.total_us for t in timings)

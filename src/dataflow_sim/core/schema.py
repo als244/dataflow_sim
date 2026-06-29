@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Literal
 
+Time = float
 
 Location = Literal["backing", "fast"]
 ObjectType = Literal["weight", "activation", "gradient", "optimizer", "other"]
@@ -40,7 +41,7 @@ class TransferTrigger:
     `runtime` overrides the bandwidth-derived default for this one transfer.
     """
     obj_id: str
-    runtime: int | None = None
+    runtime: Time | None = None
 
 
 @dataclass(frozen=True)
@@ -63,7 +64,7 @@ class Task:
     id: str
     inputs: list[str]
     outputs: list[OutputAlloc]
-    runtime: int
+    runtime: Time
     releases_after: list[str] = field(default_factory=list)
     offload_after: list[TransferTrigger] = field(default_factory=list)
     prefetch_after: list[TransferTrigger] = field(default_factory=list)
@@ -117,7 +118,7 @@ class TaskChain:
                     id=t["id"],
                     inputs=list(t.get("inputs", [])),
                     outputs=[_out(o) for o in t.get("outputs", [])],
-                    runtime=int(t["runtime"]),
+                    runtime=float(t["runtime"]),
                     releases_after=list(t.get("releases_after", [])),
                     offload_after=[_trig(x) for x in t.get("offload_after", [])],
                     prefetch_after=[_trig(x) for x in t.get("prefetch_after", [])],
@@ -146,19 +147,19 @@ class MemoryEntry:
     type: ObjectType
     state: MemoryState
     # next time this object appears as an input in the remaining chain (None if never)
-    next_ref_t: int | None
+    next_ref_t: Time | None
 
 
 @dataclass(frozen=True)
 class ActiveTask:
     id: str
-    ends_at: int
+    ends_at: Time
 
 
 @dataclass(frozen=True)
 class Reference:
     obj_id: str
-    ref_t: int
+    ref_t: Time
     ref_task: str
 
 
@@ -189,7 +190,7 @@ TransferDirection = Literal["from_slow", "to_slow"]
 
 @dataclass(frozen=True)
 class Event:
-    t: int
+    t: Time
     kind: EventKind
     snapshot: Snapshot
     task_id: str | None = None
@@ -202,8 +203,8 @@ class Event:
 @dataclass(frozen=True)
 class TaskInterval:
     task_id: str
-    start: int
-    end: int
+    start: Time
+    end: Time
     track: str = "compute"
 
 
@@ -215,7 +216,7 @@ class MemoryTracePoint:
     object types for live/reserved bytes plus inbound/outbound transfer states.
     It intentionally omits object ids and reference-stream data.
     """
-    t: int
+    t: Time
     fast_bytes_by_band: dict[str, int]
 
 

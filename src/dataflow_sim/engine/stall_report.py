@@ -19,17 +19,17 @@ from dataflow_sim.core.schema import EventLog, TaskChain
 
 @dataclass(frozen=True)
 class StallReport:
-    makespan_us: int
-    compute_busy_us: int
-    stall_us: int                      # total compute idle between tasks
-    input_wait_us: int                 # stalls ending exactly at an input's from_slow arrival
-    capacity_wait_us: int              # stalls ending exactly at a to_slow completion
-    other_wait_us: int                 # stalls with no attributable transfer event
-    stall_by_object: dict[str, int]    # input-wait blame per object id
-    stream_busy_us: dict[str, int]     # {"from_slow": ..., "to_slow": ...}
-    backlog_us: dict[str, int]         # time each stream had waiting work
-    backlog_windows: dict[str, list[tuple[int, int]]]
-    transfer_backlog_overlap: dict[str, int] = field(default_factory=dict)
+    makespan_us: float
+    compute_busy_us: float
+    stall_us: float                      # total compute idle between tasks
+    input_wait_us: float                 # stalls ending exactly at an input's from_slow arrival
+    capacity_wait_us: float              # stalls ending exactly at a to_slow completion
+    other_wait_us: float                 # stalls with no attributable transfer event
+    stall_by_object: dict[str, float]    # input-wait blame per object id
+    stream_busy_us: dict[str, float]     # {"from_slow": ..., "to_slow": ...}
+    backlog_us: dict[str, float]         # time each stream had waiting work
+    backlog_windows: dict[str, list[tuple[float, float]]]
+    transfer_backlog_overlap: dict[str, float] = field(default_factory=dict)
     # per object: its own transfer time spent inside its stream's backlog
     # windows (time during which removing this traffic would unblock others)
 
@@ -40,12 +40,12 @@ def _transfer_obj(task_id: str) -> str:
     return obj.split("#", 1)[0]
 
 
-def _merge_windows(points: list[tuple[int, int]]) -> list[tuple[int, int]]:
+def _merge_windows(points: list[tuple[float, int]]) -> list[tuple[float, float]]:
     """Sweep (+1 at enqueue, -1 at start) deltas into waiting>0 windows."""
     events = sorted(points)
-    windows: list[tuple[int, int]] = []
+    windows: list[tuple[float, float]] = []
     depth = 0
-    open_t: int | None = None
+    open_t: float | None = None
     for t, delta in events:
         prev = depth
         depth += delta
@@ -58,8 +58,8 @@ def _merge_windows(points: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return windows
 
 
-def _overlap(a0: int, a1: int, windows: list[tuple[int, int]]) -> int:
-    total = 0
+def _overlap(a0: float, a1: float, windows: list[tuple[float, float]]) -> float:
+    total = 0.0
     for w0, w1 in windows:
         lo, hi = max(a0, w0), min(a1, w1)
         if hi > lo:
@@ -77,16 +77,16 @@ def build_stall_report(chain: TaskChain, log: EventLog) -> StallReport:
     compute_busy = sum(iv.end - iv.start for iv in compute)
 
     # Transfer arrival times by direction: (end_time -> object ids ending then)
-    ends_at: dict[str, dict[int, set[str]]] = {"from_slow": {}, "to_slow": {}}
+    ends_at: dict[str, dict[float, set[str]]] = {"from_slow": {}, "to_slow": {}}
     for direction, ivs in transfers.items():
         for iv in ivs:
             ends_at[direction].setdefault(iv.end, set()).add(_transfer_obj(iv.task_id))
 
     tasks_by_id = {t.id: t for t in chain.tasks}
 
-    stall_us = input_wait = capacity_wait = other_wait = 0
-    stall_by_object: dict[str, int] = {}
-    prev_end = 0
+    stall_us = input_wait = capacity_wait = other_wait = 0.0
+    stall_by_object: dict[str, float] = {}
+    prev_end = 0.0
     for iv in compute:
         gap = iv.start - prev_end
         prev_end = iv.end
@@ -98,7 +98,7 @@ def build_stall_report(chain: TaskChain, log: EventLog) -> StallReport:
         blocking = sorted(arrived & set(task.inputs)) if task else []
         if blocking:
             input_wait += gap
-            share = gap // len(blocking)
+            share = gap / len(blocking)
             for oid in blocking:
                 stall_by_object[oid] = stall_by_object.get(oid, 0) + share
         elif iv.start in ends_at["to_slow"]:
@@ -110,7 +110,7 @@ def build_stall_report(chain: TaskChain, log: EventLog) -> StallReport:
     # for the first transfers, t=0 has no trigger -> use its own start) until
     # it begins on the stream. Triggers are matched to transfer instances in
     # order per (direction, object).
-    trigger_times: dict[str, dict[str, list[int]]] = {"from_slow": {}, "to_slow": {}}
+    trigger_times: dict[str, dict[str, list[float]]] = {"from_slow": {}, "to_slow": {}}
     compute_end_by_task = {iv.task_id: iv.end for iv in compute}
     for t in chain.tasks:
         t_end = compute_end_by_task.get(t.id)
@@ -121,11 +121,11 @@ def build_stall_report(chain: TaskChain, log: EventLog) -> StallReport:
         for trig in t.offload_after:
             trigger_times["to_slow"].setdefault(trig.obj_id, []).append(t_end)
 
-    backlog_windows: dict[str, list[tuple[int, int]]] = {}
-    backlog_us: dict[str, int] = {}
-    stream_busy: dict[str, int] = {}
+    backlog_windows: dict[str, list[tuple[float, float]]] = {}
+    backlog_us: dict[str, float] = {}
+    stream_busy: dict[str, float] = {}
     for direction, ivs in transfers.items():
-        deltas: list[tuple[int, int]] = []
+        deltas: list[tuple[float, int]] = []
         seen: dict[str, int] = {}
         for iv in sorted(ivs, key=lambda x: x.start):
             obj = _transfer_obj(iv.task_id)
@@ -142,7 +142,7 @@ def build_stall_report(chain: TaskChain, log: EventLog) -> StallReport:
         backlog_us[direction] = sum(b - a for a, b in windows)
         stream_busy[direction] = sum(iv.end - iv.start for iv in ivs)
 
-    transfer_backlog_overlap: dict[str, int] = {}
+    transfer_backlog_overlap: dict[str, float] = {}
     for direction, ivs in transfers.items():
         windows = backlog_windows[direction]
         if not windows:

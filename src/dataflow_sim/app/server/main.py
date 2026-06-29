@@ -246,7 +246,7 @@ def preview_workload(params: WorkloadPreviewParams) -> dict:
     }
 
 
-def _log_makespan(log) -> int:
+def _log_makespan(log) -> float:
     return max((iv.end for iv in log.task_intervals), default=0)
 
 
@@ -424,13 +424,13 @@ def _compute_summary(
     # For attn_bwd today: discount = 1/5 of total_us; generalizes to any
     # future sub-op with the same pattern.
     recompute_busy = _interval_busy(log, track="compute", task_prefix="r_")
-    def _subop_recompute_us(subop: dict) -> int:
+    def _subop_recompute_us(subop: dict) -> float:
         if subop["kind"] != "compute" or subop["flops"] <= 0:
-            return 0
+            return 0.0
         if subop["effective_flops"] >= subop["flops"]:
-            return 0
+            return 0.0
         discount = (subop["flops"] - subop["effective_flops"]) / subop["flops"]
-        return int(round(subop["total_us"] * discount))
+        return float(subop["total_us"]) * discount
     block_rows = breakdown.get("compute_blocks") or []
     if block_rows:
         total_flops = sum(int(block.get("total_flops", 0)) for block in block_rows)

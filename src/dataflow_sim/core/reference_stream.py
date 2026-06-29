@@ -7,7 +7,7 @@ from dataflow_sim.core.schema import Reference, Task
 
 def compute_reference_stream(
     remaining_tasks: Iterable[Task],
-    task_start_times: dict[str, int],
+    task_start_times: dict[str, float],
 ) -> list[Reference]:
     """Forward-looking 'reference tape' over the remaining task chain.
 
@@ -34,8 +34,8 @@ def compute_reference_stream(
 def next_ref_time(
     obj_id: str,
     remaining_tasks: Iterable[Task],
-    task_start_times: dict[str, int],
-) -> int | None:
+    task_start_times: dict[str, float],
+) -> float | None:
     """First time `obj_id` is touched (input or output) in the remaining chain."""
     for task in remaining_tasks:
         if obj_id in task.inputs or any(o.id == obj_id for o in task.outputs):

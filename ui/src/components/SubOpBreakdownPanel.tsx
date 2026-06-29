@@ -75,6 +75,22 @@ function fmtBytes(n: number): string {
   return `${n} B`;
 }
 
+function fmtUs(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  if (abs === 0) return "0";
+  const maximumFractionDigits =
+    abs < 1 ? 3 :
+    abs < 10 ? 3 :
+    abs < 100 ? 2 :
+    abs < 1000 ? 1 :
+    0;
+  return n.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits,
+  });
+}
+
 function fmtTflops(n: number | null): string {
   if (n === null || n === undefined) return "—";
   return `${n.toFixed(1)}`;
@@ -97,7 +113,7 @@ function Section({ title, rows, total_us, compact = false }: { title: string; ro
       <div className="breakdown-section-header">
         <span className="breakdown-section-title">{title}</span>
         <span className="dim">
-          total {total_us.toLocaleString()} µs
+          total {fmtUs(total_us)} µs
           {sectionTflops !== null && (
             <> · {fmtTflops(sectionTflops)} eff. TFLOPS</>
           )}
@@ -139,9 +155,9 @@ function Section({ title, rows, total_us, compact = false }: { title: string; ro
                 <td className="num">{fmtFlops(flopsTotal)}</td>
                 {!compact && <td className={effFlopsClass}>{fmtFlops(effFlopsTotal)}</td>}
                 <td className="num">{fmtBytes(r.bytes * r.count)}</td>
-                {!compact && <td className="num">{r.math_us === null ? "—" : (r.math_us * r.count).toLocaleString()}</td>}
-                {!compact && <td className="num">{(r.mem_us * r.count).toLocaleString()}</td>}
-                <td className="num">{r.total_us.toLocaleString()}</td>
+                {!compact && <td className="num">{r.math_us === null ? "—" : fmtUs(r.math_us * r.count)}</td>}
+                {!compact && <td className="num">{fmtUs(r.mem_us * r.count)}</td>}
+                <td className="num">{fmtUs(r.total_us)}</td>
                 <td>{boundChip}</td>
                 {!compact && <td className="num">{fmtTflops(r.effective_tflops)}</td>}
                 {!compact && <td className="num">{fmtPct(layerPct)}</td>}
@@ -165,7 +181,7 @@ function ComputeBlockBreakdown({ blocks, compact }: { blocks: ComputeBlockSummar
       <div className="panel-header">
         <h3>Compute Block Breakdown</h3>
         <span className="dim">
-          {visibleBlocks.length} blocks · {totalInstances.toLocaleString()} instances · {totalRuntime.toLocaleString()} µs
+          {visibleBlocks.length} blocks · {totalInstances.toLocaleString()} instances · {fmtUs(totalRuntime)} µs
         </span>
       </div>
       <div className="compute-block-list">
@@ -179,8 +195,8 @@ function ComputeBlockBreakdown({ blocks, compact }: { blocks: ComputeBlockSummar
               </div>
               <div className="compute-block-metrics">
                 <span>{block.instance_count.toLocaleString()} instances</span>
-                <span>{block.per_instance_runtime_us.toLocaleString()} µs each</span>
-                <span>{block.total_runtime_us.toLocaleString()} µs total</span>
+                <span>{fmtUs(block.per_instance_runtime_us)} µs each</span>
+                <span>{fmtUs(block.total_runtime_us)} µs total</span>
                 <span>{fmtBytes(block.total_bytes)} moved/read</span>
                 <span>{fmtFlops(block.total_effective_flops)} effective FLOPs</span>
               </div>
@@ -194,8 +210,8 @@ function ComputeBlockBreakdown({ blocks, compact }: { blocks: ComputeBlockSummar
               </summary>
               <div className="compute-block-metrics">
                 <span>{block.instance_count.toLocaleString()} instances</span>
-                <span>{block.per_instance_runtime_us.toLocaleString()} µs each</span>
-                <span>{block.total_runtime_us.toLocaleString()} µs total</span>
+                <span>{fmtUs(block.per_instance_runtime_us)} µs each</span>
+                <span>{fmtUs(block.total_runtime_us)} µs total</span>
                 <span>{fmtBytes(block.total_bytes)} moved/read</span>
                 <span>{fmtFlops(block.total_effective_flops)} effective FLOPs</span>
               </div>
@@ -239,15 +255,15 @@ export function SubOpBreakdownPanel({ breakdown, compact = false }: Props) {
       <div className="panel-header">
         <h3>Op Breakdown (one representative layer)</h3>
         <span className="dim">
-          fwd {breakdown.totals_us.layer_fwd.toLocaleString()} µs
+          fwd {fmtUs(breakdown.totals_us.layer_fwd)} µs
           {" · "}
-          bwd {breakdown.totals_us.layer_bwd.toLocaleString()} µs
+          bwd {fmtUs(breakdown.totals_us.layer_bwd)} µs
           {" · "}
-          head {breakdown.totals_us.head.toLocaleString()} µs
+          head {fmtUs(breakdown.totals_us.head)} µs
           {optimizerStepUs > 0 && (
             <>
               {" · "}
-              opt {optimizerStepUs.toLocaleString()} µs
+              opt {fmtUs(optimizerStepUs)} µs
             </>
           )}
         </span>
