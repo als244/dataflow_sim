@@ -32,16 +32,13 @@ from dataflow_sim.core.schema import EventLog, TaskChain
 from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS, HardwareSpec
 from dataflow_sim.workloads.common.workload import Workload
 from dataflow_sim.workloads.dataflow import DataflowProgram, realize_dataflow_program
-from dataflow_sim.workloads.models.presets import load_model_presets
-from dataflow_sim.workloads.training.transformer import (
-    TrainingConfig,
-    build_example_heterogeneous_transformer_program,
-    build_transformer_training_program,
-    build_transformer_training_workload,
-)
-from dataflow_sim.workloads.models.transformer import (
-    TransformerSpec,
-)
+from dataflow_sim.workloads.dataflow_builder import TrainingConfig
+from dataflow_sim.workloads.models.llama3 import Llama3Config, Llama3ForTraining
+from dataflow_sim.workloads.models.olmoe import OLMoEConfig, OLMoEForTraining
+from dataflow_sim.workloads.models.qwen3 import Qwen3Config, Qwen3ForTraining
+from dataflow_sim.workloads.models.qwen3_moe import Qwen3MoEConfig, Qwen3MoEForTraining
+from dataflow_sim.workloads.summary import compute_workload_summary
+from dataflow_sim.workloads.training_builder import TrainingWorkloadBuilder
 
 app = FastAPI(title="dataflow_sim")
 MAX_RESPONSE_EVENTS = 300
@@ -57,6 +54,7 @@ Policy = Literal[
     "pressurefit",
 ]
 Optimizer = Literal["none", "adamw", "muon"]
+ModelFamily = Literal["llama3", "qwen3", "qwen3_moe", "olmoe"]
 
 
 class HardwareParams(BaseModel):
@@ -73,6 +71,7 @@ class HardwareParams(BaseModel):
 
 class ModelParams(BaseModel):
     preset: str = "custom"
+    family: ModelFamily | None = None
     vocab_size: int = Field(..., ge=1)
     n_layers: int = Field(..., ge=1, le=256)
     d_model: int = Field(..., ge=1)
@@ -119,8 +118,9 @@ class PlannerParams(BaseModel):
     policy: Policy = "pressurefit"
     window_size: int = Field(2, ge=1, le=32)
     fast_memory_capacity_gb: float | None = Field(None, gt=0)
-    # When true for transformer workloads, an evidence-directed loop picks
-    # which activations to recompute. Generic schema workloads currently ignore it.
+    # When true for modular training workloads, an evidence-directed loop picks
+    # which saved activation instances to recompute. Generic schema workloads
+    # currently ignore it because they do not publish recompute rewrite tables.
     recompute: bool = False
 
 
@@ -135,6 +135,37 @@ class WorkloadPreviewParams(BaseModel):
     hardware: HardwareParams
 
 
+_MODEL_FIELDS = (
+    "vocab_size",
+    "n_layers",
+    "d_model",
+    "head_dim",
+    "n_heads",
+    "n_kv_heads",
+    "expert_dim",
+    "num_shared_experts",
+    "num_routed_experts",
+    "top_k",
+    "qk_norm",
+)
+_MODEL_FAMILY_BUILDERS = {
+    "llama3": (Llama3Config, Llama3ForTraining),
+    "qwen3": (Qwen3Config, Qwen3ForTraining),
+    "qwen3_moe": (Qwen3MoEConfig, Qwen3MoEForTraining),
+    "olmoe": (OLMoEConfig, OLMoEForTraining),
+}
+_MODULAR_PRESET_KEYS: dict[str, ModelFamily] = {
+    "llama3_8B": "llama3",
+    "llama3_70B": "llama3",
+    "llama3_405B": "llama3",
+    "qwen3_4B": "qwen3",
+    "qwen3_8B": "qwen3",
+    "qwen3_32B": "qwen3",
+    "qwen3_moe_30B-3B": "qwen3_moe",
+    "olmoe_7B-1B": "olmoe",
+}
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -143,31 +174,95 @@ def health() -> dict:
 @app.get("/api/presets")
 def presets() -> dict:
     """Workload + hardware preset registries for UI dropdowns."""
-    model_presets = load_model_presets()
-    workloads = {
-        name: {
+    workloads = {}
+    models = {}
+    for name, family, config in _modular_model_presets():
+        model = _model_params_from_config(config, family)
+        workloads[name] = {
             "source": "training_transformer",
             "preset": name,
-            "model": asdict(spec),
+            "model": model,
             "training": TrainingParams().model_dump(mode="json"),
-            "description": f"Transformer training workload for {name}",
+            "description": f"{family} training workload for {name}",
         }
-        for name, spec in model_presets.items()
-    }
-    hetero = build_example_heterogeneous_transformer_program()
-    workloads["heterogeneous_dense_moe_demo"] = {
+        models[name] = model
+
+    demo_training = TrainingConfig(seqlen=128, num_seqs=1, optimizer="none")
+    demo_config = Qwen3MoEConfig.preset(
+        "30B-3B",
+        n_layers=2,
+        d_model=512,
+        n_heads=8,
+        n_kv_heads=2,
+        expert_dim=128,
+        num_routed_experts=8,
+        top_k=2,
+        vocab_size=32_000,
+    )
+    demo_schema = Qwen3MoEForTraining(demo_config).build_training_program(
+        demo_training,
+        input_shape=(demo_training.tokens, demo_config.d_model),
+        name="qwen3_moe_modular_demo",
+    )
+    workloads["qwen3_moe_modular_demo"] = {
         "source": "schema",
-        "preset": "heterogeneous_dense_moe_demo",
-        "schema": hetero.model_dump(mode="json"),
-        "description": "Example heterogeneous transformer with repeated dense layers and one MoE layer",
+        "preset": "qwen3_moe_modular_demo",
+        "schema": demo_schema.model_dump(mode="json"),
+        "description": "Small modular Qwen3 MoE schema generated by the new workload stack",
     }
     return {
         "workloads": workloads,
-        # Kept for older local scripts/UI snapshots that still expect a model
-        # registry; the webapp uses `workloads`.
-        "models": {name: asdict(spec) for name, spec in model_presets.items()},
+        "models": models,
         "hardware": {name: asdict(hw) for name, hw in HARDWARE_PRESETS.items()},
     }
+
+
+def _modular_model_presets():
+    for name, family in _MODULAR_PRESET_KEYS.items():
+        config_cls, _ = _MODEL_FAMILY_BUILDERS[family]
+        yield name, family, config_cls.from_model_dims(name)
+
+
+def _model_params_from_config(config, family: ModelFamily) -> dict:
+    """Return the preset payload consumed by the webapp model editor.
+
+    The workload preset already carries its top-level preset name, so this
+    nested model payload intentionally omits `preset`. The UI adds the selected
+    preset back when it sends a simulation request.
+    """
+
+    data = asdict(config)
+    data.pop("preset_name", None)
+    return {"family": family, **data}
+
+
+def _family_from_params(params: ModelParams) -> ModelFamily:
+    if params.family is not None:
+        return params.family
+    preset = params.preset.lower()
+    if preset.startswith("olmoe"):
+        return "olmoe"
+    if (
+        preset.startswith("qwen3_moe")
+        or preset.startswith("qwen3_30")
+        or params.num_routed_experts > 0
+    ):
+        return "qwen3_moe"
+    if preset.startswith("qwen3"):
+        return "qwen3"
+    return "llama3"
+
+
+def _config_kwargs_from_params(params: ModelParams) -> dict:
+    kwargs = {field: getattr(params, field) for field in _MODEL_FIELDS}
+    kwargs["preset_name"] = params.preset
+    return kwargs
+
+
+def _training_model_from_params(params: ModelParams) -> TrainingWorkloadBuilder:
+    family = _family_from_params(params)
+    config_cls, model_cls = _MODEL_FAMILY_BUILDERS[family]
+    return model_cls(config_cls(**_config_kwargs_from_params(params)))
 
 
 def _hardware_from_params(params: HardwareParams) -> HardwareSpec:
@@ -183,22 +278,6 @@ def _hardware_from_params(params: HardwareParams) -> HardwareSpec:
     )
 
 
-def _transformer_spec_from_params(params: ModelParams) -> TransformerSpec:
-    return TransformerSpec(
-        vocab_size=params.vocab_size,
-        n_layers=params.n_layers,
-        d_model=params.d_model,
-        head_dim=params.head_dim,
-        n_heads=params.n_heads,
-        n_kv_heads=params.n_kv_heads,
-        expert_dim=params.expert_dim,
-        num_shared_experts=params.num_shared_experts,
-        num_routed_experts=params.num_routed_experts,
-        top_k=params.top_k,
-        qk_norm=params.qk_norm,
-    )
-
-
 def _training_config_from_params(params: TrainingParams) -> TrainingConfig:
     return TrainingConfig(
         seqlen=params.seqlen,
@@ -210,23 +289,20 @@ def _training_config_from_params(params: TrainingParams) -> TrainingConfig:
     )
 
 
-def _program_from_workload_params(params: WorkloadParams) -> DataflowProgram:
-    if params.source == "schema":
-        return params.program
-    spec = _transformer_spec_from_params(params.model)
-    cfg = _training_config_from_params(params.training)
-    return build_transformer_training_program(spec, cfg)
-
-
 def _workload_from_params(
     params: WorkloadParams,
     hw: HardwareSpec,
-) -> tuple[Workload, tuple[TransformerSpec, TrainingConfig] | None]:
+) -> tuple[Workload, tuple[TrainingWorkloadBuilder, TrainingConfig] | None]:
     if params.source == "schema":
         return realize_dataflow_program(params.program, hw), None
-    spec = _transformer_spec_from_params(params.model)
     cfg = _training_config_from_params(params.training)
-    return build_transformer_training_workload(spec, hw, cfg), (spec, cfg)
+    model = _training_model_from_params(params.model)
+    workload = model.build_training_workload(
+        cfg,
+        hw,
+        input_shape=(cfg.tokens, params.model.d_model),
+    )
+    return workload, (model, cfg)
 
 
 @app.post("/api/workloads/preview")
@@ -244,33 +320,6 @@ def preview_workload(params: WorkloadPreviewParams) -> dict:
         "compute_blocks": workload.metadata.get("compute_blocks", []),
         "task_summaries": workload.metadata.get("task_summaries", []),
     }
-
-
-def _log_makespan(log) -> float:
-    return max((iv.end for iv in log.task_intervals), default=0)
-
-
-def _peak_fast_memory_gb(log) -> float:
-    if getattr(log, "peak_fast_memory_bytes", 0):
-        return log.peak_fast_memory_bytes / (1024 ** 3)
-    peak_bytes = 0
-    for ev in log.events:
-        b = sum(m.size for m in ev.snapshot.memory if m.location == "fast")
-        if b > peak_bytes:
-            peak_bytes = b
-    return peak_bytes / (1024 ** 3)
-
-
-def _interval_busy(log, *, track: str | None = None,
-                   task_prefix: str | None = None) -> int:
-    total = 0
-    for iv in log.task_intervals:
-        if track is not None and iv.track != track:
-            continue
-        if task_prefix is not None and not iv.task_id.startswith(task_prefix):
-            continue
-        total += iv.end - iv.start
-    return total
 
 
 def _apply_policy(planner: PlannerParams, bare, cap_bytes: int | None) -> TaskChain:
@@ -304,13 +353,13 @@ def _run_config(
     hw: HardwareSpec,
     cap_bytes: int | None,
 ) -> tuple[TaskChain, Workload, EventLog, PressureFitDiagnostics | None]:
-    workload, transformer_context = _workload_from_params(params.workload, hw)
+    workload, training_context = _workload_from_params(params.workload, hw)
     bare = workload.chain
     diagnostics = None
-    if params.planner.recompute and transformer_context is not None:
-        spec, cfg = transformer_context
+    if params.planner.recompute and training_context is not None:
+        model, cfg = training_context
         chain, workload, diagnostics = _plan_with_recompute(
-            params.planner, spec, hw, cfg, cap_bytes,
+            params.planner, model, hw, cfg, cap_bytes,
         )
     elif params.planner.policy == "pressurefit":
         chain, diagnostics = plan_pressurefit_policy(
@@ -329,21 +378,29 @@ def _run_config(
 
 def _plan_with_recompute(
     planner: PlannerParams,
-    spec: TransformerSpec,
+    model: TrainingWorkloadBuilder,
     hw: HardwareSpec,
     cfg: TrainingConfig,
     cap_bytes: int | None,
 ) -> tuple[TaskChain, Workload, PressureFitDiagnostics | None]:
-    """Select per-layer recompute levels (evidence loop), then return the
-    annotated chain for the chosen levels under the requested policy."""
-    base = build_transformer_training_workload(spec, hw, cfg)
+    """Select recompute levels, then return the chosen annotated chain.
+
+    Recompute options come from the workload's compute-block rewrite table.
+    The selector is still per saved activation instance because memory pressure
+    and transfer blame are instance-specific.
+    """
+
+    input_shape = (cfg.tokens, model.input_dim)
+    base = model.build_training_workload(cfg, hw, input_shape=input_shape)
     rewrites = base.metadata["recompute_rewrites"]
 
     def build_variant(levels) -> TaskChain:
-        chain = build_transformer_training_workload(
-            spec, hw, cfg, recompute=dict(levels),
+        return model.build_training_workload(
+            cfg,
+            hw,
+            input_shape=input_shape,
+            recompute=dict(levels),
         ).chain
-        return replace(chain, fast_memory_capacity=cap_bytes) if cap_bytes is not None else chain
 
     result = plan_with_recompute(
         build_variant,
@@ -351,8 +408,11 @@ def _plan_with_recompute(
         lambda b: _apply_policy(planner, b, cap_bytes),
         max_wall_s=RECOMPUTE_MAX_WALL_S,
     )
-    selected_workload = build_transformer_training_workload(
-        spec, hw, cfg, recompute=dict(result.levels),
+    selected_workload = model.build_training_workload(
+        cfg,
+        hw,
+        input_shape=input_shape,
+        recompute=dict(result.levels),
     )
     # Re-derive PressureFit candidate diagnostics on the chosen variant so the
     # UI panel still works. Deterministic — yields the same chain the loop
@@ -364,161 +424,6 @@ def _plan_with_recompute(
         )
         return chain, selected_workload, diagnostics
     return result.chain, selected_workload, None
-
-
-def _compute_summary(
-    log,
-    breakdown: dict,
-    summary_meta: dict | None,
-) -> dict:
-    """Aggregate top-level KPIs from the simulator log + per-layer breakdown.
-
-    All times in µs.
-    `effective_tflops` uses `effective_flops` per sub-op (excludes recompute
-    overhead — e.g. attn_bwd's 1x recompute portion).
-    `hardware_tflops` uses raw `flops` per sub-op (includes ALL flops the
-    hardware actually executes — useful + recompute). When `r_i` recompute
-    tasks later carry non-zero flops, those should be added to `total_flops`
-    too so this metric stays accurate.
-    `peak_fast_memory_gb` is the high-water mark of compute-pool bytes across
-    every event snapshot. Utilization = `<stream-busy-time> / makespan × 100`.
-    """
-    makespan = _log_makespan(log)
-    peak_gb = _peak_fast_memory_gb(log)
-    summary_meta = summary_meta or {}
-    n_layers = int(summary_meta.get("n_layers", 1))
-    metrics = summary_meta.get("metrics") or {}
-    primary_unit = metrics.get("primary_unit")
-    primary_count = float(metrics.get("primary_count", 0) or 0)
-    total_tokens = int(
-        primary_count
-        if primary_unit == "tokens"
-        else summary_meta.get("total_tokens", 0)
-    )
-    grad_accum_rounds = int(summary_meta.get("grad_accum_rounds", 1))
-    num_steps = int(summary_meta.get("num_steps", 1))
-
-    if makespan <= 0:
-        return {
-            "makespan_us": 0,
-            "tokens_per_second": 0.0,
-            "primary_unit": primary_unit,
-            "primary_count": primary_count,
-            "primary_rate_per_second": 0.0,
-            "effective_tflops": 0.0,
-            "hardware_tflops": 0.0,
-            "peak_fast_memory_gb": peak_gb,
-            "idle_pct": 0.0,
-            "recompute_pct": 0.0,
-            "from_slow_util_pct": 0.0,
-            "to_slow_util_pct": 0.0,
-            "total_flops": 0,
-            "total_effective_flops": 0,
-        }
-    compute_busy = _interval_busy(log, track="compute")
-    from_slow_busy = _interval_busy(log, track="from_slow")
-    to_slow_busy = _interval_busy(log, track="to_slow")
-    # Recompute time = (a) all `r_i` task intervals (explicit recompute tasks)
-    # PLUS (b) the discounted portion of any sub-op whose `effective_flops`
-    # is strictly less than its `flops` — that gap is recompute overhead.
-    # For attn_bwd today: discount = 1/5 of total_us; generalizes to any
-    # future sub-op with the same pattern.
-    recompute_busy = _interval_busy(log, track="compute", task_prefix="r_")
-    def _subop_recompute_us(subop: dict) -> float:
-        if subop["kind"] != "compute" or subop["flops"] <= 0:
-            return 0.0
-        if subop["effective_flops"] >= subop["flops"]:
-            return 0.0
-        discount = (subop["flops"] - subop["effective_flops"]) / subop["flops"]
-        return float(subop["total_us"]) * discount
-    block_rows = breakdown.get("compute_blocks") or []
-    if block_rows:
-        total_flops = sum(int(block.get("total_flops", 0)) for block in block_rows)
-        total_eff_flops = sum(
-            int(block.get("total_effective_flops", 0)) for block in block_rows
-        )
-        recompute_busy += sum(
-            _subop_recompute_us(subop) * int(block.get("instance_count", 1))
-            for block in block_rows
-            if block.get("category") != "recompute"
-            for subop in block.get("subops", [])
-        )
-        primary_rate = (
-            primary_count / (makespan * 1e-6) if primary_count > 0 else 0.0
-        )
-        return {
-            "makespan_us": makespan,
-            "total_flops": total_flops,
-            "total_effective_flops": total_eff_flops,
-            "tokens_per_second": (
-                primary_rate if primary_unit == "tokens" else 0.0
-            ),
-            "primary_unit": primary_unit,
-            "primary_count": primary_count,
-            "primary_rate_per_second": primary_rate,
-            "effective_tflops": total_eff_flops / (makespan * 1e-6) / 1e12,
-            "hardware_tflops": total_flops / (makespan * 1e-6) / 1e12,
-            "peak_fast_memory_gb": peak_gb,
-            "idle_pct": (makespan - compute_busy) / makespan * 100.0,
-            "recompute_pct": recompute_busy / makespan * 100.0,
-            "from_slow_util_pct": from_slow_busy / makespan * 100.0,
-            "to_slow_util_pct": to_slow_busy / makespan * 100.0,
-        }
-
-    fwd_rows = breakdown.get("fwd", [])
-    bwd_rows = breakdown.get("bwd", [])
-    head_rows = breakdown.get("head", [])
-    optimizer_rows = breakdown.get("optimizer", [])
-
-    per_layer_subop_recompute_us = sum(_subop_recompute_us(s) for s in fwd_rows + bwd_rows)
-    head_subop_recompute_us = sum(_subop_recompute_us(s) for s in head_rows)
-    recompute_busy += (
-        (per_layer_subop_recompute_us * n_layers + head_subop_recompute_us)
-        * grad_accum_rounds
-        * num_steps
-    )
-    per_layer_fwd_flops = sum(s["flops"] * s["count"] for s in fwd_rows)
-    per_layer_bwd_flops = sum(s["flops"] * s["count"] for s in bwd_rows)
-    head_flops_total = sum(s["flops"] * s["count"] for s in head_rows)
-    optimizer_flops_per_step = sum(s["flops"] * s["count"] for s in optimizer_rows) * n_layers
-    per_layer_fwd_eff = sum(s["effective_flops"] * s["count"] for s in fwd_rows)
-    per_layer_bwd_eff = sum(s["effective_flops"] * s["count"] for s in bwd_rows)
-    head_eff_total = sum(s["effective_flops"] * s["count"] for s in head_rows)
-    optimizer_eff_per_step = sum(s["effective_flops"] * s["count"] for s in optimizer_rows) * n_layers
-
-    per_round_flops = (per_layer_fwd_flops + per_layer_bwd_flops) * n_layers + head_flops_total
-    per_round_eff_flops = (per_layer_fwd_eff + per_layer_bwd_eff) * n_layers + head_eff_total
-    total_flops = (
-        per_round_flops * grad_accum_rounds * num_steps
-        + optimizer_flops_per_step * num_steps
-    )
-    total_eff_flops = (
-        per_round_eff_flops * grad_accum_rounds * num_steps
-        + optimizer_eff_per_step * num_steps
-    )
-    primary_rate = (
-        primary_count / (makespan * 1e-6) if primary_count > 0 else 0.0
-    )
-    return {
-        "makespan_us": makespan,
-        "total_flops": total_flops,
-        "total_effective_flops": total_eff_flops,
-        "tokens_per_second": (
-            primary_rate
-            if primary_unit == "tokens"
-            else (total_tokens / (makespan * 1e-6) if total_tokens > 0 else 0.0)
-        ),
-        "primary_unit": primary_unit,
-        "primary_count": primary_count,
-        "primary_rate_per_second": primary_rate,
-        "effective_tflops": total_eff_flops / (makespan * 1e-6) / 1e12,
-        "hardware_tflops": total_flops / (makespan * 1e-6) / 1e12,
-        "peak_fast_memory_gb": peak_gb,
-        "idle_pct": (makespan - compute_busy) / makespan * 100.0,
-        "recompute_pct": recompute_busy / makespan * 100.0,
-        "from_slow_util_pct": from_slow_busy / makespan * 100.0,
-        "to_slow_util_pct": to_slow_busy / makespan * 100.0,
-    }
 
 
 def _compact_log_for_response(log, max_events: int = MAX_RESPONSE_EVENTS):
@@ -584,12 +489,7 @@ def simulate(params: SimulationParams) -> dict:
             params, hw, cap_bytes,
         )
         breakdown = workload.metadata["breakdown"]
-        summary_meta = workload.metadata.get("summary", {})
-        summary = _compute_summary(
-            log,
-            breakdown,
-            summary_meta,
-        )
+        summary = compute_workload_summary(workload, log)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

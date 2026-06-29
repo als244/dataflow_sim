@@ -7,12 +7,8 @@ from dataflow_sim.planning.recompute import plan_with_recompute
 from dataflow_sim.policies.pressurefit import apply_pressurefit_policy
 from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS
 from dataflow_sim.workloads.common.recompute import RecomputeOption, RecomputeRewrite
-from dataflow_sim.workloads.models.presets import load_model_presets
-from dataflow_sim.workloads.training.transformer import (
-    TrainingConfig,
-    build_layerwise_training_chain,
-    build_transformer_training_workload,
-)
+from dataflow_sim.workloads.dataflow_builder import TrainingConfig
+from dataflow_sim.workloads.models.llama3 import Llama3Config, Llama3ForTraining
 
 
 # ---------------------------------------------------------------- stall report
@@ -102,18 +98,26 @@ def test_stall_report_backlog_windows_cover_queued_transfers():
 # ------------------------------------------------------- workload chain variant
 
 def _small():
-    spec = load_model_presets()["nanogpt_124M"]
+    config = Llama3Config.preset(
+        "8B",
+        n_layers=4,
+        d_model=512,
+        n_heads=8,
+        n_kv_heads=4,
+        expert_dim=2048,
+        vocab_size=32_000,
+        qk_norm=True,
+    )
+    model = Llama3ForTraining(config)
     hw = HARDWARE_PRESETS["H100"]
     cfg = TrainingConfig(seqlen=1024, num_seqs=1)
-    return spec, hw, cfg
+    return model, hw, cfg
 
 
 def test_recompute_variant_rewires_activation_producer():
-    spec, hw, cfg = _small()
-    base = build_transformer_training_workload(spec, hw, cfg)
-    var = build_transformer_training_workload(
-        spec, hw, cfg, recompute={"A_0_0_3": 1},
-    )
+    model, hw, cfg = _small()
+    base = model.build_training_workload(cfg, hw)
+    var = model.build_training_workload(cfg, hw, recompute={"A_0_0_3": 1})
 
     base_tasks = {t.id: t for t in base.chain.tasks}
     var_tasks = {t.id: t for t in var.chain.tasks}
@@ -128,7 +132,7 @@ def test_recompute_variant_rewires_activation_producer():
         if block["category"] == "recompute" and block["total_runtime_us"] > 0
     ]
     assert len(recompute_blocks) == 1
-    assert recompute_blocks[0]["name"] == "Layer Recompute"
+    assert recompute_blocks[0]["name"] == "Transformer Block Recompute"
     assert recompute_blocks[0]["subops"]
     assert recompute_blocks[0]["total_flops"] > 0
     assert recompute_blocks[0]["total_effective_flops"] == 0
@@ -136,17 +140,19 @@ def test_recompute_variant_rewires_activation_producer():
     assert var_tasks["b_0_0_3"].runtime == base_tasks["b_0_0_3"].runtime
     # Rewrite table declares binary options for every activation.
     rewrites = var.metadata["recompute_rewrites"]
-    assert len(rewrites) == spec.n_layers
+    assert len(rewrites) == model.n_layers
     assert [opt.level for opt in rewrites[0].options] == [0, 1]
+    assert rewrites[0].f_compute_block_key == "transformer_block.forward"
+    assert rewrites[0].r_compute_block_key == "transformer_block.recompute"
 
     annotated = apply_pressurefit_policy(var.chain)
     run(annotated, snapshots=False)
 
 
 def test_recompute_variant_rejects_unknown_object():
-    spec, hw, cfg = _small()
+    model, hw, cfg = _small()
     try:
-        build_transformer_training_workload(spec, hw, cfg, recompute={"nope": 1})
+        model.build_training_workload(cfg, hw, recompute={"nope": 1})
     except ValueError as e:
         assert "unknown recompute object" in str(e)
     else:
@@ -158,34 +164,74 @@ def test_recompute_variant_rejects_unknown_object():
 def _structural_family(L, cap, *, activation_size, recompute_us, bandwidth):
     """Variant builder + rewrites over the structural training chain."""
     def build(levels):
-        instances = frozenset(
-            (0, 0, int(obj.rsplit("_", 1)[1]))
-            for obj, lvl in levels.items() if lvl >= 1
+        recomputed = {
+            int(obj.rsplit("_", 1)[1])
+            for obj, lvl in levels.items()
+            if lvl >= 1
+        }
+        initial = [Object(id="input_0_0", size=8, location="fast", type="activation")]
+        initial.extend(
+            Object(id=f"W_{i}", size=8, location="backing", type="parameter")
+            for i in range(L)
         )
-        chain = build_layerwise_training_chain(
-            L,
-            input_size=8,
-            weight_size=8,
-            activation_size=activation_size,
-            layer_output_size=8,
-            grad_size=8,
-            head_weight_size=8,
-            fwd_runtime=10,
-            head_runtime=2,
-            bwd_runtime=20,
-            bandwidth_from_slow=bandwidth,
-            bandwidth_to_slow=bandwidth,
-            recompute=instances,
-            recompute_runtime=recompute_us,
+        initial.append(Object(id="W_head", size=8, location="backing", type="parameter"))
+        tasks = []
+        for i in range(L):
+            in_act = "input_0_0" if i == 0 else f"y_0_0_{i - 1}"
+            outputs = [OutputAlloc(id=f"y_0_0_{i}", size=8, type="activation")]
+            if i not in recomputed:
+                outputs.insert(
+                    0,
+                    OutputAlloc(id=f"A_0_0_{i}", size=activation_size, type="activation"),
+                )
+            tasks.append(
+                Task(
+                    id=f"f_0_0_{i}",
+                    inputs=[in_act, f"W_{i}"],
+                    outputs=outputs,
+                    runtime=10,
+                )
+            )
+        tasks.append(
+            Task(
+                id="head_0_0",
+                inputs=[f"y_0_0_{L - 1}", "W_head"],
+                outputs=[OutputAlloc(id="dy_head_0_0", size=8, type="activation")],
+                runtime=2,
+            )
         )
+        for i in range(L - 1, -1, -1):
+            in_act = "input_0_0" if i == 0 else f"y_0_0_{i - 1}"
+            r_outputs = (
+                [OutputAlloc(id=f"A_0_0_{i}", size=activation_size, type="activation")]
+                if i in recomputed
+                else []
+            )
+            tasks.append(
+                Task(
+                    id=f"r_0_0_{i}",
+                    inputs=[in_act, f"W_{i}"],
+                    outputs=r_outputs,
+                    runtime=recompute_us if i in recomputed else 0,
+                )
+            )
+            upstream = "dy_head_0_0" if i == L - 1 else f"dy_0_0_{i + 1}"
+            tasks.append(
+                Task(
+                    id=f"b_0_0_{i}",
+                    inputs=[upstream, f"A_0_0_{i}", f"W_{i}"],
+                    outputs=[OutputAlloc(id=f"dy_0_0_{i}", size=8, type="activation")],
+                    runtime=20,
+                )
+            )
         return TaskChain(
-            initial_memory=chain.initial_memory,
-            tasks=chain.tasks,
-            final_locations=chain.final_locations,
+            initial_memory=initial,
+            tasks=tasks,
+            final_locations={},
             fast_memory_capacity=cap,
             backing_memory_capacity=None,
-            bandwidth_from_slow=chain.bandwidth_from_slow,
-            bandwidth_to_slow=chain.bandwidth_to_slow,
+            bandwidth_from_slow=bandwidth,
+            bandwidth_to_slow=bandwidth,
         )
 
     options = (
@@ -198,6 +244,9 @@ def _structural_family(L, cap, *, activation_size, recompute_us, bandwidth):
             f_task_id=f"f_0_0_{i}",
             r_task_id=f"r_0_0_{i}",
             options=options,
+            f_compute_block_key="structural.forward",
+            r_compute_block_key="structural.recompute",
+            group_key="structural",
         )
         for i in range(L)
     ]

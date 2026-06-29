@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from "
 
 export type Policy = "sliding_window" | "belady_reactive" | "roundtrip_planner" | "max_reduce" | "min_grow" | "pressurefit";
 export type OptimizerMode = "none" | "adamw" | "muon";
+export type ModelFamily = "llama3" | "qwen3" | "qwen3_moe" | "olmoe";
 
 export interface HardwareParams {
   preset: string;
@@ -17,6 +18,7 @@ export interface HardwareParams {
 
 export interface ModelParams {
   preset: string;
+  family: ModelFamily;
   vocab_size: number;
   n_layers: number;
   d_model: number;
@@ -170,6 +172,7 @@ export const DEFAULT_HARDWARE: HardwareParams = {
 
 export const DEFAULT_MODEL: ModelParams = {
   preset: "llama3_8B",
+  family: "llama3",
   vocab_size: 128256,
   n_layers: 32,
   d_model: 4096,
@@ -254,6 +257,13 @@ const OPTIMIZER_OPTIONS: { value: OptimizerMode; label: string }[] = [
   { value: "muon", label: "Muon" },
 ];
 
+const MODEL_FAMILY_OPTIONS: { value: ModelFamily; label: string }[] = [
+  { value: "llama3", label: "Llama 3" },
+  { value: "qwen3", label: "Qwen3 Dense" },
+  { value: "qwen3_moe", label: "Qwen3 MoE" },
+  { value: "olmoe", label: "OLMoE" },
+];
+
 const HW_ACCELERATOR_FIELDS: { key: keyof Omit<HardwareParams, "preset">; label: string; step?: number; min?: number }[] = [
   { key: "peak_tflops", label: "Peak TFLOPS", min: 0.1, step: 1 },
   { key: "fast_memory_bw_gbs", label: "Fast Memory BW (GB/s)", min: 1, step: 10 },
@@ -284,7 +294,7 @@ const HW_FIELD_SECTIONS: { title: string; fields: HardwareField[] }[] = [
   { title: "Kernel Efficiency", fields: HW_KERNEL_FIELDS },
 ];
 
-const MODEL_FIELDS: { key: keyof Omit<ModelParams, "preset" | "qk_norm">; label: string }[] = [
+const MODEL_FIELDS: { key: keyof Omit<ModelParams, "preset" | "family" | "qk_norm">; label: string }[] = [
   { key: "vocab_size", label: "Vocabulary Size" },
   { key: "n_layers", label: "Layers" },
   { key: "d_model", label: "Model Width" },
@@ -527,6 +537,19 @@ export function InputPanel({
               </FormSubsection>
 
               <FormSubsection title="Model Architecture Dimensions">
+                <div className="form-row">
+                  <label className="form-field form-field-wide">
+                    <span className="form-field-label">Model Family</span>
+                    <select
+                      value={transformerWorkload.model.family}
+                      onChange={(e) => setTransformerModel("family", e.target.value as ModelFamily)}
+                    >
+                      {MODEL_FAMILY_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
                 <div className="form-grid">
                   {MODEL_FIELDS.map((f) => (
                     <label key={f.key} className="form-field">

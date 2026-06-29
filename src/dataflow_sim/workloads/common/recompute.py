@@ -9,7 +9,7 @@ part of the activation, recompute the rest) adds intermediate levels
 without changing this contract.
 
 Planners never interpret model semantics: they only see object ids, byte
-counts, and microseconds.
+counts, microseconds, and the compute-block keys that generated the rewrite.
 """
 from __future__ import annotations
 
@@ -26,8 +26,17 @@ class RecomputeOption:
 
 @dataclass(frozen=True)
 class RecomputeRewrite:
-    """Discrete recompute choices for one saved-activation object."""
+    """Discrete recompute choices for one saved-activation object.
+
+    The decision is instance-specific (`object_id`) because memory pressure is
+    instance-specific, but the available choices are defined by compute blocks.
+    `f_compute_block_key` points to the block that normally saves the object,
+    and `r_compute_block_key` points to the block used if recompute wins.
+    """
     object_id: str                          # e.g. "A_0_0_5"
     f_task_id: str                          # producer when level == 0
     r_task_id: str                          # recompute slot (producer when level > 0)
     options: tuple[RecomputeOption, ...]    # ascending level; options[0].level == 0
+    f_compute_block_key: str = ""
+    r_compute_block_key: str = ""
+    group_key: str = ""

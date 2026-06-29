@@ -13,25 +13,27 @@ memory capacity — so the choice is made per configuration, by measurement.
 Three layers, deliberately separated:
 
 1. **Workload variants (mechanics).**
-   `build_transformer_training_workload(spec, hw, cfg, recompute={...})`
-   builds the chain for any per-activation choice. For a recomputed layer
-   instance, the forward task stops producing the saved activation and the
-   recompute slot re-produces it from the layer input:
+   A `TrainingWorkloadBuilder`, for example `Llama3ForTraining`, builds the
+   chain for any per-activation choice through
+   `model.build_training_workload(training, hw, recompute={...})`. For a
+   recomputed layer instance, the forward task stops producing the saved
+   activation and the recompute slot re-produces it from the layer input:
 
    ```text
    f_k_j_i = (deps=[in_act, W_i], out=[y_k_j_i])
    r_k_j_i = (deps=[in_act, W_i], out=[A_k_j_i], runtime=R)
    ```
 
-   `R` is the layer's forward compute minus the final down projection(s)
-   (`layer_recompute_microseconds`); backward tasks are untouched — their
-   memory ops already assume recomputed activations are HBM-hot. The
+   `R` comes from the layer's `.recompute` compute block; backward tasks are
+   untouched because their memory ops already assume recomputed activations are
+   HBM-hot. The
    workload also publishes a rewrite table
    (`metadata["recompute_rewrites"]`): per saved-activation object, the
-   discrete options available. Today the options are binary (level 0 =
-   save-full, level 1 = recompute-full); partial recomputation (save part
-   of the activation, recompute the rest) adds intermediate levels with
-   `saved_bytes` between the extremes without changing any interface.
+   discrete options available, including the forward and recompute
+   `compute_block_key` values that define the tradeoff. Today the options are
+   binary (level 0 = save-full, level 1 = recompute-full); partial
+   recomputation adds intermediate levels with `saved_bytes` between the
+   extremes without changing any interface.
 
 2. **Stall/backlog evidence (information).**
    `dataflow_sim.engine.stall_report.build_stall_report(chain, log)` turns a
@@ -53,18 +55,20 @@ Three layers, deliberately separated:
 
 ## Measured behavior (scripts/recompute_sweep.py)
 
-The optimal choice swings across a 24-config grid (llama3-8B,
-sparse_16Bx3B, qwen3_30Bx3B × H100/RTX_5090 × two caps × S∈{4K, 16K}):
+The optimal choice swings across model family, sequence length, hardware, and
+capacity cap. Current sweeps should cover the public preset families
+(`llama3_*`, `qwen3_*`, `qwen3_moe_30B-3B`, and `olmoe_7B-1B`) across multiple
+scales rather than relying on one tiny stress case:
 
-- **qwen3_30Bx3B (MoE) at S=4K:** recompute *everything* — expert weights
-  dominate memory and activations are cheap to re-produce.
-- **The same model at S=16K on RTX_5090:** recompute *nothing* — slow
-  compute makes the attention-heavy recompute too expensive.
-- **Dense llama3-8B:** mostly none, with small evidence-found refinements
-  (k=1–10 layers).
-- **In between** (sparse_16Bx3B, qwen3 at 16K on H100): partial counts
-  (k=11–19) win, and on several configs the evidence loop beats every fixed
-  choice (up to ~4% over the best of none/all/half).
+- **MoE models at shorter sequence lengths:** recompute can be attractive
+  because expert state dominates memory and activations are cheap to recreate.
+- **Longer sequences on slower compute hardware:** recompute can lose because
+  attention-heavy replay is more expensive than the avoided transfers.
+- **Dense models:** often prefer little or no recompute, with isolated
+  activation instances selected when memory pressure is highly localized.
+- **Middle-capacity regimes:** partial recompute frequently beats fixed
+  none/all/half choices because the evidence loop can target the most
+  transfer-blamed saved activations.
 
 Selection costs well under a second per config on top of normal planning.
 

@@ -1,0 +1,61 @@
+"""Shared transformer-family dimensions and byte/count helpers."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from dataflow_sim.workloads.ops import optimizer as opt_ops
+
+
+@dataclass(frozen=True)
+class TransformerDimensions:
+    vocab_size: int
+    n_layers: int
+    d_model: int
+    head_dim: int
+    n_heads: int
+    n_kv_heads: int
+    expert_dim: int
+    num_shared_experts: int
+    num_routed_experts: int
+    top_k: int
+    qk_norm: bool = True
+
+
+def layer_weight_matrices(dims: TransformerDimensions) -> list[opt_ops.OptimizerMatrix]:
+    matrices: list[opt_ops.OptimizerMatrix] = []
+
+    def add(name: str, rows: int, cols: int, count: int = 1) -> None:
+        if rows > 0 and cols > 0 and count > 0:
+            matrices.append(opt_ops.OptimizerMatrix(name, rows, cols, count))
+
+    d = dims.d_model
+    hd = dims.head_dim
+    add("qkv_proj", d, (dims.n_heads + 2 * dims.n_kv_heads) * hd)
+    add("attn_proj", dims.n_heads * hd, d)
+    add("shared_mlp_up", d, 2 * dims.expert_dim, dims.num_shared_experts)
+    add("shared_mlp_down", dims.expert_dim, d, dims.num_shared_experts)
+    add("routed_mlp_up", d, 2 * dims.expert_dim, dims.num_routed_experts)
+    add("routed_mlp_down", dims.expert_dim, d, dims.num_routed_experts)
+    return matrices
+
+
+def params_per_layer(dims: TransformerDimensions) -> int:
+    return sum(matrix.rows * matrix.cols * matrix.count for matrix in layer_weight_matrices(dims))
+
+
+def active_params_per_layer(dims: TransformerDimensions) -> int:
+    attn = dims.head_dim * (2 * dims.n_heads + 2 * dims.n_kv_heads)
+    mlp = 3 * dims.expert_dim * (dims.num_shared_experts + dims.top_k)
+    return dims.d_model * (attn + mlp)
+
+
+def head_params(dims: TransformerDimensions) -> int:
+    return dims.d_model * dims.vocab_size
+
+
+def layer_activation_elements_per_token(dims: TransformerDimensions) -> int:
+    return (
+        dims.head_dim * (2 * dims.n_heads + 2 * dims.n_kv_heads)
+        + 2 * dims.d_model
+        + 2 * (dims.num_shared_experts + dims.top_k) * dims.expert_dim
+    )

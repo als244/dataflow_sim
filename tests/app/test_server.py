@@ -8,8 +8,9 @@ from dataflow_sim.app.server.main import (
 
 
 _MODEL_KEYS = {
-    "vocab_size", "n_layers", "d_model", "head_dim", "n_heads", "n_kv_heads",
-    "expert_dim", "num_shared_experts", "num_routed_experts", "top_k", "qk_norm",
+    "family", "vocab_size", "n_layers", "d_model", "head_dim", "n_heads",
+    "n_kv_heads", "expert_dim", "num_shared_experts", "num_routed_experts",
+    "top_k", "qk_norm",
 }
 _TRAINING_KEYS = {
     "seqlen", "num_seqs", "grad_accum_rounds", "num_steps", "optimizer",
@@ -27,6 +28,7 @@ def _payload(**overrides):
             "preset": "custom",
             "model": {
                 "preset": "custom",
+                "family": "llama3",
                 "vocab_size": 64,
                 "n_layers": 2,
                 "d_model": 16,
@@ -188,7 +190,7 @@ def test_simulate_recompute_toggle_off_matches_default_and_can_change_makespan()
         if block["category"] == "recompute" and block["total_runtime_us"] > 0
     ]
     assert recompute_blocks
-    assert recompute_blocks[0]["name"] == "Layer Recompute"
+    assert recompute_blocks[0]["name"] == "Transformer Block Recompute"
     assert recompute_blocks[0]["subops"]
     assert recompute_blocks[0]["total_flops"] > 0
     assert recompute_blocks[0]["total_effective_flops"] == 0
@@ -245,7 +247,7 @@ def test_preview_transformer_workload_returns_dataflow_schema():
     assert body["schema"]["schema_version"] == "dataflow/v1"
     assert body["preview"]["task_count"] > 0
     assert body["preview"]["aggregate_task_runtime_us"] > 0
-    assert body["schema"]["metadata"]["kind"] == "training.transformer"
+    assert body["schema"]["metadata"]["kind"] == "training.transformer.llama3.modular"
     assert body["chain"]["tasks"]
     assert body["compute_blocks"]
     assert body["breakdown"]["compute_blocks"]
@@ -268,15 +270,30 @@ def test_preview_accepts_uploaded_schema_and_returns_bare_chain():
     assert body["compute_blocks"][0]["instance_count"] == 1
 
 
-def test_presets_include_heterogeneous_schema_workload():
+def test_presets_include_modular_schema_workload():
     body = presets()
-    hetero = body["workloads"]["heterogeneous_dense_moe_demo"]
+    demo = body["workloads"]["qwen3_moe_modular_demo"]
+    expected_models = {
+        "llama3_8B": "llama3",
+        "llama3_70B": "llama3",
+        "llama3_405B": "llama3",
+        "qwen3_4B": "qwen3",
+        "qwen3_8B": "qwen3",
+        "qwen3_32B": "qwen3",
+        "qwen3_moe_30B-3B": "qwen3_moe",
+        "olmoe_7B-1B": "olmoe",
+    }
 
-    assert hetero["source"] == "schema"
-    assert hetero["schema"]["schema_version"] == "dataflow/v1"
-    keys = {block["key"] for block in hetero["schema"]["compute_blocks"]}
-    assert any("dense" in key for key in keys)
-    assert any("moe" in key for key in keys)
+    assert set(body["models"]) == set(expected_models)
+    for name, family in expected_models.items():
+        assert body["models"][name]["family"] == family
+        assert body["workloads"][name]["source"] == "training_transformer"
+    assert demo["source"] == "schema"
+    assert demo["schema"]["schema_version"] == "dataflow/v1"
+    assert demo["schema"]["metadata"]["kind"] == "training.transformer.qwen3_moe.modular"
+    keys = {block["key"] for block in demo["schema"]["compute_blocks"]}
+    assert "transformer_block.forward" in keys
+    assert "transformer_head.training" in keys
 
 
 def test_simulate_uploaded_schema_workload():

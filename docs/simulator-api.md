@@ -64,6 +64,28 @@ annotated `TaskChain`. The planner is the only layer that decides
 event log, task intervals, peak fast memory, and optional compact memory
 trace. It does not change the plan.
 
+### Summary Contract
+
+`compute_workload_summary(workload, log) -> dict` in
+`dataflow_sim.workloads.summary` turns a realized `Workload` plus simulator
+`EventLog` into the same top-level KPI payload returned by the web API:
+`makespan_us`, `tokens_per_second`, `primary_rate_per_second`,
+`effective_tflops`, `hardware_tflops`, `peak_fast_memory_gb`, memory-stream
+utilization, recompute percentage, and aggregate FLOP counts.
+
+Use this when running the simulator from Python instead of recomputing UI
+metrics locally:
+
+```python
+from dataflow_sim.engine.simulator import run
+from dataflow_sim.policies.pressurefit import apply_pressurefit_policy
+from dataflow_sim.workloads.summary import compute_workload_summary
+
+chain = apply_pressurefit_policy(workload.chain, fast_memory_capacity=cap_bytes)
+log = run(chain, snapshots=False)
+summary = compute_workload_summary(workload, log)
+```
+
 ## Web API
 
 The FastAPI app uses split payloads:
@@ -124,7 +146,9 @@ Returns:
 {
   "workloads": {
     "llama3_8B": {"source": "training_transformer", "...": "..."},
-    "heterogeneous_dense_moe_demo": {"source": "schema", "schema": {"schema_version": "dataflow/v1"}}
+    "qwen3_moe_30B-3B": {"source": "training_transformer", "...": "..."},
+    "olmoe_7B-1B": {"source": "training_transformer", "...": "..."},
+    "qwen3_moe_modular_demo": {"source": "schema", "schema": {"schema_version": "dataflow/v1"}}
   },
   "hardware": {
     "H100": {"peak_tflops": 989, "...": "..."}
@@ -428,6 +452,6 @@ the four inbound schedules was selected.
 
 - [docs/problem.md](../docs/problem.md) — the formal scheduling problem.
 - [docs/workload-recipe.md](../docs/workload-recipe.md) — how to build your own bare chain.
-- [docs/transformer-recipe.md](../docs/transformer-recipe.md) — how the example app maps transformer training onto the API.
+- [workloads/MODEL_TRAINING.md](../src/dataflow_sim/workloads/MODEL_TRAINING.md) — model-training workload authoring and lowering.
 - [docs/policy/principles.md](../docs/policy/principles.md) — invariants every chain must satisfy.
 - [docs/policy/README.md](../docs/policy/README.md) — which policy to use when.

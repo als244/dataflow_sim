@@ -287,6 +287,6 @@ output, nothing has to be offloaded.
 
 ## See also
 
-- `docs/transformer-recipe.md` — full real example end-to-end.
+- `src/dataflow_sim/workloads/MODEL_TRAINING.md` — model-training authoring end-to-end.
 - `docs/policy/README.md` — choosing among the built-in policies.
 - `docs/problem.md` — the underlying memory-traffic problem statement.

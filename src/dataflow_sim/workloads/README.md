@@ -1,14 +1,19 @@
 # Workloads
 
-Workloads have two public layers:
+Workloads have two public layers plus the modular training authoring stack:
 
 1. `DataflowProgram v1`: a hardware-free schema for ordered compute over named
    memory objects.
-2. Domain builders: Python helpers that emit `DataflowProgram`, such as
-   transformer training builders that feel closer to model/layer code.
+2. Modular workload builders: phase-specific ops, reusable modules, model
+   families, `training_builder` scheduling, and `dataflow_builder`
+   tracing/lowering.
 
 The simulator itself still runs `TaskChain`. A program becomes a bare
 `TaskChain` only after hardware is selected.
+
+For the end-to-end model-training path, including ops -> modules -> models,
+hardware realization, memory policies, and recompute, see
+[MODEL_TRAINING.md](MODEL_TRAINING.md).
 
 ## Quick Start
 
@@ -16,13 +21,71 @@ Run the standalone examples from the repo root:
 
 ```bash
 python examples/export_custom_dataflow.py --out /tmp/generic_pipeline.dataflow.json
-python examples/export_transformer_training_schema.py --out /tmp/heterogeneous_transformer.dataflow.json
+python examples/export_transformer_training_schema.py --out /tmp/llama3_training.dataflow.json
 ```
 
 Both commands write `DataflowProgram v1` JSON that can be imported through the
 webapp's **Custom Schema** tab. The first example authors the generic schema
-directly. The second uses the training layer: define model/layer specs and
-training parameters, then export the schema emitted by the transformer builder.
+directly. The second uses the modular transformer path: choose a model family,
+override scale dimensions if needed, set training parameters, then export the
+schema emitted through `training_builder`.
+
+## Modular Builder Stack
+
+The modular path is dependency-free:
+
+- `workloads.ops.forward`, `workloads.ops.backward`, and
+  `workloads.ops.optimizer` contain one-file-per-op-type helpers that return
+  `DataflowCost` sub-op specs.
+- `workloads.modules` composes ops into reusable modules such as attention,
+  SwiGLU MLP, MoE, transformer block, head/loss, optimizer, and recompute
+  phases.
+- `workloads.models.llama3`, `workloads.models.qwen3`,
+  `workloads.models.qwen3_moe`, and `workloads.models.olmoe` define real
+  model families with preset-plus-overrides config APIs. Each model file
+  constructs its ordered module list explicitly.
+- `workloads.training_builder` schedules a model-authored module list into
+  forward, head/loss, recompute, backward, and optimizer tasks. It does not
+  decide how many blocks exist or which module types appear.
+- `workloads.dataflow_builder` tracks symbolic tensors, dtypes, module phases,
+  and lowering to compute blocks and tasks.
+
+Examples:
+
+```python
+from dataflow_sim.workloads.dataflow_builder import TrainingConfig
+from dataflow_sim.workloads.models.llama3 import Llama3Config, Llama3ForTraining
+
+cfg = Llama3Config.preset("8B", n_layers=80, d_model=8192)
+model = Llama3ForTraining(cfg)
+program = model.build_training_program(
+    TrainingConfig(seqlen=4096, num_seqs=4, optimizer="adamw")
+)
+```
+
+### `training_builder` Inputs
+
+`workloads.training_builder.TrainingBuilder` is not transformer-family
+specific. It schedules a model-authored ordered list of `TrainingLayerSpec`
+objects plus one `TrainingHeadSpec`.
+
+Each layer spec provides:
+
+- `input_dim` and `output_dim` for canonical `[tokens, dim]` activations.
+- `param_count` for the layer parameter object `W_i`.
+- `saved_activation_width` for the saved backward-context object `A_*`.
+- phase op factories for forward, backward, and recompute.
+- an optimizer op factory for layer-local optimizer tasks.
+- compute-block keys/names, so heterogeneous module lists can group distinct
+  layers separately.
+
+`build_training_program(...)` then takes:
+
+- `TrainingConfig`: `seqlen`, `num_seqs`, grad accumulation, steps, optimizer.
+- optional `input_shape`, which must equal `[seqlen * num_seqs, input_dim]`.
+- optional `DTypePolicy`, defaulting params/activations/gradients/optimizer
+  state to bf16.
+- optional recompute levels keyed by saved activation ids such as `A_0_0_3`.
 
 ## Schema Contract
 
@@ -73,6 +136,21 @@ For example, 32 layer-forward tasks can all point to one
 `task.label` names a timeline instance, such as `Step 0 Round 0 Layer 3
 Forward`. `compute_block_key` names reusable structure.
 
+In the modular training stack, compute blocks are created when
+`TraceContext.emit_task(...)` registers each task's `compute_block_key`.
+Model files choose the reusable block identity through `TrainingLayerSpec`
+and `TrainingHeadSpec` fields such as `block_key="transformer_block"`; the
+generic `training_builder` appends phase suffixes like `.forward`,
+`.backward`, `.recompute`, and `.training`.
+
+Recompute choices are declared in
+`Workload.metadata["recompute_rewrites"]`. Each rewrite is keyed by the saved
+activation object (`A_<step>_<round>_<layer>`) and includes the forward and
+recompute compute-block keys that define the tradeoff. The planner ranks
+activation instances because memory pressure is instance-specific, but the
+available recompute variants come from compute blocks, not from hidden module
+state.
+
 ## Metrics
 
 Generic workloads may omit `metrics`. Metric-enabled workloads get an extra
@@ -88,8 +166,11 @@ throughput summary:
 }
 ```
 
-The simulator reports `${primary_unit}/sec`. If the unit is `tokens`, the webapp
-also fills the legacy `tokens_per_second` field.
+After a workload is realized and simulated, use
+`dataflow_sim.workloads.compute_workload_summary(workload, log)` to compute
+the public summary payload: makespan, primary throughput, token/sec,
+effective/hardware TFLOP/s, peak fast memory, recompute percentage, and memory
+stream utilization. The web API uses the same helper for its `summary` field.
 
 ## JSON Example
 
@@ -194,52 +275,37 @@ program = DataflowProgram(
 
 ## Training Helpers
 
-Transformer training helpers generate the same generic schema. This is the
-built-in training layer today: users specify model dimensions, layer variants,
-and training parameters; the builder emits a portable `DataflowProgram`.
-Non-transformer training workloads can use the same pattern by writing a small
-domain helper that emits `DataflowProgram`.
+The built-in model-family files generate the same generic schema. Users
+specify model dimensions and training parameters; the model file builds the
+ordered module list, and `training_builder` emits a portable
+`DataflowProgram`.
 
 ```python
 from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS
-from dataflow_sim.workloads.models.presets import load_model_presets
-from dataflow_sim.workloads.training.transformer import (
-    TrainingConfig,
-    build_transformer_training_program,
-    build_transformer_training_workload,
+from dataflow_sim.workloads.dataflow_builder import TrainingConfig
+from dataflow_sim.workloads.models.qwen3_moe import (
+    Qwen3MoEConfig,
+    Qwen3MoEForTraining,
 )
 
-spec = load_model_presets()["llama3_8B"]
-cfg = TrainingConfig(seqlen=4096, num_seqs=4, optimizer="adamw")
+cfg = Qwen3MoEConfig.preset("30B-3B", n_layers=8, d_model=2048)
+training = TrainingConfig(seqlen=4096, num_seqs=4, optimizer="adamw")
+model = Qwen3MoEForTraining(cfg)
 
-program = build_transformer_training_program(spec, cfg)
-workload = build_transformer_training_workload(spec, HARDWARE_PRESETS["H100"], cfg)
+program = model.build_training_program(
+    training,
+    input_shape=(training.tokens, cfg.d_model),
+)
+workload = model.build_training_workload(
+    training,
+    HARDWARE_PRESETS["H100"],
+    input_shape=(training.tokens, cfg.d_model),
+)
 ```
 
-Heterogeneous transformers can be exported as JSON too:
-
-```python
-from dataclasses import replace
-
-from dataflow_sim.workloads.training.transformer import (
-    TrainingConfig,
-    build_heterogeneous_transformer_training_program,
-)
-from dataflow_sim.workloads.models.transformer import TransformerSpec
-
-dense = TransformerSpec(
-    vocab_size=32000, n_layers=1, d_model=512, head_dim=64,
-    n_heads=8, n_kv_heads=8, expert_dim=2048,
-    num_shared_experts=1, num_routed_experts=0, top_k=0,
-)
-moe = replace(dense, expert_dim=1536, num_routed_experts=8, top_k=2)
-
-program = build_heterogeneous_transformer_training_program(
-    [dense, dense, moe, dense],
-    TrainingConfig(seqlen=128, num_seqs=1),
-)
-json_payload = program.model_dump(mode="json")
-```
+Custom architectures follow the same pattern by constructing their own
+`TrainingLayerSpec` list and `TrainingHeadSpec`. See
+`examples/custom_workloads/` for a complete op/module/model/simulation stack.
 
 To export a custom training workload for the webapp:
 
