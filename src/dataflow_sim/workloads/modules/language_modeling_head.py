@@ -79,17 +79,6 @@ class LanguageModelingHead(DataflowModule):
             ),
         ]
 
-    def training_ops(
-        self,
-        *,
-        tokens: int,
-        bytes_per_element: int = 2,
-    ) -> list[DataflowCost]:
-        return (
-            self.forward_ops(tokens=tokens, bytes_per_element=bytes_per_element)
-            + self.backward_ops(tokens=tokens, bytes_per_element=bytes_per_element)
-        )
-
     def recompute_ops(
         self,
         *,

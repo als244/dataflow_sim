@@ -92,14 +92,20 @@ def _head_spec(dims: TransformerDimensions) -> TrainingHeadSpec:
         name="head",
         input_dim=dims.d_model,
         param_count=head_params(dims),
-        training_ops=(
-            lambda tokens, bpe, head=head: head.training_ops(
+        forward_ops=(
+            lambda tokens, bpe, head=head: head.forward_ops(
                 tokens=tokens,
                 bytes_per_element=bpe,
             )
         ),
-        block_key="language_modeling_head",
-        block_name="Language Modeling Head",
+        backward_ops=(
+            lambda tokens, bpe, head=head: head.backward_ops(
+                tokens=tokens,
+                bytes_per_element=bpe,
+            )
+        ),
+        block_key="lm_head",
+        block_name="LM Head",
         metadata={"transformer": asdict(dims)},
     )
 

@@ -1,9 +1,8 @@
 """Hand-crafted sliding-window policy for simple training chains.
 
-Given a bare legacy training chain, annotate it
-with the sliding-window trigger pattern (see
-`docs/policy/other_policies/sliding-window.md`). Workload-specific: keys off
-the training builder's task/object id conventions.
+Given a bare model-training chain, annotate it with the sliding-window trigger
+pattern (see `docs/policy/other_policies/sliding-window.md`). Workload-specific:
+keys off the training builder's task/object id conventions.
 
 Pattern (per layer index i, w = window_size, L inferred from the chain):
 
@@ -16,9 +15,10 @@ Pattern (per layer index i, w = window_size, L inferred from the chain):
     after b_i, i - 2 ≥ 0:              prefetch dW_{i-2}
     after b_i, i - 2 ∈ offloaded_A:    prefetch A_{i-2}
 
-Initial compute residency added: W_0..W_{w-1}, W_head, dW_head; plus any dW_j
-not brought in by the forward dW preamble or the backward dW cascade (covers
-edge cases like L=1).
+Current modular chains leave `head_fwd` untouched and annotate `head_bwd` as the
+head release point. Initial compute residency added: W_0..W_{w-1}, W_head.
+Legacy chains also pre-place dW_head plus any dW_j not brought in by the
+forward dW preamble or the backward dW cascade (covers edge cases like L=1).
 """
 from __future__ import annotations
 
@@ -146,7 +146,7 @@ def _layer_idx(task: Task, mode: _Mode) -> int:
 
 
 def _head_id(mode: _Mode) -> str:
-    return "head" if mode == "legacy" else "head_0_0"
+    return "head" if mode == "legacy" else "head_bwd_0_0"
 
 
 def _act_id(mode: _Mode, i: int) -> str:

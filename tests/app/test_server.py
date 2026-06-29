@@ -290,6 +290,22 @@ def test_presets_include_only_public_model_workloads():
         assert body["workloads"][name]["source"] == "model_training"
 
 
+def test_presets_include_sram_accelerator_hardware():
+    body = presets()
+    hw = body["hardware"]["SRAM Accelerator"]
+
+    assert hw == {
+        "peak_tflops": 3200.0,
+        "fast_memory_bw_gbs": 40000.0,
+        "from_slow_bw_gbs": 3000.0,
+        "to_slow_bw_gbs": 3000.0,
+        "matmul_eff": 1.0,
+        "attn_fwd_eff": 1.0,
+        "attn_bwd_eff": 1.0,
+        "mem_eff": 1.0,
+    }
+
+
 def test_simulate_uploaded_schema_workload():
     body = simulate(SimulationParams.model_validate(_schema_payload()))
 

@@ -50,6 +50,11 @@ Required contract for layer-like modules:
 There is no automatic autodiff. Backward and recompute phases are explicit
 because their sub-op composition can differ from forward.
 
+Head/loss modules follow the same explicit phase idea, but without `seqlen`:
+provide separate `forward_ops(tokens, bytes_per_element)` and
+`backward_ops(tokens, bytes_per_element)` so the lowered program can expose
+distinct head forward and head backward compute blocks.
+
 ### `custom_model.py`
 
 The model file owns architecture.

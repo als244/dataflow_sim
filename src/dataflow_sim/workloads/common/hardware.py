@@ -41,4 +41,14 @@ HARDWARE_PRESETS: dict[str, HardwareSpec] = {
         attn_bwd_eff=0.3,
         mem_eff=0.9,
     ),
+    "SRAM Accelerator": HardwareSpec(
+        peak_tflops=3200.0,
+        fast_memory_bw_gbs=40000.0,
+        from_slow_bw_gbs=3000.0,
+        to_slow_bw_gbs=3000.0,
+        matmul_eff=1.0,
+        attn_fwd_eff=1.0,
+        attn_bwd_eff=1.0,
+        mem_eff=1.0,
+    ),
 }

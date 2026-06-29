@@ -172,7 +172,8 @@ class TrainingHeadSpec:
     name: str
     input_dim: int
     param_count: int
-    training_ops: HeadOpsFactory
+    forward_ops: HeadOpsFactory
+    backward_ops: HeadOpsFactory
     block_key: str = "head"
     block_name: str = "Head"
     optimizer_ops: OptimizerOpsFactory | None = None
@@ -329,7 +330,8 @@ class TrainingBuilder:
             )
             for layer in self.layers
         ]
-        head_ops = self.head.training_ops(tokens, activation_bpe_for_ops)
+        head_forward_ops = self.head.forward_ops(tokens, activation_bpe_for_ops)
+        head_backward_ops = self.head.backward_ops(tokens, activation_bpe_for_ops)
         head_optimizer_ops = (
             self.head.optimizer_ops(training.optimizer, activation_bpe_for_ops)
             if self.head.optimizer_ops is not None
@@ -400,12 +402,30 @@ class TrainingBuilder:
                         block_metadata=self._phase_metadata("forward", layer.metadata),
                     )
 
-                head_grad = step_head_grad_id(k)
-                head_inputs = [
+                head_forward_inputs = [
                     t(layer_round_id("y", k, j, self.n_layers - 1)),
                     t("W_head"),
                 ]
-                head_outputs = [
+                ctx.emit_task(
+                    id=round_id("head_fwd", k, j),
+                    label=f"Step {k} Round {j} LM Head Forward",
+                    group="head",
+                    block_key=f"{self.head.block_key}.forward",
+                    block_name=f"{self.head.block_name} Forward",
+                    subops=head_forward_ops,
+                    inputs=head_forward_inputs,
+                    block_metadata=self._phase_metadata(
+                        "head_forward",
+                        self.head.metadata,
+                    ),
+                )
+
+                head_grad = step_head_grad_id(k)
+                head_backward_inputs = [
+                    t(layer_round_id("y", k, j, self.n_layers - 1)),
+                    t("W_head"),
+                ]
+                head_backward_outputs = [
                     tensor(
                         round_id("dy_head", k, j),
                         (tokens, self.head.input_dim),
@@ -413,9 +433,9 @@ class TrainingBuilder:
                         policy.gradient,
                     )
                 ]
-                head_mutates: list[TensorRef] = []
+                head_backward_mutates: list[TensorRef] = []
                 if j == 0:
-                    head_outputs.append(
+                    head_backward_outputs.append(
                         tensor(
                             head_grad,
                             (self.head.param_count, 1),
@@ -424,19 +444,22 @@ class TrainingBuilder:
                         )
                     )
                 else:
-                    head_inputs.append(t(head_grad))
-                    head_mutates.append(t(head_grad))
+                    head_backward_inputs.append(t(head_grad))
+                    head_backward_mutates.append(t(head_grad))
                 ctx.emit_task(
-                    id=round_id("head", k, j),
-                    label=f"Step {k} Round {j} Head",
+                    id=round_id("head_bwd", k, j),
+                    label=f"Step {k} Round {j} LM Head Bwd",
                     group="head",
-                    block_key=f"{self.head.block_key}.training",
-                    block_name=f"{self.head.block_name} Training",
-                    subops=head_ops,
-                    inputs=head_inputs,
-                    outputs=head_outputs,
-                    mutates=head_mutates,
-                    block_metadata=self._phase_metadata("head", self.head.metadata),
+                    block_key=f"{self.head.block_key}.backward",
+                    block_name=f"{self.head.block_name} Bwd",
+                    subops=head_backward_ops,
+                    inputs=head_backward_inputs,
+                    outputs=head_backward_outputs,
+                    mutates=head_backward_mutates,
+                    block_metadata=self._phase_metadata(
+                        "head_backward",
+                        self.head.metadata,
+                    ),
                 )
 
                 # Backward is the reverse of the model-authored layer order.

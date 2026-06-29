@@ -13,7 +13,7 @@ compute-resident simultaneously during forward/backward.
 
 Given a bare training chain with all model state on backing and zero triggers, the policy infers `L` (layer count) from the number of `f_i` tasks and emits the following pattern:
 
-- **Initial compute residency:** `W_0..W_{w-1}` (so forward can start), plus `W_head` and `dW_head` (kept permanently compute-resident), plus any `dW_j` not covered by the forward dW preamble or the backward dW cascade (edge cases like small `L`).
+- **Initial compute residency:** `W_0..W_{w-1}` (so forward can start), plus `W_head`. Legacy chains also keep `dW_head` compute-resident and may pre-place layer `dW_j` entries not covered by the forward dW preamble or backward dW cascade.
 - **After `f_i`** (`i ≤ L-3`): offload `A_i`.
 - **After `f_i`** (`i + w ≤ L-1`): release `W_i`; prefetch `W_{i+w}` — the forward window slide.
 - **After `f_{L-2}`:** prefetch `dW_{L-1}` (forward dW preamble).
@@ -23,9 +23,11 @@ Given a bare training chain with all model state on backing and zero triggers, t
 - **After `b_i`** (`i - 2 ≥ 0`): prefetch `dW_{i-2}` (dW cascade).
 - **After `b_i`** (`i - 2 ∈ offloaded_A`): prefetch `A_{i-2}` (activation recompute path).
 
-The `head` task gets a release of `y_{L-1}`; head weights and head grads stay compute-resident throughout.
+For current modular chains, `head_fwd` is left untouched and `head_bwd` gets a
+release of `y_{L-1}` plus any produced head-gradient object. Legacy chains use
+one combined `head` task for the same release point.
 
-## Worked example: L=4, window_size=2
+## Legacy worked example: L=4, window_size=2
 
 Chain: `f_0, f_1, f_2, f_3, head, b_3, b_2, b_1, b_0`. Activations `A_0, A_1` are in the offload set (`i ≤ L-3 = 1`); `A_2, A_3` stay resident. Initial compute residency: `{W_0, W_1, W_head, dW_head}` (no extra `dW_j` pre-placed since the f-preamble + b-cascade cover all of `dW_0..dW_3`).
 
@@ -77,7 +79,7 @@ Unlike the `*_auto` planners (which take any `TaskChain` and reason about
 residency from the reference stream + capacity), `sliding_window` is hard-coded
 to the modular model-training chain shape:
 
-- It **infers `L` by counting `f_i` tasks** and assumes a symmetric `f_0..f_{L-1}, head, b_{L-1}..b_0` structure — any deviation (missing head, asymmetric backward, fused tasks) silently produces wrong triggers or raises.
+- It **infers `L` by counting `f_i` tasks** and assumes a symmetric `f_0..f_{L-1}, head_fwd/head_bwd, b_{L-1}..b_0` structure — any deviation (missing head, asymmetric backward, fused tasks) silently produces wrong triggers or raises.
 - It **keys triggers off chain position** (forward window slide uses `i + w`, dW cascade uses `i - 2`), not off any property visible in the `schema.Task` interface (`inputs`, `outputs`, `mutates_inputs`).
 - It **assumes the `W_i` / `dW_i` / `A_i` id convention** literally — `_annotate_backward` builds the string `f"dW_{i}"`. A chain that uses different ids (or non-integer layer indices) won't match.
 - It **assumes the activation recompute pattern** `A_{i-2}` needed by `b_i` — a workload with different reuse distances would prefetch the wrong tensor.

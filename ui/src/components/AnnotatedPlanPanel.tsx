@@ -119,7 +119,7 @@ export function AnnotatedPlanPanel({
   }
   const preplaced = chain.initial_memory.filter((o) => o.location === "fast");
   const showModelTrainingNotation = chain.tasks.some((t) =>
-    /^(?:[frb]_\d+_\d+_\d+|head_\d+_\d+|step_\d+_\d+)$/.test(t.id),
+    /^(?:[frb]_\d+_\d+_\d+|head_(?:fwd|bwd)_\d+_\d+|head_\d+_\d+|step_\d+_\d+)$/.test(t.id),
   );
   const filename = exportFilename ?? filenameFromTitle(title);
   return (
@@ -144,7 +144,8 @@ export function AnnotatedPlanPanel({
           <strong>Model-training notation:</strong>{" "}
           <code>f_k_j_i</code> is layer forward, <code>r_k_j_i</code> is the recompute slot, and{" "}
           <code>b_k_j_i</code> is layer backward. Here <code>k</code> is the training step, <code>j</code> is the gradient accumulation round, and{" "}
-          <code>i</code> is the layer index. <code>head_k_j</code> runs the output head; <code>step_k_i</code> applies the optimizer update.
+          <code>i</code> is the layer index. <code>head_fwd_k_j</code> runs head/loss forward,{" "}
+          <code>head_bwd_k_j</code> runs head backward, and <code>step_k_i</code> applies the optimizer update.
         </div>
       )}
       <div className="plan-content">

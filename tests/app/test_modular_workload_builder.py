@@ -28,6 +28,10 @@ def _block_keys(program) -> set[str]:
     return {block.key for block in program.compute_blocks}
 
 
+def _blocks_by_key(program):
+    return {block.key: block for block in program.compute_blocks}
+
+
 def test_dtype_policy_defaults_and_low_precision_sizes():
     policy = DTypePolicy()
 
@@ -144,10 +148,11 @@ def test_training_program_uses_model_order_reverse_backward_and_optimizer_tail()
     program = Llama3ForTraining(config).build_training_program(training)
     tasks = _tasks_by_id(program)
 
-    assert [task.id for task in program.tasks[:7]] == [
+    assert [task.id for task in program.tasks[:8]] == [
         "f_0_0_0",
         "f_0_0_1",
-        "head_0_0",
+        "head_fwd_0_0",
+        "head_bwd_0_0",
         "r_0_0_1",
         "b_0_0_1",
         "r_0_0_0",
@@ -160,6 +165,19 @@ def test_training_program_uses_model_order_reverse_backward_and_optimizer_tail()
     assert tasks["b_0_1_1"].mutates == ["dW_0_1"]
     assert tasks["step_0_1"].inputs == ["dW_0_1", "W_1", "O_1"]
     assert tasks["step_0_1"].mutates == ["W_1", "O_1"]
+    blocks = _blocks_by_key(program)
+    assert blocks["lm_head.forward"].name == "LM Head Forward"
+    assert blocks["lm_head.backward"].name == "LM Head Bwd"
+    assert [op.name for op in blocks["lm_head.forward"].subops] == [
+        "final_norm",
+        "head_proj",
+        "cross_entropy",
+    ]
+    assert [op.name for op in blocks["lm_head.backward"].subops] == [
+        "head_proj_dgrad",
+        "head_proj_wgrad",
+        "final_norm_bwd",
+    ]
     assert program.final_locations == {
         "W_0": "backing",
         "O_0": "backing",
@@ -170,7 +188,8 @@ def test_training_program_uses_model_order_reverse_backward_and_optimizer_tail()
         "transformer_block.forward",
         "transformer_block.backward",
         "transformer_block.recompute_slot",
-        "language_modeling_head.training",
+        "lm_head.forward",
+        "lm_head.backward",
         "optimizer_step.adamw",
     }
 
@@ -299,7 +318,8 @@ def test_varied_family_workloads_run_and_report_kpis():
         assert {block["key"] for block in workload.metadata["compute_blocks"]} >= {
             "transformer_block.forward",
             "transformer_block.backward",
-            "language_modeling_head.training",
+            "lm_head.forward",
+            "lm_head.backward",
         }
 
 

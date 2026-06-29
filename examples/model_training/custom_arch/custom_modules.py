@@ -160,7 +160,7 @@ class ClassifierHead:
     def param_count(self) -> int:
         return self.d_model * self.classes
 
-    def training_ops(
+    def forward_ops(
         self,
         *,
         tokens: int,
@@ -180,6 +180,15 @@ class ClassifierHead:
                 classes=self.classes,
                 bytes_per_element=bytes_per_element,
             ),
+        ]
+
+    def backward_ops(
+        self,
+        *,
+        tokens: int,
+        bytes_per_element: int = 2,
+    ) -> list[DataflowCost]:
+        return [
             ops.dense_input_grad(
                 "classifier_dgrad",
                 tokens=tokens,

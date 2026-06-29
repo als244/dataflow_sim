@@ -91,8 +91,14 @@ class TinyMixerForTraining(TrainingBuilder):
             name="classifier",
             input_dim=config.d_model,
             param_count=head.param_count,
-            training_ops=(
-                lambda tokens, bpe, head=head: head.training_ops(
+            forward_ops=(
+                lambda tokens, bpe, head=head: head.forward_ops(
+                    tokens=tokens,
+                    bytes_per_element=bpe,
+                )
+            ),
+            backward_ops=(
+                lambda tokens, bpe, head=head: head.backward_ops(
                     tokens=tokens,
                     bytes_per_element=bpe,
                 )

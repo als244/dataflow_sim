@@ -113,6 +113,10 @@ Each layer spec provides:
 - forward, backward, recompute, and optimizer op factories,
 - compute-block keys and names.
 
+The head spec provides input dimension, parameter count, separate forward and
+backward op factories, and its own compute-block key/name. The generic builder
+lowers these into distinct `head_fwd_*` and `head_bwd_*` tasks.
+
 `TrainingConfig` controls loop shape:
 
 ```python
@@ -168,8 +172,8 @@ workload = model.build_training_workload(
 `DataflowProgram v1` is the portable workload boundary. It contains:
 
 - initial objects for inputs, parameters, and optimizer state,
-- ordered task instances for forward, head/loss, recompute slots, backward, and
-  optimizer steps,
+- ordered task instances for layer forward, head/loss forward, head backward,
+  recompute slots, layer backward, and optimizer steps,
 - reusable `compute_blocks`,
 - metrics such as total token count,
 - optional final placement constraints.
@@ -177,7 +181,8 @@ workload = model.build_training_workload(
 Task ids are deterministic:
 
 - `f_<step>_<round>_<layer>`: layer forward.
-- `head_<step>_<round>`: head/loss.
+- `head_fwd_<step>_<round>`: head/loss forward.
+- `head_bwd_<step>_<round>`: head backward.
 - `r_<step>_<round>_<layer>`: recompute slot.
 - `b_<step>_<round>_<layer>`: layer backward.
 - `step_<step>_<layer>`: optimizer update.
