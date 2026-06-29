@@ -157,6 +157,14 @@ def test_simulate_accepts_asymmetric_transfer_bandwidths():
     assert body["chain"]["bandwidth_to_slow"] == 45_000
 
 
+def test_simulate_accepts_fractional_fast_memory_budget():
+    body = simulate(
+        SimulationParams.model_validate(_payload(fast_memory_capacity_gb=0.125))
+    )
+
+    assert body["chain"]["fast_memory_capacity"] == int(round(0.125 * (1024 ** 3)))
+
+
 def test_simulate_recompute_toggle_off_matches_default_and_can_change_makespan():
     # A tight cap where recompute relieves transfer pressure.
     off = simulate(SimulationParams.model_validate(_payload(

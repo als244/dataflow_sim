@@ -69,9 +69,25 @@ function fmtTflops(t: number): string {
   return t.toFixed(2);
 }
 
+function trimFixed(value: number, decimals: number): string {
+  return value.toFixed(decimals).replace(/\.?0+$/, "");
+}
+
 function fmtGb(gb: number): string {
   if (Number.isInteger(gb)) return `${gb}`;
-  return gb.toFixed(1);
+  const abs = Math.abs(gb);
+  if (abs >= 10) return trimFixed(gb, 1);
+  if (abs >= 1) return trimFixed(gb, 2);
+  if (abs >= 0.01) return trimFixed(gb, 3);
+  return trimFixed(gb, 6);
+}
+
+function parseGbInput(text: string, { allowZero }: { allowZero: boolean }): number | null {
+  if (text.trim() === "") return null;
+  const value = Number(text);
+  if (!Number.isFinite(value)) return null;
+  if (allowZero ? value < 0 : value <= 0) return null;
+  return value;
 }
 
 function niceMax(value: number, floor: number): number {
@@ -120,15 +136,18 @@ function buildFiniteXTicks(min: number, max: number, maxTicks: number): XTick[] 
 }
 
 function buildBudgets(stepGb: number, minGb: number, maxGb: number, includeInf: boolean): (number | null)[] {
-  const step = Math.max(1, stepGb);
+  if (![stepGb, minGb, maxGb].every(Number.isFinite) || stepGb <= 0) {
+    return includeInf ? [null] : [];
+  }
+  const step = stepGb;
   const min = Math.max(0, minGb);
   const max = Math.max(min, maxGb);
   const out: number[] = [];
   for (let gb = min; gb <= max + 1e-9; gb += step) {
-    out.push(Number(gb.toFixed(3)));
+    out.push(Number(gb.toFixed(6)));
   }
   if (out.length === 0 || Math.abs(out[out.length - 1] - max) > 1e-9) {
-    out.push(Number(max.toFixed(3)));
+    out.push(Number(max.toFixed(6)));
   }
   return includeInf ? [...out, null] : out;
 }
@@ -199,7 +218,7 @@ function LineChart({
   );
   const hasInf = allValues.some((v) => v.point.budgetGb === null);
   const xMin = Math.min(finiteMin, finiteMax);
-  const finiteRange = Math.max(finiteMax - xMin, stepGb, 1);
+  const finiteRange = Math.max(finiteMax - xMin, stepGb, 1e-9);
   const infGap = hasInf ? Math.max(stepGb * 2, finiteRange * 0.08) : 0;
   const xMax = finiteMax + infGap;
   const yMax = percent
@@ -208,7 +227,7 @@ function LineChart({
 
   const xFor = (gb: number | null) => {
     const xVal = gb === null ? xMax : gb;
-    return PLOT.left + ((xVal - xMin) / Math.max(xMax - xMin, 1)) * PLOT_W;
+    return PLOT.left + ((xVal - xMin) / Math.max(xMax - xMin, 1e-9)) * PLOT_W;
   };
   const yFor = (y: number) => (
     PLOT.top + PLOT_H - (y / Math.max(yMax, 1)) * PLOT_H
@@ -397,9 +416,9 @@ function LineChart({
 }
 
 export function MemorySweepPanel({ params }: Props) {
-  const [stepGb, setStepGb] = useState(DEFAULT_STEP_GB);
-  const [minGb, setMinGb] = useState(DEFAULT_MIN_GB);
-  const [maxGb, setMaxGb] = useState(DEFAULT_MAX_GB);
+  const [stepGbText, setStepGbText] = useState(String(DEFAULT_STEP_GB));
+  const [minGbText, setMinGbText] = useState(String(DEFAULT_MIN_GB));
+  const [maxGbText, setMaxGbText] = useState(String(DEFAULT_MAX_GB));
   const [includeInf, setIncludeInf] = useState(true);
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(0);
@@ -415,9 +434,25 @@ export function MemorySweepPanel({ params }: Props) {
     setTotal(0);
   }, [paramsKey]);
 
+  const parsedMinGb = parseGbInput(minGbText, { allowZero: false });
+  const parsedMaxGb = parseGbInput(maxGbText, { allowZero: false });
+  const parsedStepGb = parseGbInput(stepGbText, { allowZero: false });
+  const sweepInputsValid = (
+    parsedMinGb !== null
+    && parsedMaxGb !== null
+    && parsedStepGb !== null
+    && parsedMaxGb >= parsedMinGb
+  );
+  const minGb = parsedMinGb ?? DEFAULT_MIN_GB;
+  const maxGb = parsedMaxGb ?? DEFAULT_MAX_GB;
+  const stepGb = parsedStepGb ?? DEFAULT_STEP_GB;
   const budgets = useMemo(
-    () => buildBudgets(stepGb, minGb, maxGb, includeInf),
-    [stepGb, minGb, maxGb, includeInf],
+    () => (
+      sweepInputsValid
+        ? buildBudgets(stepGb, minGb, maxGb, includeInf)
+        : includeInf ? [null] : []
+    ),
+    [stepGb, minGb, maxGb, includeInf, sweepInputsValid],
   );
 
   async function runSweep() {
@@ -491,42 +526,33 @@ export function MemorySweepPanel({ params }: Props) {
             <span className="form-field-label">Minimum Budget (GB)</span>
             <input
               type="number"
-              min={0}
-              step={1}
-              value={String(minGb)}
+              min={0.000001}
+              step="any"
+              value={minGbText}
               disabled={running}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (Number.isFinite(v)) setMinGb(v);
-              }}
+              onChange={(e) => setMinGbText(e.target.value)}
             />
           </label>
           <label className="form-field">
             <span className="form-field-label">Maximum Budget (GB)</span>
             <input
               type="number"
-              min={1}
-              step={1}
-              value={String(maxGb)}
+              min={0.000001}
+              step="any"
+              value={maxGbText}
               disabled={running}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (Number.isFinite(v)) setMaxGb(v);
-              }}
+              onChange={(e) => setMaxGbText(e.target.value)}
             />
           </label>
           <label className="form-field">
             <span className="form-field-label">Point Spacing (GB)</span>
             <input
               type="number"
-              min={1}
+              min={0.000001}
               step="any"
-              value={String(stepGb)}
+              value={stepGbText}
               disabled={running}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (Number.isFinite(v) && v > 0) setStepGb(v);
-              }}
+              onChange={(e) => setStepGbText(e.target.value)}
             />
           </label>
           <label className={`sweep-inf-toggle${running ? " sweep-inf-toggle-disabled" : ""}`}>
@@ -538,10 +564,14 @@ export function MemorySweepPanel({ params }: Props) {
             />
             <span>Include Unlimited</span>
           </label>
-          <button className="submit-btn sweep-run-btn" onClick={runSweep} disabled={running}>
+          <button className="submit-btn sweep-run-btn" onClick={runSweep} disabled={running || !sweepInputsValid}>
             {running ? `Running ${done}/${total}` : "Run Sweep"}
           </button>
         </div>
+
+        {!sweepInputsValid && (
+          <div className="input-note">Enter positive min/max budgets with max &gt;= min and point spacing &gt; 0.</div>
+        )}
 
         {points.length > 0 && (
           <div className="sweep-grid-panel">

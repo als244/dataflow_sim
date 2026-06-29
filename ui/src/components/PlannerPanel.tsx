@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+
 import {
   POLICY_OPTIONS,
   type PlannerParams,
@@ -35,7 +37,26 @@ export function PlannerPanel({
   const controlsLocked = status === "loading" || hasResults;
   const runLabel = hasResults ? "Reset Simulation" : status === "loading" ? "Running..." : "Run Simulation";
   const runAction = hasResults ? onReset : onRun;
-  const runDisabled = hasResults ? false : !canRun || status === "loading";
+  const [fastMemoryBudgetText, setFastMemoryBudgetText] = useState(
+    params.planner.fast_memory_capacity_gb === null
+      ? ""
+      : String(params.planner.fast_memory_capacity_gb),
+  );
+  const fastMemoryBudgetValid = (
+    fastMemoryBudgetText.trim() === ""
+    || (Number.isFinite(Number(fastMemoryBudgetText)) && Number(fastMemoryBudgetText) > 0)
+  );
+  const runDisabled = hasResults
+    ? false
+    : !canRun || status === "loading" || !fastMemoryBudgetValid;
+
+  useEffect(() => {
+    setFastMemoryBudgetText(
+      params.planner.fast_memory_capacity_gb === null
+        ? ""
+        : String(params.planner.fast_memory_capacity_gb),
+    );
+  }, [params.planner.fast_memory_capacity_gb]);
 
   return (
     <div className="panel planner-panel">
@@ -78,19 +99,20 @@ export function PlannerPanel({
           <span className="form-field-label">Fast Memory Budget (GB)</span>
           <input
             type="number"
-            min={0.1}
-            step={1}
+            min={0.000001}
+            step="any"
             placeholder="Unlimited"
             disabled={controlsLocked}
-            value={params.planner.fast_memory_capacity_gb === null ? "" : String(params.planner.fast_memory_capacity_gb)}
+            value={fastMemoryBudgetText}
             onChange={(e) => {
               const text = e.target.value;
+              setFastMemoryBudgetText(text);
               if (text === "") {
                 setPlanner("fast_memory_capacity_gb", null);
                 return;
               }
               const v = Number(text);
-              if (Number.isFinite(v)) setPlanner("fast_memory_capacity_gb", v);
+              if (Number.isFinite(v) && v > 0) setPlanner("fast_memory_capacity_gb", v);
             }}
           />
         </label>
@@ -98,6 +120,9 @@ export function PlannerPanel({
 
       {previewStale && (
         <div className="input-note">The workload preview is stale. Update the workload before running.</div>
+      )}
+      {!fastMemoryBudgetValid && (
+        <div className="input-note">Fast memory budget must be positive, or blank for unlimited.</div>
       )}
       {errorMsg && <div className="input-error">{errorMsg}</div>}
 
