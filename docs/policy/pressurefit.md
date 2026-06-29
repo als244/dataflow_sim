@@ -226,7 +226,7 @@ writes one row per config and schedule.
   start. A chain whose only feasible plan deliberately fires a prefetch at the
   consumer's immediate predecessor and stalls through it (delaying the transfer
   to preserve a predecessor's output reservation) is reported infeasible even
-  though a valid annotation exists. No measured transformer config needs this;
+  though a valid annotation exists. No current benchmark config needs this;
   see Removed Alternatives.
 - The policy is designed for ordered `TaskChain`s. A DAG scheduler would need a
   different boundary and deadline model.

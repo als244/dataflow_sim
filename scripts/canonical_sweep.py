@@ -33,12 +33,8 @@ from dataflow_sim.policies.pressurefit import (
     plan_pressurefit_policy,
 )
 from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS
-from dataflow_sim.workloads.models.presets import load_model_presets
-from dataflow_sim.workloads.training.optimizers import OptimizerMode
-from dataflow_sim.workloads.training.transformer import (
-    TrainingConfig,
-    build_transformer_training_workload,
-)
+from dataflow_sim.workloads.dataflow_builder import OptimizerMode, TrainingConfig
+from workload_helpers import build_training_workload
 
 
 HARDWARE_CAPS_GB = {
@@ -145,8 +141,6 @@ def _cap_bytes(cap_gb: int | None) -> int | None:
 
 
 def _build_bare(config: dict[str, Any]) -> TaskChain:
-    models = load_model_presets()
-    spec = models["llama3_8B"]
     hw = HARDWARE_PRESETS[config["hardware"]]
     cfg = TrainingConfig(
         seqlen=config["seqlen"],
@@ -156,7 +150,7 @@ def _build_bare(config: dict[str, Any]) -> TaskChain:
         optimizer=config["optimizer"],
         final_model_state_on_backing=config["final_model_state_on_backing"],
     )
-    bare = build_transformer_training_workload(spec, hw, cfg).chain
+    bare = build_training_workload("llama3_8B", hw, cfg).chain
     return replace(bare, fast_memory_capacity=_cap_bytes(config["cap_gb_raw"]))
 
 

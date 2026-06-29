@@ -86,7 +86,7 @@ The **actual decision space** is therefore:
 2. For each non-backing-init or "release-and-reload-eligible" object, which of its inter-use gaps to drop residency in (and via what mechanism: release vs offload).
 3. The temporal ordering of the resulting H and D transfer queues.
 
-For a transformer training chain this is on the order of a few hundred binary decisions plus their scheduling — small in absolute terms, but combinatorially explosive when coupled with the timing constraints below.
+For a stacked training chain this is on the order of a few hundred binary decisions plus their scheduling — small in absolute terms, but combinatorially explosive when coupled with the timing constraints below.
 
 ---
 
@@ -305,7 +305,7 @@ Each per-policy design doc lays out the specific algorithm (search structure, pl
 
 | Symbol / term | Meaning |
 |---|---|
-| `L` | number of transformer layers |
+| `L` | number of layer blocks |
 | `M` | num_seqs (microbatch); affects tensor sizes, not task count |
 | `S` | seqlen; affects tensor sizes |
 | `f_i`, `b_i`, `r_i`, `head` | forward / backward / recompute / head compute tasks |

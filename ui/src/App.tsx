@@ -11,7 +11,7 @@ import {
   type Presets,
   type Policy,
   type OptimizerMode,
-  type TransformerWorkloadParams,
+  type ModelTrainingWorkloadParams,
   type DataflowProgram,
 } from "./components/InputPanel";
 import { PlannerPanel } from "./components/PlannerPanel";
@@ -109,6 +109,9 @@ function readStoredParams(): SimulationParams | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<SimulationParams>;
     if (!parsed || !parsed.hardware || !parsed.workload || !parsed.planner) return null;
+    if ((parsed.workload as { source?: string }).source === "training_transformer") {
+      (parsed.workload as { source: string }).source = "model_training";
+    }
     return parsed as SimulationParams;
   } catch {
     return null;
@@ -123,7 +126,7 @@ function hasLegacyQueryParams(url: URLSearchParams): boolean {
 }
 
 function applyLegacyQueryParams(out: SimulationParams, url: URLSearchParams): void {
-  const transformer = out.workload as TransformerWorkloadParams;
+  const modelTraining = out.workload as ModelTrainingWorkloadParams;
 
   const hwPreset = url.get("hw_preset");
   if (hwPreset) out.hardware.preset = hwPreset;
@@ -137,48 +140,48 @@ function applyLegacyQueryParams(out: SimulationParams, url: URLSearchParams): vo
 
   const mPreset = url.get("workload_preset") ?? url.get("model_preset");
   if (mPreset) {
-    transformer.preset = mPreset;
-    transformer.model.preset = mPreset;
+    modelTraining.preset = mPreset;
+    modelTraining.model.preset = mPreset;
   }
   for (const k of MODEL_NUM_KEYS) {
     const v = url.get(`model_${k}`);
     if (v !== null) {
       const n = Number(v);
-      if (Number.isFinite(n)) (transformer.model as unknown as Record<string, unknown>)[k] = n;
+      if (Number.isFinite(n)) (modelTraining.model as unknown as Record<string, unknown>)[k] = n;
     }
   }
   const qk = url.get("model_qk_norm");
-  if (qk !== null) transformer.model.qk_norm = qk === "true";
+  if (qk !== null) modelTraining.model.qk_norm = qk === "true";
 
   const seq = url.get("seqlen");
   if (seq !== null) {
     const n = Number(seq);
-    if (Number.isFinite(n)) transformer.training.seqlen = n;
+    if (Number.isFinite(n)) modelTraining.training.seqlen = n;
   }
   const mb = url.get("num_seqs");
   if (mb !== null) {
     const n = Number(mb);
-    if (Number.isFinite(n)) transformer.training.num_seqs = n;
+    if (Number.isFinite(n)) modelTraining.training.num_seqs = n;
   }
   const ga = url.get("grad_accum_rounds");
   if (ga !== null) {
     const n = Number(ga);
-    if (Number.isFinite(n)) transformer.training.grad_accum_rounds = n;
+    if (Number.isFinite(n)) modelTraining.training.grad_accum_rounds = n;
   }
   const steps = url.get("num_steps");
   if (steps !== null) {
     const n = Number(steps);
-    if (Number.isFinite(n)) transformer.training.num_steps = n;
+    if (Number.isFinite(n)) modelTraining.training.num_steps = n;
   }
   const optimizer = url.get("optimizer");
   if (optimizer !== null) {
     const VALID_OPTIMIZERS: OptimizerMode[] = ["none", "adamw", "muon"];
     if ((VALID_OPTIMIZERS as string[]).includes(optimizer)) {
-      transformer.training.optimizer = optimizer as OptimizerMode;
+      modelTraining.training.optimizer = optimizer as OptimizerMode;
     }
   }
   const finalBacking = url.get("final_model_state_on_backing");
-  if (finalBacking !== null) transformer.training.final_model_state_on_backing = finalBacking === "true";
+  if (finalBacking !== null) modelTraining.training.final_model_state_on_backing = finalBacking === "true";
   const policy = url.get("policy");
   if (policy !== null) {
     const VALID_POLICIES: Policy[] = [

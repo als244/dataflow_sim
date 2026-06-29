@@ -14,15 +14,15 @@ For DNN training workloads we further apply [recompute planning](docs/recompute.
 
 ## Visualizing Simulated Workloads with the Webapp
 
-The default policy is quite effective and can be [visualized](https://dataflowsim.sunshein.net/) for carrying out transformer training in memory-constrained regimes.
+The default policy is quite effective and can be [visualized](https://dataflowsim.sunshein.net/) for carrying out model training in memory-constrained regimes.
 
 The simulator ingests an abstract dataflow program; we take a model architecture specification and translate it to a task chain that mimics reality. In the webapp you will see an unannotated plan that contains all of the tasks with input/output/mutated objects along with associated task runtime. After you run a simulation you can see a summary of overall metrics, the annotated plan, a timeline of events on each of the streams, composition of fast memory over time, and replayable events. The `Throughput vs. Fast Memory Budget` sweep at the top will run simulations across different memory budgets; then choose a memory budget level that is interesting to see how events actually unfold. *The ideal case is to achieve a runtime close to that of the unlimited fast-memory-capacity regime using just a fraction of fast-memory...*
 
-You can also [create your own dataflow program](examples/README.md) and export it to a schema that the webapp can ingest and simulate.
+You can also [create your own dataflow program](examples/README.md) and export it to a `DataflowProgram v1` JSON file that the webapp can ingest and simulate.
 
 <!-- 
 > [!NOTE]
-> The space of possible planning decisions is combinatorial and becomes more difficult when the number of tasks increases and/or when memory pressure increases. Currently, our default task chain for transformer training assumes a batch of sequences is processed each forward/backward pass and goes through each transformer block (i.e. the usual framing). However, this does not have to be the case; we can break each transformer block down into finer-grained tasks, or we could split the batch into smaller chunks (cut the X matrix across rows). These are optimization opportunities, but they come with the challenge of more difficult planning and recomputation. -->
+> The space of possible planning decisions is combinatorial and becomes more difficult when the number of tasks increases and/or when memory pressure increases. Model-training workloads can be decomposed at different granularities: whole layers, smaller module phases, individual ops, or chunks of the main activation tensor. These are optimization opportunities, but they come with the challenge of more difficult planning and recomputation. -->
 
 ## Setup
 
@@ -38,6 +38,9 @@ git clone git@github.com:als244/dataflow_sim.git
 cd dataflow_sim && pip install -e .
 ```
 
+After installation, repo examples can be run with plain `python examples/...`
+commands from the repo root.
+
 <!--
 ## Repo Layout
 
@@ -47,7 +50,7 @@ cd dataflow_sim && pip install -e .
 - `src/dataflow_sim/workloads/` - generic workload schema, workload builders, and shared workload concepts such as hardware specs.
 - `src/dataflow_sim/app/` - FastAPI backend for the current webapp.
 - `ui/` - React frontend.
-- `examples/` - runnable workload/schema export examples.
+- `examples/` - runnable workload/dataflow-program export examples.
 - `scripts/` - repo-level experiment and utility scripts.
 - `docs/` - design + recipe docs.
 -->
@@ -55,8 +58,7 @@ cd dataflow_sim && pip install -e .
 ## TODOs
 
 - [ ] Support distributed training simulation: Add scale-up and scale-out network streams/queues to simulator. Create 'directives' to intiate P2P and collective communication transfers (or maybe these details should be 'baked' in to intra-layer efficiency...)
-- [ ] Add finer-grained transformer block task decomposition (both in terms of op granularity and batch/chunk granularity).
+- [ ] Add customizable / finer-grained model-training task decomposition (both in terms of op granularity and batch/chunk granularity).
 - [ ] Enable periodic planning to handle gradient accumulation and multi-step training efficiently.
-- [ ] Expand custom dataflow examples beyond transformer training.
+- [ ] Expand custom dataflow examples beyond model training.
 - [ ] Build real runtime that can ingest a dataflow program of similar schema as the simulator.
-

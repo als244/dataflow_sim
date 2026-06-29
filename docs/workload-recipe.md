@@ -20,8 +20,8 @@ The stack is intentionally split:
 | Planner | Bare `TaskChain + settings` | Annotated `TaskChain` | Decide releases, offloads, and prefetches under a fast-memory budget. |
 | Simulator | Annotated `TaskChain` | `EventLog + summary inputs` | Execute the plan exactly and report intervals, stalls, transfers, and peak memory. |
 
-Domain helpers, such as transformer training builders, sit above the workload
-schema. They should emit `DataflowProgram`, not planner annotations.
+Domain helpers, such as model-training builders, sit above the workload schema.
+They should emit `DataflowProgram`, not planner annotations.
 
 ## Choosing The Right Interface
 

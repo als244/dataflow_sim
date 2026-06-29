@@ -21,7 +21,7 @@ uvicorn dataflow_sim.app.server.main:app --reload --port 8000
 
 The webapp mirrors the API split:
 
-- Workload state: `TransformerWorkloadParams | SchemaWorkloadParams`
+- Workload state: `ModelTrainingWorkloadParams | SchemaWorkloadParams`
 - Hardware state: `HardwareParams`
 - Planner state: `PlannerParams`
 - Combined request state: `SimulationParams`
@@ -58,16 +58,17 @@ builder first, then update the matching TypeScript interface and renderer.
 The UI should never invent memory-planning annotations. It renders preview
 chains and simulator responses exactly as returned by the server.
 
-## Custom Schema Flow
+## Custom Dataflow Program Flow
 
-The `Custom Schema` tab accepts `DataflowProgram v1` JSON. Users can paste JSON
-or import a file, click `Create Workload`, inspect the normalized schema and bare
-plan, then run a planner. The unannotated and annotated plan panels can export
-the displayed `TaskChain` JSON for local inspection or reuse in low-level tests.
+The `Custom Dataflow Program` tab accepts `DataflowProgram v1` JSON. Users can
+paste JSON or import a file, click `Create Workload`, inspect the normalized
+program and bare plan, then run a planner. The unannotated and annotated plan
+panels can export the displayed `TaskChain` JSON for local inspection or reuse
+in low-level tests.
 
-Transformer presets use the same path internally: the server turns transformer
-training params into a `DataflowProgram`, realizes it against hardware, and then
-the UI renders it like any other schema workload.
+Model-training presets use the same path internally: the server turns
+model-training params into a `DataflowProgram`, realizes it against hardware,
+and then the UI renders it like any other dataflow program workload.
 
 ## Checks
 

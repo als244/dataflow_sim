@@ -20,7 +20,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 from dataflow_sim.policies.pressurefit import apply_pressurefit_policy
 from dataflow_sim.engine.simulator import run
-from dataflow_sim.workloads.training.transformer import build_layerwise_training_chain
+from workload_helpers import build_tiny_training_chain
 
 
 def main() -> int:
@@ -30,8 +30,8 @@ def main() -> int:
     p.add_argument("--bw-to-slow", type=int, default=8, dest="bw_to_slow")
     args = p.parse_args()
 
-    bare = build_layerwise_training_chain(
-        args.L,
+    bare = build_tiny_training_chain(
+        layers=args.L,
         bandwidth_from_slow=args.bw_from_slow,
         bandwidth_to_slow=args.bw_to_slow,
     )

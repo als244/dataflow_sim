@@ -59,8 +59,8 @@ subops = [
 ### Modules
 
 Modules live in `dataflow_sim.workloads.modules`, one file per module. Current
-examples include dense attention, MLP, MoE, transformer block, transformer
-head, optimizer step, and recompute helpers.
+examples include dense attention, MLP, MoE, stacked blocks, head/loss modules,
+optimizer steps, and recompute helpers.
 
 A module is where phase composition belongs:
 
@@ -102,9 +102,8 @@ module metadata rather than extra batch dimensions on the main activation.
 ## Training Builder
 
 `dataflow_sim.workloads.training_builder.TrainingBuilder` is generic. It is not
-Llama-specific, Qwen-specific, or transformer-specific. It takes a
-model-authored ordered list of `TrainingLayerSpec` objects plus one
-`TrainingHeadSpec`.
+tied to any built-in model family. It takes a model-authored ordered list of
+`TrainingLayerSpec` objects plus one `TrainingHeadSpec`.
 
 Each layer spec provides:
 
@@ -189,14 +188,14 @@ explicit and runs that order in reverse.
 ## Compute Blocks
 
 A compute block is a reusable runtime/lowering grouping, not a model-definition
-object. Model files choose a base key such as `transformer_block`; the generic
+object. Model files choose a base key such as `layer_block`; the generic
 builder appends the phase:
 
-- `transformer_block.forward`
-- `transformer_block.backward`
-- `transformer_block.recompute`
-- `transformer_block.recompute_slot`
-- `transformer_head.training`
+- `layer_block.forward`
+- `layer_block.backward`
+- `layer_block.recompute`
+- `layer_block.recompute_slot`
+- `model_head.training`
 - `optimizer_step.adamw`
 
 `TraceContext.emit_task(...)` registers a block the first time a task references
@@ -241,8 +240,8 @@ The planner flow is:
 
 The generic selector is
 `dataflow_sim.planning.recompute.plan_with_recompute(...)`. It does not know
-about transformers; it only sees a variant builder, rewrite table, and policy
-function.
+anything model-family specific; it only sees a variant builder, rewrite table,
+and policy function.
 
 ## Hardware, Policies, And Simulation
 
@@ -291,7 +290,7 @@ Users can customize:
 Export a built-in model-family training program:
 
 ```bash
-PYTHONPATH=src python examples/export_transformer_training_schema.py \
+python examples/model_training/builtin_arch/export_training_program.py \
   --model qwen3_moe \
   --scale 30B-3B \
   --n-layers 8 \
@@ -303,7 +302,7 @@ PYTHONPATH=src python examples/export_transformer_training_schema.py \
 Build a custom op/module/model stack and run the simulator:
 
 ```bash
-PYTHONPATH=src python examples/custom_workloads/run_custom_training_simulation.py \
+python examples/model_training/custom_arch/run_training_simulation.py \
   --n-layers 8 \
   --d-model 512 \
   --hidden-dim 2048 \
@@ -317,8 +316,8 @@ PYTHONPATH=src python examples/custom_workloads/run_custom_training_simulation.p
 
 The custom example writes:
 
-- `webapp_upload.dataflow.json`: upload this through the webapp's Custom Schema
-  tab,
+- `webapp_upload.dataflow.json`: upload this through the webapp's Custom
+  Dataflow Program tab,
 - `unannotated_plan.json`: realized bare `TaskChain`,
 - `annotated_plan.json`: policy/recompute-annotated plan,
 - `summary.json`: simulator KPI payload.

@@ -108,8 +108,8 @@ export interface DataflowProgram {
   final_locations?: Record<string, "backing" | "fast">;
 }
 
-export interface TransformerWorkloadParams {
-  source: "training_transformer";
+export interface ModelTrainingWorkloadParams {
+  source: "model_training";
   preset: string;
   model: ModelParams;
   training: TrainingParams;
@@ -120,7 +120,7 @@ export interface SchemaWorkloadParams {
   schema: DataflowProgram;
 }
 
-export type WorkloadParams = TransformerWorkloadParams | SchemaWorkloadParams;
+export type WorkloadParams = ModelTrainingWorkloadParams | SchemaWorkloadParams;
 
 export interface PlannerParams {
   policy: Policy;
@@ -135,8 +135,8 @@ export interface SimulationParams {
   planner: PlannerParams;
 }
 
-export interface TransformerWorkloadPreset {
-  source: "training_transformer";
+export interface ModelTrainingWorkloadPreset {
+  source: "model_training";
   preset: string;
   model: Omit<ModelParams, "preset">;
   training: TrainingParams;
@@ -150,7 +150,7 @@ export interface SchemaWorkloadPreset {
   description: string;
 }
 
-export type WorkloadPreset = TransformerWorkloadPreset | SchemaWorkloadPreset;
+export type WorkloadPreset = ModelTrainingWorkloadPreset | SchemaWorkloadPreset;
 
 export interface Presets {
   workloads: Record<string, WorkloadPreset>;
@@ -228,7 +228,7 @@ export const EXAMPLE_SCHEMA: DataflowProgram = {
 
 export const DEFAULT_PARAMS: SimulationParams = {
   workload: {
-    source: "training_transformer",
+    source: "model_training",
     preset: "llama3_8B",
     model: DEFAULT_MODEL,
     training: DEFAULT_TRAINING,
@@ -374,7 +374,7 @@ export function InputPanel({
     setParams({
       ...params,
       workload: {
-        source: "training_transformer",
+        source: "model_training",
         preset,
         model: { preset, ...p.model },
         training: p.training,
@@ -389,8 +389,8 @@ export function InputPanel({
     });
   }
 
-  function setTransformerModel<K extends keyof ModelParams>(key: K, value: ModelParams[K]) {
-    if (params.workload.source !== "training_transformer") return;
+  function setModelTrainingModel<K extends keyof ModelParams>(key: K, value: ModelParams[K]) {
+    if (params.workload.source !== "model_training") return;
     setParams({
       ...params,
       workload: {
@@ -406,7 +406,7 @@ export function InputPanel({
   }
 
   function setTraining<K extends keyof TrainingParams>(key: K, value: TrainingParams[K]) {
-    if (params.workload.source !== "training_transformer") return;
+    if (params.workload.source !== "model_training") return;
     setParams({
       ...params,
       workload: {
@@ -423,12 +423,12 @@ export function InputPanel({
     });
   }
 
-  function useTransformerWorkload() {
-    if (params.workload.source === "training_transformer") return;
+  function useModelTrainingWorkload() {
+    if (params.workload.source === "model_training") return;
     setParams({
       ...params,
       workload: {
-        source: "training_transformer",
+        source: "model_training",
         preset: DEFAULT_MODEL.preset,
         model: DEFAULT_MODEL,
         training: DEFAULT_TRAINING,
@@ -479,12 +479,12 @@ export function InputPanel({
     previewStatus === "ok" && !previewStale ? "Ready" :
     previewStatus === "ok" && previewStale ? "Stale" : "Draft";
 
-  const transformerPresets = useMemo(
+  const modelTrainingPresets = useMemo(
     () => Object.keys(presets?.workloads ?? {}),
     [presets],
   );
-  const transformerWorkload =
-    params.workload.source === "training_transformer" ? params.workload : null;
+  const modelTrainingWorkload =
+    params.workload.source === "model_training" ? params.workload : null;
 
   return (
     <div className="panel input-panel">
@@ -502,32 +502,32 @@ export function InputPanel({
             <div className="segmented">
               <button
                 type="button"
-                className={params.workload.source === "training_transformer" ? "active" : ""}
-                onClick={useTransformerWorkload}
+                className={params.workload.source === "model_training" ? "active" : ""}
+                onClick={useModelTrainingWorkload}
               >
-                Transformer Training
+                Model Training
               </button>
               <button
                 type="button"
                 className={params.workload.source === "schema" ? "active" : ""}
                 onClick={useSchemaWorkload}
               >
-                Custom Schema
+                Custom Dataflow Program
               </button>
             </div>
           </header>
 
-          {transformerWorkload ? (
+          {modelTrainingWorkload ? (
             <>
               <FormSubsection title="Preset">
                 <div className="form-row">
                   <label className="form-field form-field-wide">
                     <span className="form-field-label">Workload Preset</span>
                     <select
-                      value={transformerWorkload.preset}
+                      value={modelTrainingWorkload.preset}
                       onChange={(e) => onWorkloadPreset(e.target.value)}
                     >
-                      {transformerPresets.map((name) => (
+                      {modelTrainingPresets.map((name) => (
                         <option key={name} value={name}>{name}</option>
                       ))}
                       <option value="custom">Custom</option>
@@ -541,8 +541,8 @@ export function InputPanel({
                   <label className="form-field form-field-wide">
                     <span className="form-field-label">Model Family</span>
                     <select
-                      value={transformerWorkload.model.family}
-                      onChange={(e) => setTransformerModel("family", e.target.value as ModelFamily)}
+                      value={modelTrainingWorkload.model.family}
+                      onChange={(e) => setModelTrainingModel("family", e.target.value as ModelFamily)}
                     >
                       {MODEL_FAMILY_OPTIONS.map((o) => (
                         <option key={o.value} value={o.value}>{o.label}</option>
@@ -558,10 +558,10 @@ export function InputPanel({
                         type="number"
                         min={0}
                         step={1}
-                        value={String(transformerWorkload.model[f.key])}
+                        value={String(modelTrainingWorkload.model[f.key])}
                         onChange={(e) => {
                           const v = Number(e.target.value);
-                          if (Number.isFinite(v)) setTransformerModel(f.key, v);
+                          if (Number.isFinite(v)) setModelTrainingModel(f.key, v);
                         }}
                       />
                     </label>
@@ -570,8 +570,8 @@ export function InputPanel({
                     <span className="form-field-label">QK Norm</span>
                     <input
                       type="checkbox"
-                      checked={transformerWorkload.model.qk_norm}
-                      onChange={(e) => setTransformerModel("qk_norm", e.target.checked)}
+                      checked={modelTrainingWorkload.model.qk_norm}
+                      onChange={(e) => setModelTrainingModel("qk_norm", e.target.checked)}
                     />
                   </label>
                 </div>
@@ -583,7 +583,7 @@ export function InputPanel({
                     <span className="form-field-label">Sequence Length</span>
                     <input
                       type="number" min={1} step={1}
-                      value={String(transformerWorkload.training.seqlen)}
+                      value={String(modelTrainingWorkload.training.seqlen)}
                       onChange={(e) => {
                         const v = Number(e.target.value);
                         if (Number.isFinite(v)) setTraining("seqlen", v);
@@ -594,7 +594,7 @@ export function InputPanel({
                     <span className="form-field-label">Microbatch Size</span>
                     <input
                       type="number" min={1} step={1}
-                      value={String(transformerWorkload.training.num_seqs)}
+                      value={String(modelTrainingWorkload.training.num_seqs)}
                       onChange={(e) => {
                         const v = Number(e.target.value);
                         if (Number.isFinite(v)) setTraining("num_seqs", v);
@@ -605,7 +605,7 @@ export function InputPanel({
                     <span className="form-field-label">Gradient Accumulation</span>
                     <input
                       type="number" min={1} step={1}
-                      value={String(transformerWorkload.training.grad_accum_rounds)}
+                      value={String(modelTrainingWorkload.training.grad_accum_rounds)}
                       onChange={(e) => {
                         const v = Number(e.target.value);
                         if (Number.isFinite(v)) setTraining("grad_accum_rounds", v);
@@ -620,7 +620,7 @@ export function InputPanel({
                   <label className="form-field">
                     <span className="form-field-label">Optimizer</span>
                     <select
-                      value={transformerWorkload.training.optimizer}
+                      value={modelTrainingWorkload.training.optimizer}
                       onChange={(e) => setTraining("optimizer", e.target.value as OptimizerMode)}
                     >
                       {OPTIMIZER_OPTIONS.map((o) => (
@@ -632,7 +632,7 @@ export function InputPanel({
                     <span className="form-field-label">Training Steps</span>
                     <input
                       type="number" min={1} step={1}
-                      value={String(transformerWorkload.training.num_steps)}
+                      value={String(modelTrainingWorkload.training.num_steps)}
                       onChange={(e) => {
                         const v = Number(e.target.value);
                         if (Number.isFinite(v)) setTraining("num_steps", v);
@@ -655,7 +655,7 @@ export function InputPanel({
                   <span className="form-field-label">Final State On Slow Memory</span>
                   <input
                     type="checkbox"
-                    checked={transformerWorkload.training.final_model_state_on_backing}
+                    checked={modelTrainingWorkload.training.final_model_state_on_backing}
                     onChange={(e) => setTraining("final_model_state_on_backing", e.target.checked)}
                   />
                 </label>
@@ -683,7 +683,7 @@ export function InputPanel({
                 .
               </p>
               <div className="schema-editor-toolbar">
-                <span className="dim">Common schema JSON</span>
+                <span className="dim">DataflowProgram JSON</span>
                 <label className="reset-btn schema-import-btn">
                   Import JSON
                   <input

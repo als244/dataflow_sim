@@ -6,12 +6,12 @@ Implementation: [`src/dataflow_sim/policies/min_grow.py`](../../../src/dataflow_
 
 ## 1. Overview
 
-`min_grow` is a memory scheduling policy for the dataflow_sim that minimizes makespan by **searching over residency plans with simulator replay as the cost oracle**, then **deterministically deriving transfer triggers** from the chosen plan. It is a clean, independent rewrite — not a refactor of `max_reduce`. It targets chain-shaped task graphs initially (training workload), with a plan representation that generalizes cleanly to DAGs as future work.
+`min_grow` is a memory scheduling policy for the dataflow_sim that minimizes makespan by **searching over residency plans with simulator replay as the cost oracle**, then **deterministically deriving transfer triggers** from the chosen plan. It is a clean, independent rewrite — not a refactor of `max_reduce`. It targets chain-shaped task graphs initially, with a plan representation that generalizes cleanly to DAGs as future work.
 
 **Algorithm direction: MAX → shrink** (starts from "everything kept resident as long as possible", reduces via simulator-scored beam search). The dual MIN → grow direction was considered and tested; MAX → shrink converges faster for both loose-cap (MAX is immediately optimal) and tight-cap configs (the natural shape of optimal plans is "MAX minus a few targeted evictions").
 
 Four stages:
-- **Phase A0 — Analytic pre-pass**: starting from MAX, greedily evict objects (Belady-first, static-peak as tiebreaker) by static-cap reduction alone until `static_peak ≤ cap`. Pure analytic — no simulator. Critical for scaling: for L=32 transformer with 30+GB backing-init and 20GB cap, simulator-driven shrink from MAX is too slow (would burn entire time budget).
+- **Phase A0 — Analytic pre-pass**: starting from MAX, greedily evict objects (Belady-first, static-peak as tiebreaker) by static-cap reduction alone until `static_peak ≤ cap`. Pure analytic — no simulator. Critical for scaling: for large chains with 30+GB backing-init and 20GB cap, simulator-driven shrink from MAX is too slow (would burn entire time budget).
 - **Phase A1 — Simulator-driven over-shrink**: from the static-feasible plan, iteratively try Belady-ranked further shrinks. Accept best NON-WORSE shrink per step (allows walking through plateaus where one un-pre-placement doesn't help but two-together do). Stops after `patience=6` consecutive non-improving steps. Captures the "shrinking initial objects can reduce makespan via reduced output-reservation contention" effect that analytic shrink misses.
 - **Phase A2 — Beam search**: from over-shrink's plan, beam-explore both reductions AND extensions (re-pre-place where cap allows). Refines for local makespan improvements.
 - **Phase B — Schedule derivation**: deterministic emission of `releases_after` / `offload_after` / `prefetch_after` triggers. Two key insights:
@@ -40,7 +40,7 @@ The problem formulation, hardness analysis, and the case for "plan + schedule se
 
 ## 3. Problem recap (brief)
 
-Per [problem.md](../../problem.md): given a DAG of compute tasks on a single compute stream + two FIFO transfer streams (from-slow, to-slow) + a hard byte cap, decide what's resident when, to minimize makespan. The training workload's compute DAG is a chain `f_1, ..., f_L, head, b_L, ..., b_1` (`2L+1` active tasks; recompute tasks `r_i` are zero-cost and ignored).
+Per [problem.md](../../problem.md): given a DAG of compute tasks on a single compute stream + two FIFO transfer streams (from-slow, to-slow) + a hard byte cap, decide what's resident when, to minimize makespan. The initial benchmark DAGs were chains such as `f_1, ..., f_L, head, b_L, ..., b_1` (`2L+1` active tasks; recompute tasks `r_i` are zero-cost and ignored).
 
 ### 3.1 Input format (min_grow's input)
 
@@ -362,7 +362,7 @@ The trade-off is that min_grow cannot prove a plan optimal without trying it; th
 
 ---
 
-## 8. Worked example (L=2 transformer, tight cap)
+## 8. Worked example (5-task chain, tight cap)
 
 Workload: `tasks = [f_1, f_2, head, b_2, b_1]` (5 active tasks). Objects:
 - Backing-init: `input, W_1, W_2, head_W`
@@ -443,7 +443,7 @@ min_grow inherits from max_reduce only the **boundary convention** and the **sch
 ### 12.1 Unit tests (`tests/policies/test_min_grow.py`)
 
 - **MIN plan correctness**: 3-task synthetic chain. Verify only forced residency.
-- **Extension enumeration**: on L=2 transformer, verify expected gap-merge candidates surfaced for `W_1` (the only object with a real gap in MIN).
+- **Extension enumeration**: on a 5-task chain, verify expected gap-merge candidates surfaced for `W_1` (the only object with a real gap in MIN).
 - **Static cap pre-filter**: construct plan that exceeds cap at one boundary; verify pre-filter rejects.
 - **Schedule derivation determinism**: fixed plan → fixed trigger set. Verify trigger placement, FIFO order, release-vs-offload classification.
 - **End-to-end**: small config (L=3, tight cap), `apply_min_grow_policy` returns valid TaskChain, simulator runs to completion, makespan finite.
@@ -463,7 +463,7 @@ Run `scripts/compare_policies.py` with min_grow added:
 
 ## 13. Risks and fallback
 
-- **Cold-start beam may not match warm-started max_reduce** on configs where max_reduce happens to be near-optimal. max_reduce's 34/72 baseline is a hard floor. If min_grow falls short: introduce warm-start as Phase 0 (use belady_reactive's plan or max_reduce's plan as initial seed), with prior policies renamed into clearly-described "min_grow seeds" (belady_reactive → reactive-Belady seed; max_reduce → top-down-reduce seed). Sliding excluded as transformer-specific. Cold-start stays the primary design; warm-start is the documented escape hatch.
+- **Cold-start beam may not match warm-started max_reduce** on configs where max_reduce happens to be near-optimal. max_reduce's 34/72 baseline is a hard floor. If min_grow falls short: introduce warm-start as Phase 0 (use belady_reactive's plan or max_reduce's plan as initial seed), with prior policies renamed into clearly-described "min_grow seeds" (belady_reactive -> reactive-Belady seed; max_reduce -> top-down-reduce seed). Sliding excluded as chain-specific. Cold-start stays the primary design; warm-start is the documented escape hatch.
 - **Per-replay simulator cost** higher than 500ms–2s estimate: K_beam/K_sim are knobs, shrink to fit.
 - **Candidate enumeration on DAGs** needs more thought (forks/joins); chain-first explicit in scope.
 - **Analytic upper bound for ranking** is loose; could mis-prioritize good candidates. Mitigation: simulator scores are truth — if a bad bound de-prioritizes a good candidate, it gets evaluated in a later beam step.

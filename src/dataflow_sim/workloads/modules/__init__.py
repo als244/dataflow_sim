@@ -15,8 +15,8 @@ from dataflow_sim.workloads.modules.recompute import zero_recompute_slot
 from dataflow_sim.workloads.modules.transformer_block import (
     TransformerBlock,
 )
-from dataflow_sim.workloads.modules.transformer_head import (
-    TransformerHead,
+from dataflow_sim.workloads.modules.language_modeling_head import (
+    LanguageModelingHead,
 )
 
 __all__ = [
@@ -26,7 +26,7 @@ __all__ = [
     "SwiGLUMLP",
     "TransformerBlock",
     "TransformerDimensions",
-    "TransformerHead",
+    "LanguageModelingHead",
     "active_params_per_layer",
     "head_params",
     "layer_activation_elements_per_token",

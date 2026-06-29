@@ -1,6 +1,13 @@
 # sliding_window
 
-A hand-crafted, workload-specific policy that annotates a bare transformer-training chain with a fixed-pattern weight/activation/gradient trigger schedule. This is the only non-auto policy in the suite — it does not reason about residency or generalize beyond chains produced by `build_layerwise_training_chain`. It keys directly off the `f_i`, `b_i`, `W_i`, `dW_i`, `A_i` id conventions and a tunable `window_size` parameter that controls how many weights are kept compute-resident simultaneously during forward/backward.
+A hand-crafted, workload-specific policy that annotates a bare model-training
+chain with a fixed-pattern weight/activation/gradient trigger schedule. This
+is the only non-auto policy in the suite: it does not reason about residency or
+generalize beyond the recognized task/object id conventions emitted by the
+modular training workload builder. It keys directly off ids such as
+`f_0_0_i`, `b_0_0_i`, `W_i`, `dW_0_i`, and `A_0_0_i`, plus a tunable
+`window_size` parameter that controls how many weights are kept
+compute-resident simultaneously during forward/backward.
 
 ## Mechanism
 
@@ -64,9 +71,11 @@ The steady-state invariant is visible: at every forward/backward boundary the re
 - **`w ≥ 3`:** keeps more weights warm, more overlap slack, fewer stalls when from-slow is slow — at the cost of a higher cap floor (each extra `w` adds one weight's worth of resident bytes).
 - **`w ≥ L`:** degenerates — `i + w ≤ L-1` is never satisfied, so no forward slide fires and all weights stay compute-resident for the whole forward pass (effectively "keep everything"). Useful as a sanity baseline on loose caps.
 
-## Why this policy is transformer-chain-specific
+## Why this policy is chain-specific
 
-Unlike the `*_auto` planners (which take any `TaskChain` and reason about residency from the reference stream + capacity), `sliding_window` is hard-coded to the transformer training chain shape:
+Unlike the `*_auto` planners (which take any `TaskChain` and reason about
+residency from the reference stream + capacity), `sliding_window` is hard-coded
+to the modular model-training chain shape:
 
 - It **infers `L` by counting `f_i` tasks** and assumes a symmetric `f_0..f_{L-1}, head, b_{L-1}..b_0` structure — any deviation (missing head, asymmetric backward, fused tasks) silently produces wrong triggers or raises.
 - It **keys triggers off chain position** (forward window slide uses `i + w`, dW cascade uses `i - 2`), not off any property visible in the `schema.Task` interface (`inputs`, `outputs`, `mutates_inputs`).

@@ -170,7 +170,7 @@ def test_training_program_uses_model_order_reverse_backward_and_optimizer_tail()
         "transformer_block.forward",
         "transformer_block.backward",
         "transformer_block.recompute_slot",
-        "transformer_head.training",
+        "language_modeling_head.training",
         "optimizer_step.adamw",
     }
 
@@ -299,7 +299,7 @@ def test_varied_family_workloads_run_and_report_kpis():
         assert {block["key"] for block in workload.metadata["compute_blocks"]} >= {
             "transformer_block.forward",
             "transformer_block.backward",
-            "transformer_head.training",
+            "language_modeling_head.training",
         }
 
 

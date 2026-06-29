@@ -1,4 +1,4 @@
-"""Export a transformer training workload with the modular dataflow builder.
+"""Export a built-in model-family training workload.
 
 This example uses the new side-by-side workload stack:
 
@@ -129,7 +129,7 @@ def main() -> None:
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path("transformer_training.dataflow.json"),
+        default=Path("model_training.dataflow.json"),
         help="Path to write the exported DataflowProgram JSON.",
     )
     args = parser.parse_args()

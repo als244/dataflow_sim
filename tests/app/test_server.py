@@ -24,7 +24,7 @@ _PLANNER_KEYS = {
 def _payload(**overrides):
     payload = {
         "workload": {
-            "source": "training_transformer",
+            "source": "model_training",
             "preset": "custom",
             "model": {
                 "preset": "custom",
@@ -234,7 +234,7 @@ def test_simulate_final_model_state_on_backing_is_opt_in():
     }
 
 
-def test_preview_transformer_workload_returns_dataflow_schema():
+def test_preview_model_training_workload_returns_dataflow_schema():
     body = preview_workload(
         WorkloadPreviewParams.model_validate(
             {
@@ -270,9 +270,8 @@ def test_preview_accepts_uploaded_schema_and_returns_bare_chain():
     assert body["compute_blocks"][0]["instance_count"] == 1
 
 
-def test_presets_include_modular_schema_workload():
+def test_presets_include_only_public_model_workloads():
     body = presets()
-    demo = body["workloads"]["qwen3_moe_modular_demo"]
     expected_models = {
         "llama3_8B": "llama3",
         "llama3_70B": "llama3",
@@ -285,15 +284,10 @@ def test_presets_include_modular_schema_workload():
     }
 
     assert set(body["models"]) == set(expected_models)
+    assert set(body["workloads"]) == set(expected_models)
     for name, family in expected_models.items():
         assert body["models"][name]["family"] == family
-        assert body["workloads"][name]["source"] == "training_transformer"
-    assert demo["source"] == "schema"
-    assert demo["schema"]["schema_version"] == "dataflow/v1"
-    assert demo["schema"]["metadata"]["kind"] == "training.transformer.qwen3_moe.modular"
-    keys = {block["key"] for block in demo["schema"]["compute_blocks"]}
-    assert "transformer_block.forward" in keys
-    assert "transformer_head.training" in keys
+        assert body["workloads"][name]["source"] == "model_training"
 
 
 def test_simulate_uploaded_schema_workload():

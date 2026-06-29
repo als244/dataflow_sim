@@ -20,15 +20,15 @@ hardware realization, memory policies, and recompute, see
 Run the standalone examples from the repo root:
 
 ```bash
-python examples/export_custom_dataflow.py --out /tmp/generic_pipeline.dataflow.json
-python examples/export_transformer_training_schema.py --out /tmp/llama3_training.dataflow.json
+python examples/generic_dataflow/export_program.py --out /tmp/generic_pipeline.dataflow.json
+python examples/model_training/builtin_arch/export_training_program.py --out /tmp/llama3_training.dataflow.json
 ```
 
 Both commands write `DataflowProgram v1` JSON that can be imported through the
-webapp's **Custom Schema** tab. The first example authors the generic schema
-directly. The second uses the modular transformer path: choose a model family,
-override scale dimensions if needed, set training parameters, then export the
-schema emitted through `training_builder`.
+webapp's **Custom Dataflow Program** tab. The first example authors the generic
+program directly. The second uses the modular model-training path: choose a
+model family, override scale dimensions if needed, set training parameters,
+then export the program emitted through `training_builder`.
 
 ## Modular Builder Stack
 
@@ -38,8 +38,7 @@ The modular path is dependency-free:
   `workloads.ops.optimizer` contain one-file-per-op-type helpers that return
   `DataflowCost` sub-op specs.
 - `workloads.modules` composes ops into reusable modules such as attention,
-  SwiGLU MLP, MoE, transformer block, head/loss, optimizer, and recompute
-  phases.
+  SwiGLU MLP, MoE, stacked blocks, head/loss, optimizer, and recompute phases.
 - `workloads.models.llama3`, `workloads.models.qwen3`,
   `workloads.models.qwen3_moe`, and `workloads.models.olmoe` define real
   model families with preset-plus-overrides config APIs. Each model file
@@ -65,8 +64,8 @@ program = model.build_training_program(
 
 ### `training_builder` Inputs
 
-`workloads.training_builder.TrainingBuilder` is not transformer-family
-specific. It schedules a model-authored ordered list of `TrainingLayerSpec`
+`workloads.training_builder.TrainingBuilder` is not tied to any built-in model
+family. It schedules a model-authored ordered list of `TrainingLayerSpec`
 objects plus one `TrainingHeadSpec`.
 
 Each layer spec provides:
@@ -124,8 +123,8 @@ as a convenience fallback; the compiler normalizes it into a one-off block named
 ## Compute Blocks
 
 A compute block is the reusable structure behind one or more task instances.
-For example, 32 layer-forward tasks can all point to one
-`transformer_dense_forward` block. The UI uses blocks to show:
+For example, 32 layer-forward tasks can all point to one `layer.forward` block.
+The UI uses blocks to show:
 
 - per-instance runtime and sub-op timing,
 - total runtime over all instances,
@@ -139,7 +138,7 @@ Forward`. `compute_block_key` names reusable structure.
 In the modular training stack, compute blocks are created when
 `TraceContext.emit_task(...)` registers each task's `compute_block_key`.
 Model files choose the reusable block identity through `TrainingLayerSpec`
-and `TrainingHeadSpec` fields such as `block_key="transformer_block"`; the
+and `TrainingHeadSpec` fields such as `block_key="layer_block"`; the
 generic `training_builder` appends phase suffixes like `.forward`,
 `.backward`, `.recompute`, and `.training`.
 
@@ -305,7 +304,8 @@ workload = model.build_training_workload(
 
 Custom architectures follow the same pattern by constructing their own
 `TrainingLayerSpec` list and `TrainingHeadSpec`. See
-`examples/custom_workloads/` for a complete op/module/model/simulation stack.
+`examples/model_training/custom_arch/` for a complete
+op/module/model/simulation stack.
 
 To export a custom training workload for the webapp:
 
@@ -313,13 +313,13 @@ To export a custom training workload for the webapp:
 import json
 from pathlib import Path
 
-Path("my_transformer.dataflow.json").write_text(
+Path("my_model.dataflow.json").write_text(
     json.dumps(program.model_dump(mode="json"), indent=2) + "\n"
 )
 ```
 
-Then open the webapp, choose **Custom Schema**, import the file, choose
-hardware, and click **Create Workload**. The preview endpoint returns a
+Then open the webapp, choose **Custom Dataflow Program**, import the file,
+choose hardware, and click **Create Workload**. The preview endpoint returns a
 normalized schema plus the bare task chain. The plan panels can export
 `TaskChain` JSON for users who want to inspect or save the realized plan.
 
@@ -336,13 +336,13 @@ Custom training builders should follow this checklist:
   throughput should appear in summaries;
 - use `final_locations` only for bytes that must end in a particular tier.
 
-For a complete runnable model-definition exporter, see
-`examples/export_transformer_training_schema.py`.
+For complete runnable model-training examples, see
+`examples/model_training/`.
 
 ## Webapp Flow
 
-1. Choose a preset transformer workload, choose a schema preset, or paste schema
-   JSON.
+1. Choose a built-in model workload or paste/import a custom
+   `DataflowProgram` JSON.
 2. Choose hardware and click **Create Workload**. Preview returns the normalized
    schema, bare chain, workload stats, and compute block breakdown.
 3. Choose planner settings and click **Run Simulation**.

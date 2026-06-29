@@ -43,7 +43,7 @@ class DataflowMetrics(BaseModel):
 
     A generic dataflow program may omit metrics.  Training builders set
     ``primary_unit="tokens"`` with the total token count so the webapp can show
-    token throughput without knowing anything transformer-specific.
+    token throughput without knowing anything model-family-specific.
     """
 
     model_config = ConfigDict(extra="forbid")

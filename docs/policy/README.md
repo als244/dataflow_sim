@@ -8,7 +8,7 @@ See [principles.md](principles.md) for the correctness invariants and resource-c
 
 | Policy | Approach | When it wins | When to avoid |
 |---|---|---|---|
-| [sliding-window.md](other_policies/sliding-window.md) | Hand-crafted fixed-width window | Transformer chain you tune by hand | Bad for non-chain workloads |
+| [sliding-window.md](other_policies/sliding-window.md) | Hand-crafted fixed-width window | Recognized chain-shaped training workload you tune by hand | Bad for non-chain workloads |
 | [belady-reactive.md](other_policies/belady-reactive.md) | Shadow-sim Belady eviction | General bare chains, fast | Misses proactive opportunities |
 | [roundtrip-planner.md](other_policies/roundtrip-planner.md) | Constructive round-trip packing | Workloads with reusable objects | High-pressure regimes |
 | [max-reduce.md](other_policies/max-reduce.md) | Analytic top-down from MAX residency | Mid-to-loose capacity, deterministic | Tight caps where MAX-not-feasible |

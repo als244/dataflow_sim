@@ -9,7 +9,7 @@ from dataflow_sim.workloads.modules import (
     OptimizerStep,
     TransformerBlock,
     TransformerDimensions,
-    TransformerHead,
+    LanguageModelingHead,
     head_params,
     layer_activation_elements_per_token,
     params_per_layer,
@@ -89,7 +89,7 @@ def _layer_spec(index: int, dims: TransformerDimensions) -> TrainingLayerSpec:
 
 
 def _head_spec(dims: TransformerDimensions) -> TrainingHeadSpec:
-    head = TransformerHead(dims)
+    head = LanguageModelingHead(dims)
     return TrainingHeadSpec(
         name="head",
         input_dim=dims.d_model,
@@ -100,8 +100,8 @@ def _head_spec(dims: TransformerDimensions) -> TrainingHeadSpec:
                 bytes_per_element=bpe,
             )
         ),
-        block_key="transformer_head",
-        block_name="Transformer Head",
+        block_key="language_modeling_head",
+        block_name="Language Modeling Head",
         metadata={"transformer": asdict(dims)},
     )
 

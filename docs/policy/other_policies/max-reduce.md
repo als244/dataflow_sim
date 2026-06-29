@@ -41,7 +41,7 @@ A `TaskChain` with:
 ## Assumptions
 
 * **Static, known chain.** All task runtimes, sizes, and dependencies are known up front. No data-dependent control flow.
-* **Read-only-by-default + explicit mutation.** A task does NOT modify the byte contents of its inputs *unless* the input id appears in `mutates_inputs`. Mutation is the generalization of the prior "gradient writeback" convention: any input listed in `mutates_inputs` will have its compute-resident bytes updated by the task, so a subsequent release would discard the update. In the transformer training chain, `b_i.mutates_inputs = [dW_i]` and `head.mutates_inputs = [dW_head]` — but max_reduce doesn't know about the names "dW" or "gradient"; it just acts on whatever `mutates_inputs` declares.
+* **Read-only-by-default + explicit mutation.** A task does NOT modify the byte contents of its inputs *unless* the input id appears in `mutates_inputs`. Any input listed in `mutates_inputs` will have its compute-resident bytes updated by the task, so a subsequent release would discard the update. max_reduce does not know about domain names such as "gradient" or "state"; it just acts on whatever `mutates_inputs` declares.
 * **Outputs introduce fresh ids.** No task's `outputs` reuses an existing object's id. So every object has a single producer (either initial-memory or one task).
 * **One to_slow FIFO + one from_slow FIFO.** Transfers on the same direction serialize; the two directions run in parallel.
 * **Boundary semantics.** Boundary `k` is the snapshot *after* task `k`'s end-of-task triggers fire (releases, offloads, prefetches enqueued). Boundary `-1` is the simulator's initial state (just `initial_memory` plus any pre-placed objects).
@@ -195,7 +195,7 @@ The simulator remains the timing arbiter — if max_reduce's plan is logically f
 
 ## Termination & complexity
 
-* Phase 1: at most `O(Σ|uses|)` iterations, each `O(n × #objects)` for the overflow scan and victim selection. For a transformer training chain (`n = 3L+1`, `#objects = O(L)`), this is `O(L³)` — tractable for `L < 200`.
+* Phase 1: at most `O(Σ|uses|)` iterations, each `O(n × #objects)` for the overflow scan and victim selection. For a chain with `n = O(L)` tasks and `#objects = O(L)`, this is `O(L³)` — tractable for `L < 200`.
 * Phase 2: `O(Σ|intervals|) = O(n × #objects)`.
 
 ## What max_reduce does NOT do

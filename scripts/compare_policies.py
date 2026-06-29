@@ -21,7 +21,7 @@ from dataflow_sim.policies.min_grow import apply_min_grow_policy
 from dataflow_sim.policies.pressurefit import apply_pressurefit_policy
 from dataflow_sim.policies.sliding_window import apply_sliding_window_policy
 from dataflow_sim.engine.simulator import run
-from dataflow_sim.workloads.training.transformer import build_layerwise_training_chain
+from workload_helpers import build_tiny_training_chain
 
 
 @dataclass
@@ -88,7 +88,11 @@ def _safe_apply(fn, *args, **kwargs) -> Metrics | None:
 
 
 def run_one(L: int, cap: int | None, window: int, bw_from_slow: int, bw_to_slow: int) -> dict[str, Metrics]:
-    bare = build_layerwise_training_chain(L=L, bandwidth_from_slow=bw_from_slow, bandwidth_to_slow=bw_to_slow)
+    bare = build_tiny_training_chain(
+        layers=L,
+        bandwidth_from_slow=bw_from_slow,
+        bandwidth_to_slow=bw_to_slow,
+    )
     from dataclasses import replace
     bare_with_cap = replace(bare, fast_memory_capacity=cap)
     return {

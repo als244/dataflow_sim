@@ -13,8 +13,8 @@ Current scheduler shape:
 - optimizer tasks run per layer after each step's grad accumulation.
 
 Those rules are generic to a stacked training workload, not to a specific
-transformer family. Llama/Qwen model files instantiate this with transformer
-block/head modules today; future model files can pass different module specs.
+model family. Built-in model files instantiate this with their own block/head
+modules; future model files can pass different module specs.
 """
 from __future__ import annotations
 

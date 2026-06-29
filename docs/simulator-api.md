@@ -25,7 +25,7 @@ Key fields:
 - `tasks[]`: unique timeline instances with `id`, `label`, `group`,
   `compute_block_key`, `inputs`, `outputs`, and `mutates`. Inline `cost` is a
   convenience fallback and is normalized into a one-off compute block.
-- `metrics`: optional primary throughput contract. A transformer builder sets
+- `metrics`: optional primary throughput contract. Model-training builders set
   `primary_unit="tokens"` and `primary_count=<total tokens>`.
 - `final_locations`: optional terminal placement requirements.
 
@@ -145,10 +145,9 @@ Returns:
 ```json
 {
   "workloads": {
-    "llama3_8B": {"source": "training_transformer", "...": "..."},
-    "qwen3_moe_30B-3B": {"source": "training_transformer", "...": "..."},
-    "olmoe_7B-1B": {"source": "training_transformer", "...": "..."},
-    "qwen3_moe_modular_demo": {"source": "schema", "schema": {"schema_version": "dataflow/v1"}}
+    "llama3_8B": {"source": "model_training", "...": "..."},
+    "qwen3_moe_30B-3B": {"source": "model_training", "...": "..."},
+    "olmoe_7B-1B": {"source": "model_training", "...": "..."}
   },
   "hardware": {
     "H100": {"peak_tflops": 989, "...": "..."}
@@ -206,7 +205,7 @@ Request:
 
 ```json
 {
-  "workload": {"source": "training_transformer", "...": "..."},
+  "workload": {"source": "model_training", "...": "..."},
   "hardware": {"preset": "H100", "...": "..."},
   "planner": {
     "policy": "pressurefit",

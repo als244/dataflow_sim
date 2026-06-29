@@ -1,4 +1,4 @@
-"""Transformer language-model head and loss module."""
+"""Language modeling head and loss module."""
 from __future__ import annotations
 
 from dataflow_sim.workloads.dataflow import DataflowCost
@@ -8,9 +8,9 @@ from dataflow_sim.workloads.ops import backward as bwd
 from dataflow_sim.workloads.ops import forward as fwd
 
 
-class TransformerHead(DataflowModule):
+class LanguageModelingHead(DataflowModule):
     def __init__(self, dims: TransformerDimensions) -> None:
-        super().__init__(name="TransformerHead")
+        super().__init__(name="LanguageModelingHead")
         self.dims = dims
 
     def forward_ops(

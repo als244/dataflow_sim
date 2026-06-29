@@ -1,12 +1,12 @@
 #!/usr/bin/env python
-"""Transformer policy sweep — llama3_8B across seqlen x num_seqs x cap.
+"""Model-training policy sweep across seqlen x num_seqs x cap.
 
 Compares belady_reactive, max_reduce, min_grow, pressurefit, and
-sliding_window on a grid of real transformer configs. Prints a markdown
-table with min_grow vs best-of-prior comparison.
+sliding_window on a grid of built-in model configs. Prints a markdown table
+with min_grow vs best-of-prior comparison.
 
 Usage:
-    python scripts/sweep_transformer.py [--model llama3_8B] [--budget 15]
+    python scripts/sweep_model_training.py [--model llama3_8B] [--budget 15]
 """
 from __future__ import annotations
 
@@ -21,9 +21,8 @@ from dataflow_sim.policies.pressurefit import apply_pressurefit_policy
 from dataflow_sim.policies.sliding_window import apply_sliding_window_policy
 from dataflow_sim.engine.simulator import run
 from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS
-from dataflow_sim.workloads.models.presets import load_model_presets
-from dataflow_sim.workloads.training.transformer import build_transformer_training_workload
-from dataflow_sim.workloads.training.transformer import TrainingConfig
+from dataflow_sim.workloads.dataflow_builder import TrainingConfig
+from workload_helpers import build_training_workload, model_config
 
 
 def _safe(name, fn, *args, **kw):
@@ -37,15 +36,14 @@ def _safe(name, fn, *args, **kw):
 
 
 def sweep(model: str, budget: float):
-    models = load_model_presets()
-    spec = models[model]
+    config = model_config(model)
     hw = HARDWARE_PRESETS["H100"]
 
     seqlens = [2048, 4096, 8192, 16384, 32768, 65536]
     num_seqs_list = [1, 2, 4]
     caps_gb = [20, 30, 40, 80]
 
-    print(f"# Sweep: model={model} (L={spec.n_layers}) hw=H100 v5_budget={budget}s\n")
+    print(f"# Sweep: model={model} (L={config.n_layers}) hw=H100 v5_budget={budget}s\n")
     print("| sql | M | cap GB | sliding | v2 | v4 | v5 | pressurefit | best | pressurefit vs best | pressurefit time |")
     print("|---|---|---|---|---|---|---|---|---|---|---|")
 
@@ -53,7 +51,7 @@ def sweep(model: str, budget: float):
     for sql in seqlens:
         for M in num_seqs_list:
             cfg = TrainingConfig(seqlen=sql, num_seqs=M)
-            bare = build_transformer_training_workload(spec, hw, cfg).chain
+            bare = build_training_workload(model, hw, cfg).chain
             for cap_gb in caps_gb:
                 cap = int(cap_gb * 1e9)
                 bare_cap = replace(bare, fast_memory_capacity=cap)

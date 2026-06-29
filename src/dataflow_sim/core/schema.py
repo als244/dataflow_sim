@@ -57,9 +57,8 @@ class Task:
 
     Outputs always introduce fresh object ids — a task can't reuse an
     existing input id as an output id. Mutation is the general workload
-    primitive (e.g., for transformer training, b_i mutates dW_i and head
-    mutates dW_head; planners don't need to know about "gradients" by
-    type-name, just about which inputs are listed in `mutates_inputs`).
+    primitive: planners don't need to know domain names such as "gradient" or
+    "state", just which inputs are listed in `mutates_inputs`.
     """
     id: str
     inputs: list[str]

@@ -26,13 +26,10 @@ from dataflow_sim.engine.stall_report import build_stall_report
 from dataflow_sim.planning.recompute import plan_with_recompute
 from dataflow_sim.policies.pressurefit import apply_pressurefit_policy
 from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS
-from dataflow_sim.workloads.models.presets import load_model_presets
-from dataflow_sim.workloads.training.transformer import (
-    TrainingConfig,
-    build_transformer_training_workload,
-)
+from dataflow_sim.workloads.dataflow_builder import TrainingConfig
+from workload_helpers import PUBLIC_MODEL_PRESETS, build_training_workload, model_config
 
-MODELS = ["llama3_8B", "sparse_16Bx3B", "qwen3_30Bx3B"]
+MODELS = ["llama3_8B", "qwen3_32B", "qwen3_moe_30B-3B", "olmoe_7B-1B"]
 HW_CAPS = {"H100": [10, 20, 40, 80], "RTX_5090": [8, 16, 24]}
 SEQLENS = [4096, 16384]
 NUM_SEQS = [1, 4, 8]
@@ -44,9 +41,7 @@ QUICK_GA_ROUNDS = [1]
 
 # --comprehensive: the pinned baseline grid (docs/internal/measurements/).
 COMPREHENSIVE_MODELS = [
-    "nanogpt_124M", "llama3_8B", "dense_15B", "qwen3_32B",
-    "olmoe_7Bx1B", "sparse_16Bx3B", "qwen3_30Bx3B",
-    "qwen3_moe_shallow", "mini_deepseek", "small_deepseek",
+    *PUBLIC_MODEL_PRESETS,
 ]
 COMPREHENSIVE_HW_CAPS = {"H100": [10, 20, 40, 80], "RTX_5090": [8, 16, 24, 32]}
 COMPREHENSIVE_SEQLENS = [2048, 8192, 32768]
@@ -70,11 +65,10 @@ def _makespan(chain) -> int:
 def _ideal_one(key):
     """Phase 1: the infinite-cap ideal, shared by every cap row of a config."""
     model_name, hw_name, S, M, ga = key
-    spec = load_model_presets()[model_name]
     hw = HARDWARE_PRESETS[hw_name]
     cfg = TrainingConfig(seqlen=S, num_seqs=M, grad_accum_rounds=ga)
     try:
-        wl = build_transformer_training_workload(spec, hw, cfg)
+        wl = build_training_workload(model_name, hw, cfg)
         ideal = _makespan(apply_pressurefit_policy(wl.chain))
         print(f"ideal {key} = {ideal}", file=sys.stderr, flush=True)
         return key, ideal
@@ -85,17 +79,17 @@ def _ideal_one(key):
 
 def _run_one(payload):
     model_name, hw_name, cap_gb, S, M, ga, ideal = payload
-    spec = load_model_presets()[model_name]
+    config = model_config(model_name)
     hw = HARDWARE_PRESETS[hw_name]
     cfg = TrainingConfig(seqlen=S, num_seqs=M, grad_accum_rounds=ga)
     cap = int(cap_gb * 1e9)
     row = {
         "model": model_name, "hardware": hw_name, "cap_GB": cap_gb,
-        "seqlen": S, "num_seqs": M, "ga": ga, "n_layers": spec.n_layers,
+        "seqlen": S, "num_seqs": M, "ga": ga, "n_layers": config.n_layers,
     }
     errors = []
     try:
-        wl = build_transformer_training_workload(spec, hw, cfg)
+        wl = build_training_workload(model_name, hw, cfg)
     except Exception as e:
         row["errors"] = f"build:{type(e).__name__}"
         return row
@@ -109,7 +103,7 @@ def _run_one(payload):
         errors.append(str(ideal))
 
     def build(levels, _cap=cap):
-        w = build_transformer_training_workload(spec, hw, cfg, recompute=levels)
+        w = build_training_workload(model_name, hw, cfg, recompute=levels)
         return replace(w.chain, fast_memory_capacity=_cap)
 
     t0 = time.perf_counter()
