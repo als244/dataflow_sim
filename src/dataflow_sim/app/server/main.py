@@ -64,6 +64,7 @@ ModelFamily = Literal[
     "qwen3_hybrid_dense",
     "qwen3_hybrid_moe",
     "deepseek_v3",
+    "deepseek_v3_2",
     "gpt_oss",
     "nemotron_h",
 ]
@@ -115,6 +116,10 @@ class ModelParams(BaseModel):
     qk_nope_head_dim: int = Field(0, ge=0)
     qk_rope_head_dim: int = Field(0, ge=0)
     v_head_dim: int = Field(0, ge=0)
+    index_n_heads: int = Field(1, ge=1)
+    index_head_dim: int = Field(1, ge=1)
+    index_topk: int = Field(1, ge=1)
+    train_indexer: bool = Field(True)
     routed_scaling_factor: float = Field(1.0, ge=0)
     scoring_func: str = "sigmoid"
     shared_expert_dim: int = Field(0, ge=0)
@@ -146,6 +151,8 @@ class DatatypeParams(BaseModel):
     compute_precision: DTypeName = "bf16"
     expert_weight_dtype: DTypeName = "bf16"
     expert_compute_precision: DTypeName = "bf16"
+    indexer_activation_dtype: DTypeName = "fp8"
+    indexer_compute_precision: DTypeName = "fp8"
 
 
 class ModelTrainingWorkloadParams(BaseModel):
@@ -286,6 +293,8 @@ def _dtype_policy_from_params(params: DatatypeParams) -> DTypePolicy:
         compute=params.compute_precision,
         expert_param=params.expert_weight_dtype,
         expert_compute=params.expert_compute_precision,
+        indexer_activation=params.indexer_activation_dtype,
+        indexer_compute=params.indexer_compute_precision,
     )
 
 

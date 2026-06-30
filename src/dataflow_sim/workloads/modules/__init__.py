@@ -1,7 +1,10 @@
 """Composable symbolic workload modules."""
 from dataflow_sim.workloads.modules.deepseek_block import DeepSeekBlock
 from dataflow_sim.workloads.modules.deepseek_dimensions import DeepSeekDimensions
+from dataflow_sim.workloads.modules.deepseek_v3_2_block import DeepSeekV32Block
+from dataflow_sim.workloads.modules.deepseek_v3_2_dimensions import DeepSeekV32Dimensions
 from dataflow_sim.workloads.modules.dense_attention import DenseAttention
+from dataflow_sim.workloads.modules.dsa_sparse_attention import DSASparseAttention
 from dataflow_sim.workloads.modules.dimensions import (
     TransformerDimensions,
     active_params_per_layer,
@@ -47,7 +50,10 @@ from dataflow_sim.workloads.modules.language_modeling_head import (
 __all__ = [
     "DeepSeekBlock",
     "DeepSeekDimensions",
+    "DeepSeekV32Block",
+    "DeepSeekV32Dimensions",
     "DenseAttention",
+    "DSASparseAttention",
     "GPTOSSAttention",
     "GPTOSSBlock",
     "GPTOSSDimensions",

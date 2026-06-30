@@ -15,6 +15,7 @@ _MODEL_KEYS = {
     "linear_value_head_dim", "linear_conv_kernel_dim", "gdn_chunk_size",
     "router_aux_loss_coef", "mtp_num_hidden_layers", "first_k_dense_replace", "q_lora_rank",
     "kv_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim", "v_head_dim",
+    "index_n_heads", "index_head_dim", "index_topk",
     "routed_scaling_factor", "scoring_func", "shared_expert_dim",
     "mamba_num_heads", "mamba_head_dim", "ssm_state_size", "conv_kernel",
     "mamba_chunk_size", "n_groups", "hybrid_override_pattern", "sliding_window",
@@ -307,6 +308,7 @@ def test_presets_include_only_public_model_workloads():
         "qwen3_5_122B-A10B": "qwen3_hybrid_moe",
         "qwen3_5_397B-A17B": "qwen3_hybrid_moe",
         "deepseek_v3_671B-37B": "deepseek_v3",
+        "deepseek_v3_2_671B-37B": "deepseek_v3_2",
         "kimi_k2_1T-32B": "deepseek_v3",
         "gpt_oss_20B": "gpt_oss",
         "gpt_oss_120B": "gpt_oss",
@@ -326,6 +328,8 @@ def test_presets_include_only_public_model_workloads():
         "compute_precision": "bf16",
         "expert_weight_dtype": "bf16",
         "expert_compute_precision": "bf16",
+        "indexer_activation_dtype": "fp8",
+        "indexer_compute_precision": "fp8",
     }
     for name, family in expected_models.items():
         assert body["workloads"][name]["model"]["family"] == family
@@ -339,6 +343,7 @@ def test_presets_include_only_public_model_workloads():
         "qwen3_hybrid_dense",
         "qwen3_hybrid_moe",
         "deepseek_v3",
+        "deepseek_v3_2",
         "gpt_oss",
         "nemotron_h",
     }
@@ -349,6 +354,10 @@ def test_presets_include_only_public_model_workloads():
     deepseek_fields = {
         field["key"]
         for field in body["model_families"]["deepseek_v3"]["fields"]
+    }
+    deepseek_v32_fields = {
+        field["key"]
+        for field in body["model_families"]["deepseek_v3_2"]["fields"]
     }
     nemotron_fields = {
         field["key"]
@@ -365,6 +374,23 @@ def test_presets_include_only_public_model_workloads():
     assert "q_lora_rank" in deepseek_fields
     assert "routed_scaling_factor" not in deepseek_fields
     assert "scoring_func" not in deepseek_fields
+    assert "index_n_heads" in deepseek_v32_fields
+    assert "index_head_dim" in deepseek_v32_fields
+    assert "index_topk" in deepseek_v32_fields
+    assert "train_indexer" in deepseek_v32_fields
+    assert body["workloads"]["deepseek_v3_2_671B-37B"]["model"]["train_indexer"] is True
+    assert body["model_families"]["llama3"]["capabilities"] == {
+        "has_moe": False,
+        "has_indexer": False,
+    }
+    assert body["model_families"]["deepseek_v3"]["capabilities"] == {
+        "has_moe": True,
+        "has_indexer": False,
+    }
+    assert body["model_families"]["deepseek_v3_2"]["capabilities"] == {
+        "has_moe": True,
+        "has_indexer": True,
+    }
     assert "mamba_num_heads" in nemotron_fields
     assert "shared_expert_dim" in nemotron_fields
     assert "hybrid_override_pattern" in nemotron_fields
@@ -384,6 +410,8 @@ def test_preview_accepts_datatype_policy_and_exports_metadata():
         "compute_precision": "fp8",
         "expert_weight_dtype": "fp4",
         "expert_compute_precision": "fp4",
+        "indexer_activation_dtype": "fp8",
+        "indexer_compute_precision": "fp8",
     }
 
     body = preview_workload(WorkloadPreviewParams.model_validate(payload))
@@ -397,6 +425,8 @@ def test_preview_accepts_datatype_policy_and_exports_metadata():
     assert policy["compute"] == "fp8"
     assert policy["expert_param"] == "fp4"
     assert policy["expert_compute"] == "fp4"
+    assert policy["indexer_activation"] == "fp8"
+    assert policy["indexer_compute"] == "fp8"
 
 
 def test_presets_include_sram_accelerator_hardware():

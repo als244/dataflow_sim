@@ -56,6 +56,10 @@ DIMENSION_ARGS = {
     "qk_nope_head_dim",
     "qk_rope_head_dim",
     "v_head_dim",
+    "index_n_heads",
+    "index_head_dim",
+    "index_topk",
+    "train_indexer",
     "routed_scaling_factor",
     "scoring_func",
     "shared_expert_dim",
@@ -93,8 +97,14 @@ def build_program(args: argparse.Namespace):
     dtype_policy = DTypePolicy(
         param=args.param_dtype or args.dtype,
         activation=args.activation_dtype or args.dtype,
+        expert_dispatch=args.expert_dispatch_dtype or args.dtype,
         gradient=args.gradient_dtype or args.dtype,
         optimizer_state=args.optimizer_state_dtype or args.dtype,
+        compute=args.compute_precision or args.dtype,
+        expert_param=args.expert_weight_dtype or args.dtype,
+        expert_compute=args.expert_compute_precision or args.dtype,
+        indexer_activation=args.indexer_activation_dtype or "fp8",
+        indexer_compute=args.indexer_compute_precision or "fp8",
     )
     model = model_cls(config)
     return trace_training_model(
@@ -148,6 +158,11 @@ def main() -> None:
     parser.add_argument("--qk-nope-head-dim", dest="qk_nope_head_dim", type=int, default=None)
     parser.add_argument("--qk-rope-head-dim", dest="qk_rope_head_dim", type=int, default=None)
     parser.add_argument("--v-head-dim", dest="v_head_dim", type=int, default=None)
+    parser.add_argument("--index-n-heads", dest="index_n_heads", type=int, default=None)
+    parser.add_argument("--index-head-dim", dest="index_head_dim", type=int, default=None)
+    parser.add_argument("--index-topk", dest="index_topk", type=int, default=None)
+    parser.add_argument("--train-indexer", dest="train_indexer", action="store_true", default=None)
+    parser.add_argument("--no-train-indexer", dest="train_indexer", action="store_false")
     parser.add_argument("--routed-scaling-factor", dest="routed_scaling_factor", type=float, default=None)
     parser.add_argument("--scoring-func", dest="scoring_func", default=None)
     parser.add_argument("--shared-expert-dim", dest="shared_expert_dim", type=int, default=None)
@@ -171,8 +186,14 @@ def main() -> None:
     parser.add_argument("--dtype", default="bf16")
     parser.add_argument("--param-dtype", default=None)
     parser.add_argument("--activation-dtype", default=None)
+    parser.add_argument("--expert-dispatch-dtype", default=None)
     parser.add_argument("--gradient-dtype", default=None)
     parser.add_argument("--optimizer-state-dtype", default=None)
+    parser.add_argument("--compute-precision", default=None)
+    parser.add_argument("--expert-weight-dtype", default=None)
+    parser.add_argument("--expert-compute-precision", default=None)
+    parser.add_argument("--indexer-activation-dtype", default=None)
+    parser.add_argument("--indexer-compute-precision", default=None)
     parser.add_argument(
         "--out",
         type=Path,

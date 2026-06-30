@@ -68,6 +68,8 @@ class DTypePolicy:
     compute: str = "bf16"
     expert_param: str = "bf16"
     expert_compute: str = "bf16"
+    indexer_activation: str = "fp8"
+    indexer_compute: str = "fp8"
 
     def dtype_for_role(self, role: str) -> str:
         if role in {"parameter", "param", "weight"}:
@@ -86,6 +88,10 @@ class DTypePolicy:
     def expert_compute_precision(self) -> ComputePrecision:
         return normalize_compute_precision(self.expert_compute)
 
+    @property
+    def indexer_compute_precision(self) -> ComputePrecision:
+        return normalize_compute_precision(self.indexer_compute)
+
 
 @dataclass(frozen=True)
 class OpDTypePolicy:
@@ -95,8 +101,10 @@ class OpDTypePolicy:
     gradient_bpe: float = 2
     optimizer_state_bpe: float = 2
     expert_weight_bpe: float = 2
+    indexer_activation_bpe: float = 1
     compute_precision: ComputePrecision = "bf16"
     expert_compute_precision: ComputePrecision = "bf16"
+    indexer_compute_precision: ComputePrecision = "fp8"
 
     @classmethod
     def from_dtype_policy(cls, policy: DTypePolicy) -> "OpDTypePolicy":
@@ -107,8 +115,10 @@ class OpDTypePolicy:
             gradient_bpe=dtype_nbytes(policy.gradient),
             optimizer_state_bpe=dtype_nbytes(policy.optimizer_state),
             expert_weight_bpe=dtype_nbytes(policy.expert_param),
+            indexer_activation_bpe=dtype_nbytes(policy.indexer_activation),
             compute_precision=policy.compute_precision,
             expert_compute_precision=policy.expert_compute_precision,
+            indexer_compute_precision=policy.indexer_compute_precision,
         )
 
     @classmethod
@@ -120,6 +130,8 @@ class OpDTypePolicy:
             gradient_bpe=bytes_per_element,
             optimizer_state_bpe=bytes_per_element,
             expert_weight_bpe=bytes_per_element,
+            indexer_activation_bpe=bytes_per_element,
+            indexer_compute_precision="bf16",
         )
 
     def __float__(self) -> float:

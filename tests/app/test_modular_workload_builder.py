@@ -24,11 +24,14 @@ from dataflow_sim.workloads.models.qwen3_hybrid_moe import (
 )
 from dataflow_sim.workloads.models.qwen3_moe import Qwen3MoEConfig, Qwen3MoEForTraining
 from dataflow_sim.workloads.models.deepseek_v3 import DeepSeekV3Config, DeepSeekV3ForTraining
+from dataflow_sim.workloads.models.deepseek_v3_2 import DeepSeekV32Config, DeepSeekV32ForTraining
 from dataflow_sim.workloads.models.gpt_oss import GPTOSSConfig, GPTOSSForTraining
 from dataflow_sim.workloads.models.kimi_k2 import KimiK2Config, KimiK2ForTraining
 from dataflow_sim.workloads.models.nemotron_h import NemotronHConfig, NemotronHForTraining
 from dataflow_sim.workloads.modules import (
     DenseAttention,
+    DeepSeekV32Block,
+    DSASparseAttention,
     GPTOSSBlock,
     MoE,
     NemotronBlock,
@@ -65,6 +68,8 @@ def test_dtype_policy_defaults_and_low_precision_sizes():
     assert policy.compute == "bf16"
     assert policy.expert_param == "bf16"
     assert policy.expert_compute == "bf16"
+    assert policy.indexer_activation == "fp8"
+    assert policy.indexer_compute == "fp8"
     assert dtype_nbytes("fp8") == 1
     assert dtype_nbytes("fp4") == 0.5
     assert TensorRef("packed", (3, 1), dtype="fp4").size_bytes == 2
@@ -371,6 +376,7 @@ def test_family_presets_are_easy_to_override():
     qwen_hybrid = QwenHybridDenseConfig.preset("9B", n_layers=12)
     qwen_hybrid_moe = QwenHybridMoEConfig.preset("397B-A17B", top_k=8)
     deepseek = DeepSeekV3Config.preset("671B-37B", n_layers=4)
+    deepseek_v32 = DeepSeekV32Config.preset("671B-37B", n_layers=4)
     kimi = KimiK2Config.preset("1T-32B", first_k_dense_replace=2)
     nemotron = NemotronHConfig.preset("nano", n_layers=4, hybrid_override_pattern="M*E-")
     gpt_oss = GPTOSSConfig.preset("20B", n_layers=4)
@@ -402,6 +408,9 @@ def test_family_presets_are_easy_to_override():
     assert qwen_hybrid_moe.top_k == 8
     assert deepseek.preset_name == "deepseek_v3_671B-37B"
     assert deepseek.n_layers == 4
+    assert deepseek_v32.preset_name == "deepseek_v3_2_671B-37B"
+    assert deepseek_v32.n_layers == 4
+    assert DeepSeekV32ForTraining(deepseek_v32).family_name == "deepseek_v3_2"
     assert kimi.preset_name == "kimi_k2_1T-32B"
     assert kimi.first_k_dense_replace == 2
     assert KimiK2ForTraining(kimi).family_name == "deepseek_v3"
@@ -424,6 +433,7 @@ def test_new_family_public_preset_values_match_source_configs():
     qwen_moe = QwenHybridMoEConfig.preset("qwen3_5_35B-A3B")
     qwen_large_moe = QwenHybridMoEConfig.preset("qwen3_5_397B-A17B")
     deepseek = DeepSeekV3Config.preset("671B-37B")
+    deepseek_v32 = DeepSeekV32Config.preset("671B-37B")
     kimi = KimiK2Config.preset("1T-32B")
     nemotron_nano = NemotronHConfig.preset("nano")
     nemotron_super = NemotronHConfig.preset("super")
@@ -456,6 +466,23 @@ def test_new_family_public_preset_values_match_source_configs():
     assert deepseek.first_k_dense_replace == 3
     assert deepseek.q_lora_rank == 1536
     assert deepseek.kv_lora_rank == 512
+    assert deepseek_v32.vocab_size == 129_280
+    assert deepseek_v32.n_layers == 61
+    assert deepseek_v32.first_k_dense_replace == 3
+    assert deepseek_v32.d_model == 7168
+    assert deepseek_v32.n_heads == 128
+    assert deepseek_v32.q_lora_rank == 1536
+    assert deepseek_v32.kv_lora_rank == 512
+    assert deepseek_v32.qk_nope_head_dim == 128
+    assert deepseek_v32.qk_rope_head_dim == 64
+    assert deepseek_v32.v_head_dim == 128
+    assert deepseek_v32.expert_dim == 2048
+    assert deepseek_v32.num_routed_experts == 256
+    assert deepseek_v32.num_shared_experts == 1
+    assert deepseek_v32.top_k == 8
+    assert deepseek_v32.index_n_heads == 64
+    assert deepseek_v32.index_head_dim == 128
+    assert deepseek_v32.index_topk == 2048
     assert kimi.vocab_size == 163_840
     assert kimi.n_heads == 64
     assert kimi.num_routed_experts == 384
@@ -592,6 +619,47 @@ def test_new_op_helper_formulas_are_hand_checkable():
         window_size=2,
         seqlen=4,
     )
+    index_policy = OpDTypePolicy.from_dtype_policy(
+        DTypePolicy(indexer_activation="fp8", indexer_compute="fp8")
+    )
+    index_score = fwd.lightning_index_score(
+        "index_score",
+        tokens=8,
+        index_n_heads=2,
+        index_head_dim=3,
+        index_topk=2,
+        seqlen=4,
+        bytes_per_element=index_policy,
+    )
+    index_score_bwd = bwd.lightning_index_score_grad(
+        "index_score_bwd",
+        tokens=8,
+        index_n_heads=2,
+        index_head_dim=3,
+        index_topk=2,
+        seqlen=4,
+        bytes_per_element=index_policy,
+    )
+    dsa = fwd.dsa_sparse_attention(
+        "dsa_sparse_attn",
+        tokens=8,
+        n_heads=2,
+        kv_lora_rank=5,
+        rope_head_dim=3,
+        value_head_dim=7,
+        index_topk=2,
+        seqlen=4,
+    )
+    dsa_bwd = bwd.dsa_sparse_attention_grad(
+        "dsa_sparse_attn_bwd",
+        tokens=8,
+        n_heads=2,
+        kv_lora_rank=5,
+        rope_head_dim=3,
+        value_head_dim=7,
+        index_topk=2,
+        seqlen=4,
+    )
 
     assert conv.flops == 2 * 5 * 7 * 3
     assert conv.memory_bytes == (5 * 7 + 7 * 3 + 5 * 7) * 2
@@ -625,6 +693,17 @@ def test_new_op_helper_formulas_are_hand_checkable():
         (8 * (2 + 2 * 1) * 5 + 8 * 2 * 5) * 2
         + 8 * (2 + 2 * 1) * 5 * 2
     )
+    assert index_score.flops == 2 * (2 * 4 * 4) * 2 * 3
+    assert index_score.memory_bytes == 8 * 2 * 3 + 8 * 3 + 8 * 2 + (2 * 4 * 2) * (4 + 1)
+    assert index_score.efficiency == "matmul_fp8"
+    assert index_score_bwd.flops == 6 * (2 * 4 * 2) * 2 * 3
+    assert index_score_bwd.effective_flops == 4 * (2 * 4 * 2) * 2 * 3
+    assert index_score_bwd.memory_bytes == (2 * 4 * 2) + 8 * 2 * 3 + 8 * 3 + 8 * 2
+    assert dsa.flops == 2 * (2 * 5 + 3) * (2 * 4 * 2)
+    assert dsa.memory_bytes == 8 * 2 * (2 * (5 + 3) + 2 * 7) * 2
+    assert dsa_bwd.flops == 2 * (5 * 5 + 2 * 3) * (2 * 4 * 2)
+    assert dsa_bwd.effective_flops == 2 * (4 * 5 + 2 * 3) * (2 * 4 * 2)
+    assert dsa_bwd.memory_bytes == 8 * 2 * (3 * (5 + 3) + 3 * 7) * 2
 
 
 def test_qwen_deepseek_and_gpt_oss_reuse_existing_moe_subops_without_router_ops():
@@ -644,6 +723,7 @@ def test_qwen_deepseek_and_gpt_oss_reuse_existing_moe_subops_without_router_ops(
     deepseek = DeepSeekV3Config.preset(
         "671B-37B",
         n_layers=1,
+        first_k_dense_replace=0,
         d_model=256,
         n_heads=4,
         n_kv_heads=4,
@@ -658,6 +738,28 @@ def test_qwen_deepseek_and_gpt_oss_reuse_existing_moe_subops_without_router_ops(
         qk_rope_head_dim=16,
         v_head_dim=32,
         head_dim=48,
+    ).dimensions()
+    deepseek_v32 = DeepSeekV32Config.preset(
+        "671B-37B",
+        n_layers=1,
+        first_k_dense_replace=0,
+        d_model=256,
+        n_heads=4,
+        n_kv_heads=4,
+        intermediate_size=512,
+        expert_dim=128,
+        num_routed_experts=8,
+        top_k=2,
+        vocab_size=1024,
+        q_lora_rank=64,
+        kv_lora_rank=32,
+        qk_nope_head_dim=32,
+        qk_rope_head_dim=16,
+        v_head_dim=32,
+        head_dim=48,
+        index_n_heads=2,
+        index_head_dim=16,
+        index_topk=4,
     ).dimensions()
     gpt_oss = GPTOSSConfig.preset(
         "20B",
@@ -716,6 +818,32 @@ def test_qwen_deepseek_and_gpt_oss_reuse_existing_moe_subops_without_router_ops(
             )
         ).layers[-1].forward_ops(16, 16, 2)
     ]
+    deepseek_v32_ops = [
+        op.name
+        for op in DeepSeekV32ForTraining(
+            DeepSeekV32Config.preset(
+                "671B-37B",
+                n_layers=4,
+                d_model=256,
+                n_heads=4,
+                n_kv_heads=4,
+                intermediate_size=512,
+                expert_dim=128,
+                num_routed_experts=8,
+                top_k=2,
+                vocab_size=1024,
+                q_lora_rank=64,
+                kv_lora_rank=32,
+                qk_nope_head_dim=32,
+                qk_rope_head_dim=16,
+                v_head_dim=32,
+                head_dim=48,
+                index_n_heads=2,
+                index_head_dim=16,
+                index_topk=4,
+            )
+        ).layers[-1].forward_ops(16, 16, 2)
+    ]
     gpt_oss_ops = [
         op.name
         for op in GPTOSSForTraining(
@@ -736,13 +864,178 @@ def test_qwen_deepseek_and_gpt_oss_reuse_existing_moe_subops_without_router_ops(
     for name in qwen_expected:
         assert name in qwen_ops
         assert name in deepseek_ops
+        assert name in deepseek_v32_ops
     for name in gpt_oss_expected:
         assert name in gpt_oss_ops
     assert not any("router" in name for name in qwen_ops)
     assert not any("router" in name for name in deepseek_ops)
+    assert not any("router" in name for name in deepseek_v32_ops)
     assert not any("router" in name for name in gpt_oss_ops)
     assert deepseek.ffn_dimensions(dense=False).num_routed_experts == 8
+    assert deepseek_v32.ffn_dimensions(dense=False).num_routed_experts == 8
     assert gpt_oss.ffn_dimensions().num_routed_experts == 8
+
+
+def test_deepseek_v32_modules_emit_expected_subop_chains_blocks_and_indexer_dtypes():
+    config = DeepSeekV32Config.preset(
+        "671B-37B",
+        n_layers=4,
+        first_k_dense_replace=1,
+        d_model=256,
+        n_heads=4,
+        n_kv_heads=4,
+        intermediate_size=512,
+        expert_dim=128,
+        num_routed_experts=8,
+        top_k=2,
+        vocab_size=4096,
+        q_lora_rank=64,
+        kv_lora_rank=32,
+        qk_nope_head_dim=32,
+        qk_rope_head_dim=16,
+        v_head_dim=32,
+        head_dim=48,
+        index_n_heads=2,
+        index_head_dim=16,
+        index_topk=4,
+    )
+    frozen_indexer_config = DeepSeekV32Config.preset(
+        "671B-37B",
+        n_layers=4,
+        first_k_dense_replace=1,
+        d_model=256,
+        n_heads=4,
+        n_kv_heads=4,
+        intermediate_size=512,
+        expert_dim=128,
+        num_routed_experts=8,
+        top_k=2,
+        vocab_size=4096,
+        q_lora_rank=64,
+        kv_lora_rank=32,
+        qk_nope_head_dim=32,
+        qk_rope_head_dim=16,
+        v_head_dim=32,
+        head_dim=48,
+        index_n_heads=2,
+        index_head_dim=16,
+        index_topk=4,
+        train_indexer=False,
+    )
+    dims = config.dimensions()
+    dense_ops = [
+        op.name
+        for op in DeepSeekV32Block(dims, dense_ffn=True).forward_ops(tokens=16, seqlen=16)
+    ]
+    moe_ops = [
+        op.name
+        for op in DeepSeekV32Block(dims, dense_ffn=False).forward_ops(tokens=16, seqlen=16)
+    ]
+
+    assert dense_ops == [
+        "attn_norm",
+        "q_a_proj",
+        "q_a_norm",
+        "q_b_proj",
+        "index_q_b_proj",
+        "index_k_proj",
+        "index_weight_proj",
+        "lightning_index_score",
+        "kv_a_proj_with_mqa",
+        "kv_a_norm",
+        "kv_b_proj",
+        "dsa_rope",
+        "dsa_sparse_attn",
+        "o_proj",
+        "ffn_norm",
+        "shared_mlp_up",
+        "swiglu",
+        "shared_mlp_down",
+    ]
+    assert moe_ops[-8:] == [
+        "ffn_norm",
+        "shared_mlp_up",
+        "x_scatter",
+        "routed_mlp_up_one_expert",
+        "swiglu",
+        "shared_mlp_down",
+        "routed_mlp_down_one_expert",
+        "x_gather",
+    ]
+    assert not any("router" in name for name in moe_ops)
+
+    program = DeepSeekV32ForTraining(config).build_training_program(
+        TrainingConfig(seqlen=16, num_seqs=1, optimizer="adamw")
+    )
+    blocks = _blocks_by_key(program)
+    assert _block_keys(program) >= {
+        "deepseek_v3_2.dense_prefix_block.forward",
+        "deepseek_v3_2.moe_suffix_block.forward",
+        "deepseek_v3_2.dense_prefix_block.backward",
+        "deepseek_v3_2.moe_suffix_block.backward",
+        "deepseek_v3_2.dense_prefix_block.optimizer_step.adamw",
+        "deepseek_v3_2.moe_suffix_block.optimizer_step.adamw",
+    }
+    assert blocks["deepseek_v3_2.dense_prefix_block.forward"].name == (
+        "DeepSeek-V3.2 Dense Prefix Block Forward"
+    )
+    assert blocks["deepseek_v3_2.moe_suffix_block.forward"].name == (
+        "DeepSeek-V3.2 MoE Block Forward"
+    )
+
+    default_forward = blocks["deepseek_v3_2.dense_prefix_block.forward"]
+    index_score = next(op for op in default_forward.subops if op.name == "lightning_index_score")
+    assert index_score.efficiency == "matmul_fp8"
+
+    bf16_index_program = DeepSeekV32ForTraining(config).build_training_program(
+        TrainingConfig(seqlen=16, num_seqs=1, optimizer="none"),
+        dtype_policy=DTypePolicy(indexer_activation="bf16", indexer_compute="bf16"),
+    )
+    default_outputs = {
+        output.id: output.size_bytes
+        for task in program.tasks
+        for output in task.outputs
+    }
+    bf16_index_outputs = {
+        output.id: output.size_bytes
+        for task in bf16_index_program.tasks
+        for output in task.outputs
+    }
+    assert default_outputs["A_0_0_0"] < bf16_index_outputs["A_0_0_0"]
+    bf16_forward = _blocks_by_key(bf16_index_program)["deepseek_v3_2.dense_prefix_block.forward"]
+    bf16_index_score = next(op for op in bf16_forward.subops if op.name == "lightning_index_score")
+    assert bf16_index_score.efficiency == "matmul_bf16"
+    assert index_score.memory_bytes < bf16_index_score.memory_bytes
+
+    frozen_program = DeepSeekV32ForTraining(frozen_indexer_config).build_training_program(
+        TrainingConfig(seqlen=16, num_seqs=1, optimizer="adamw")
+    )
+    frozen_blocks = _blocks_by_key(frozen_program)
+    frozen_forward_names = [
+        op.name
+        for op in frozen_blocks["deepseek_v3_2.dense_prefix_block.forward"].subops
+    ]
+    frozen_backward_names = [
+        op.name
+        for op in frozen_blocks["deepseek_v3_2.dense_prefix_block.backward"].subops
+    ]
+    assert "lightning_index_score" in frozen_forward_names
+    assert "lightning_index_score_bwd" not in frozen_backward_names
+    assert "index_q_b_proj_wgrad" not in frozen_backward_names
+    assert "index_k_proj_wgrad" not in frozen_backward_names
+    assert "index_weight_proj_wgrad" not in frozen_backward_names
+
+    frozen_outputs = {
+        output.id: output.size_bytes
+        for task in frozen_program.tasks
+        for output in task.outputs
+    }
+    assert frozen_outputs["A_0_0_0"] < default_outputs["A_0_0_0"]
+    assert frozen_outputs["dW_0_0"] < default_outputs["dW_0_0"]
+    default_objects = {obj.id: obj.size_bytes for obj in program.objects}
+    frozen_objects = {obj.id: obj.size_bytes for obj in frozen_program.objects}
+    assert frozen_objects["W_0"] == default_objects["W_0"]
+    assert frozen_objects["O_0"] < default_objects["O_0"]
 
 
 def test_gpt_oss_modules_emit_expected_subop_chains_and_block_keys():
@@ -1146,6 +1439,32 @@ def test_varied_family_workloads_run_and_report_kpis():
             TrainingConfig(seqlen=128, num_seqs=1, optimizer="adamw"),
         ),
         (
+            DeepSeekV32ForTraining(
+                DeepSeekV32Config.preset(
+                    "671B-37B",
+                    n_layers=4,
+                    d_model=512,
+                    n_heads=8,
+                    n_kv_heads=8,
+                    intermediate_size=1024,
+                    expert_dim=128,
+                    num_routed_experts=8,
+                    top_k=2,
+                    vocab_size=32_000,
+                    q_lora_rank=128,
+                    kv_lora_rank=64,
+                    qk_nope_head_dim=32,
+                    qk_rope_head_dim=16,
+                    v_head_dim=32,
+                    head_dim=48,
+                    index_n_heads=4,
+                    index_head_dim=32,
+                    index_topk=32,
+                )
+            ),
+            TrainingConfig(seqlen=128, num_seqs=1, optimizer="adamw"),
+        ),
+        (
             KimiK2ForTraining(
                 KimiK2Config.preset(
                     "1T-32B",
@@ -1301,6 +1620,33 @@ def test_constrained_memory_recompute_planning_selects_useful_variants():
                     qk_rope_head_dim=16,
                     v_head_dim=32,
                     head_dim=48,
+                )
+            ),
+            TrainingConfig(seqlen=512, num_seqs=1, optimizer="none"),
+            80 * 1024 * 1024,
+        ),
+        (
+            DeepSeekV32ForTraining(
+                DeepSeekV32Config.preset(
+                    "671B-37B",
+                    n_layers=6,
+                    d_model=512,
+                    n_heads=8,
+                    n_kv_heads=8,
+                    intermediate_size=1024,
+                    expert_dim=128,
+                    num_routed_experts=8,
+                    top_k=2,
+                    vocab_size=32_000,
+                    q_lora_rank=128,
+                    kv_lora_rank=64,
+                    qk_nope_head_dim=32,
+                    qk_rope_head_dim=16,
+                    v_head_dim=32,
+                    head_dim=48,
+                    index_n_heads=4,
+                    index_head_dim=32,
+                    index_topk=64,
                 )
             ),
             TrainingConfig(seqlen=512, num_seqs=1, optimizer="none"),

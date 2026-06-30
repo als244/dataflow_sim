@@ -84,6 +84,8 @@ examples are:
 - `qwen3_hybrid_dense.py`
 - `qwen3_hybrid_moe.py`
 - `deepseek_v3.py`
+- `deepseek_v3_2.py`
+- `gpt_oss.py`
 - `nemotron_h.py`
 
 Model families own architecture. They choose how many modules exist, which

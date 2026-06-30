@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from dataflow_sim.workloads.models.deepseek_v3 import DeepSeekV3Config, DeepSeekV3ForTraining
+from dataflow_sim.workloads.models.deepseek_v3_2 import DeepSeekV32Config, DeepSeekV32ForTraining
 from dataflow_sim.workloads.models.gpt_oss import GPTOSSConfig, GPTOSSForTraining
 from dataflow_sim.workloads.models.llama3 import Llama3Config, Llama3ForTraining
 from dataflow_sim.workloads.models.nemotron_h import NemotronHConfig, NemotronHForTraining
@@ -43,6 +44,8 @@ class ModelFamilyRegistryEntry:
     builder_cls: type
     presets: tuple[str, ...]
     fields: tuple[ModelFieldDescriptor, ...]
+    has_moe: bool = False
+    has_indexer: bool = False
 
     @property
     def config_field_names(self) -> tuple[str, ...]:
@@ -54,6 +57,10 @@ class ModelFamilyRegistryEntry:
             "label": self.label,
             "presets": list(self.presets),
             "fields": [field.payload() for field in self.fields],
+            "capabilities": {
+                "has_moe": self.has_moe,
+                "has_indexer": self.has_indexer,
+            },
         }
 
 
@@ -90,6 +97,13 @@ DEEPSEEK_FIELDS = BASE_FIELDS + (
     ModelFieldDescriptor("qk_nope_head_dim", "QK NoPE Head Dim", min=1, advanced=True),
     ModelFieldDescriptor("qk_rope_head_dim", "QK RoPE Head Dim", min=1, advanced=True),
     ModelFieldDescriptor("v_head_dim", "Value Head Dim", min=1, advanced=True),
+)
+
+DEEPSEEK_V32_FIELDS = DEEPSEEK_FIELDS + (
+    ModelFieldDescriptor("index_n_heads", "Indexer Heads", min=1, advanced=True),
+    ModelFieldDescriptor("index_head_dim", "Indexer Head Dim", min=1, advanced=True),
+    ModelFieldDescriptor("index_topk", "Indexer Top K", min=1, advanced=True),
+    ModelFieldDescriptor("train_indexer", "Train Indexer", kind="boolean", min=None, step=None, advanced=True),
 )
 
 NEMOTRON_FIELDS = BASE_FIELDS + (
@@ -132,6 +146,7 @@ MODEL_FAMILIES: dict[str, ModelFamilyRegistryEntry] = {
         builder_cls=Qwen3MoEForTraining,
         presets=("qwen3_moe_30B-3B", "qwen3_moe_235B-A22B"),
         fields=BASE_FIELDS,
+        has_moe=True,
     ),
     "olmoe": ModelFamilyRegistryEntry(
         key="olmoe",
@@ -140,6 +155,7 @@ MODEL_FAMILIES: dict[str, ModelFamilyRegistryEntry] = {
         builder_cls=OLMoEForTraining,
         presets=("olmoe_7B-1B",),
         fields=BASE_FIELDS,
+        has_moe=True,
     ),
     "qwen3_hybrid_dense": ModelFamilyRegistryEntry(
         key="qwen3_hybrid_dense",
@@ -160,6 +176,7 @@ MODEL_FAMILIES: dict[str, ModelFamilyRegistryEntry] = {
             "qwen3_5_397B-A17B",
         ),
         fields=QWEN_HYBRID_FIELDS,
+        has_moe=True,
     ),
     "deepseek_v3": ModelFamilyRegistryEntry(
         key="deepseek_v3",
@@ -168,6 +185,17 @@ MODEL_FAMILIES: dict[str, ModelFamilyRegistryEntry] = {
         builder_cls=DeepSeekV3ForTraining,
         presets=("deepseek_v3_671B-37B", "kimi_k2_1T-32B"),
         fields=DEEPSEEK_FIELDS,
+        has_moe=True,
+    ),
+    "deepseek_v3_2": ModelFamilyRegistryEntry(
+        key="deepseek_v3_2",
+        label="DeepSeek-V3.2",
+        config_cls=DeepSeekV32Config,
+        builder_cls=DeepSeekV32ForTraining,
+        presets=("deepseek_v3_2_671B-37B",),
+        fields=DEEPSEEK_V32_FIELDS,
+        has_moe=True,
+        has_indexer=True,
     ),
     "gpt_oss": ModelFamilyRegistryEntry(
         key="gpt_oss",
@@ -176,6 +204,7 @@ MODEL_FAMILIES: dict[str, ModelFamilyRegistryEntry] = {
         builder_cls=GPTOSSForTraining,
         presets=("gpt_oss_20B", "gpt_oss_120B"),
         fields=GPT_OSS_FIELDS,
+        has_moe=True,
     ),
     "nemotron_h": ModelFamilyRegistryEntry(
         key="nemotron_h",
@@ -188,6 +217,7 @@ MODEL_FAMILIES: dict[str, ModelFamilyRegistryEntry] = {
             "nemotron3_ultra_550B-A55B",
         ),
         fields=NEMOTRON_FIELDS,
+        has_moe=True,
     ),
 }
 

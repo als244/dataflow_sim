@@ -111,3 +111,26 @@ def sliding_attention_score_terms(
     if tokens % seqlen != 0:
         raise ValueError("tokens must be divisible by seqlen when sequence_lengths is absent")
     return (tokens // seqlen) * seqlen * min(seqlen, window_size)
+
+
+def topk_attention_score_terms(
+    tokens: int,
+    *,
+    top_k: int,
+    seqlen: int | None = None,
+    sequence_lengths: list[int] | tuple[int, ...] | None = None,
+) -> int:
+    """Return sum(sequence_length * min(sequence_length, top_k))."""
+    if top_k <= 0:
+        raise ValueError("top_k must be positive")
+    if sequence_lengths is not None:
+        if sum(sequence_lengths) != tokens:
+            raise ValueError("sequence_lengths must sum to tokens")
+        return sum(length * min(length, top_k) for length in sequence_lengths)
+    if seqlen is None:
+        return tokens * min(tokens, top_k)
+    if seqlen <= 0:
+        raise ValueError("seqlen must be positive")
+    if tokens % seqlen != 0:
+        raise ValueError("tokens must be divisible by seqlen when sequence_lengths is absent")
+    return (tokens // seqlen) * seqlen * min(seqlen, top_k)

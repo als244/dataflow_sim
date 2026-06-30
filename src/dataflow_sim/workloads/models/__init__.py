@@ -3,6 +3,10 @@ from dataflow_sim.workloads.models.deepseek_v3 import (
     DeepSeekV3Config,
     DeepSeekV3ForTraining,
 )
+from dataflow_sim.workloads.models.deepseek_v3_2 import (
+    DeepSeekV32Config,
+    DeepSeekV32ForTraining,
+)
 from dataflow_sim.workloads.models.kimi_k2 import KimiK2Config, KimiK2ForTraining
 from dataflow_sim.workloads.models.gpt_oss import GPTOSSConfig, GPTOSSForTraining
 from dataflow_sim.workloads.models.llama3 import Llama3Config, Llama3ForTraining
@@ -22,6 +26,8 @@ from dataflow_sim.workloads.models.qwen3_moe import Qwen3MoEConfig, Qwen3MoEForT
 __all__ = [
     "DeepSeekV3Config",
     "DeepSeekV3ForTraining",
+    "DeepSeekV32Config",
+    "DeepSeekV32ForTraining",
     "KimiK2Config",
     "KimiK2ForTraining",
     "GPTOSSConfig",

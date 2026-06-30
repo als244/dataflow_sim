@@ -32,6 +32,18 @@ Object sizes are rounded up to whole bytes.
 | Compute Precision | `DTypePolicy.compute` | Default matmul math precision for non-expert matmuls. This selects the matching hardware peak TFLOP/s and matmul efficiency field. |
 | Expert Weight DType | `DTypePolicy.expert_param` | MoE expert weight bytes for both shared and routed expert matrices: `shared_mlp_up/down` and `routed_mlp_up/down`. This overrides Weight DType only for matrices marked as expert weights. |
 | Expert Compute Precision | `DTypePolicy.expert_compute` | Matmul math precision for MoE expert matmuls, including shared and routed expert up/down projections. |
+| Indexer Activation DType | `DTypePolicy.indexer_activation` | DeepSeek-V3.2 DSA Lightning Indexer q/k/w activation lanes and selected-score storage, including `q^I`, `k^I`, `w^I` score-kernel traffic, saved indexer activation context, and selected indexer scores. This defaults to `fp8` and is only shown for indexer families. |
+| Indexer Compute Precision | `DTypePolicy.indexer_compute` | DeepSeek-V3.2 Lightning Indexer quadratic score matmul precision. This defaults to `fp8` and is only shown for indexer families. |
+
+The webapp hides family-specific fields when they do not apply. Expert dtype
+controls appear only for MoE families. Indexer dtype controls appear only for
+DeepSeek-V3.2-style DSA families.
+
+DeepSeek-V3.2 also exposes a model-architecture checkbox, **Train Indexer**.
+When unchecked, forward index scoring still runs to select sparse KV entries,
+but indexer score backward, indexer projection wgrads, indexer optimizer state,
+and selected indexer-score context in `A_*` are omitted. The dense quadratic
+score tensor is never materialized in either mode.
 
 ## Object Sizing
 
@@ -52,6 +64,21 @@ Important: `A_*` uses **Activation DType**, not Expert Dispatch DType. `A_*`
 represents saved backward context, including outputs and intermediate tensors.
 It does not currently model a separate quantized expert-dispatch buffer as a
 persistent saved object.
+
+For DeepSeek-V3.2 DSA blocks, `A_*` additionally includes the Lightning
+Indexer selected-state context:
+
+```text
+sum(sequence_length * min(sequence_length, index_topk)) * 4 bytes
++ Train Indexer ? sum(sequence_length * min(sequence_length, index_topk)) * Indexer Activation DType : 0
+```
+
+The first term stores selected key indices for sparse DSA attention. The second
+term stores selected indexer scores only when **Train Indexer** is enabled. The
+dense quadratic score tensor is assumed to be streamed by the Lightning Indexer
+kernel and is not part of `A_*`. Other saved context in the same `A_*` object
+follows Activation DType, except saved indexer q/k/w activation lanes, which
+follow Indexer Activation DType.
 
 ## MoE Expert Dispatch
 
@@ -146,6 +173,8 @@ unsupported.
 
 Compute Precision selects these fields for default non-expert matmuls.
 Expert Compute Precision selects these fields for MoE expert matmuls.
+Indexer Compute Precision selects these fields for DeepSeek-V3.2 Lightning
+Indexer score matmuls.
 
 Compute precision does not change object sizes or memory bytes. Dtype fields do
 not change matmul peak TFLOP/s. Use both fields when modeling low-precision
@@ -153,6 +182,10 @@ training where storage format and math format differ.
 
 Attention kernels currently use attention-specific efficiency fields rather
 than the matmul precision selectors.
+
+DeepSeek-V3.2 DSA sparse attention follows that same attention-kernel rule for
+the selected sparse attention core. Only the Lightning Indexer score op uses
+Indexer Compute Precision.
 
 ## Mixed-Precision Matrix Bytes
 
@@ -207,4 +240,21 @@ When changing only Expert Weight DType, expect:
 When changing only Expert Compute Precision, expect:
 
 - expert matmul math time to change,
+- memory bytes and object sizes to stay unchanged.
+
+When changing only Indexer Activation DType on DeepSeek-V3.2, expect:
+
+- Lightning Indexer q/k/w score-kernel traffic to change,
+- indexer projection output traffic to change,
+- saved indexer activation context inside `A_*` to change when Train Indexer is
+  enabled,
+- selected score state inside `A_*` to change when Train Indexer is enabled,
+- selected indices, normal activations, weights, gradients, and optimizer bytes
+  to stay unchanged.
+
+When changing only Indexer Compute Precision on DeepSeek-V3.2, expect:
+
+- Lightning Indexer score math time to change,
+- DSA sparse attention core math time to stay tied to attention forward/backward
+  efficiencies,
 - memory bytes and object sizes to stay unchanged.

@@ -10,6 +10,7 @@ export type ModelFamily =
   | "qwen3_hybrid_dense"
   | "qwen3_hybrid_moe"
   | "deepseek_v3"
+  | "deepseek_v3_2"
   | "gpt_oss"
   | "nemotron_h";
 
@@ -59,6 +60,10 @@ export interface ModelParams {
   qk_nope_head_dim?: number;
   qk_rope_head_dim?: number;
   v_head_dim?: number;
+  index_n_heads?: number;
+  index_head_dim?: number;
+  index_topk?: number;
+  train_indexer?: boolean;
   routed_scaling_factor?: number;
   scoring_func?: string;
   shared_expert_dim?: number;
@@ -92,6 +97,8 @@ export interface DatatypeParams {
   compute_precision: DTypeName;
   expert_weight_dtype: DTypeName;
   expert_compute_precision: DTypeName;
+  indexer_activation_dtype: DTypeName;
+  indexer_compute_precision: DTypeName;
 }
 
 export interface DataflowCost {
@@ -221,6 +228,10 @@ export interface ModelFamilyDescriptor {
   label: string;
   presets: string[];
   fields: ModelFieldDescriptor[];
+  capabilities?: {
+    has_moe?: boolean;
+    has_indexer?: boolean;
+  };
 }
 
 export interface Presets {
@@ -275,6 +286,10 @@ export const DEFAULT_MODEL: ModelParams = {
   qk_nope_head_dim: 0,
   qk_rope_head_dim: 0,
   v_head_dim: 0,
+  index_n_heads: 1,
+  index_head_dim: 1,
+  index_topk: 1,
+  train_indexer: true,
   routed_scaling_factor: 1,
   scoring_func: "sigmoid",
 };
@@ -297,6 +312,8 @@ export const DEFAULT_DATATYPES: DatatypeParams = {
   compute_precision: "bf16",
   expert_weight_dtype: "bf16",
   expert_compute_precision: "bf16",
+  indexer_activation_dtype: "fp8",
+  indexer_compute_precision: "fp8",
 };
 
 export const EXAMPLE_SCHEMA: DataflowProgram = {
@@ -376,6 +393,7 @@ const MODEL_FAMILY_OPTIONS: { value: ModelFamily; label: string }[] = [
   { value: "qwen3_hybrid_dense", label: "Qwen3.5/3.6 Dense" },
   { value: "qwen3_hybrid_moe", label: "Qwen3.5/3.6 MoE" },
   { value: "deepseek_v3", label: "DeepSeek-V3" },
+  { value: "deepseek_v3_2", label: "DeepSeek-V3.2" },
   { value: "gpt_oss", label: "GPT-OSS" },
   { value: "nemotron_h", label: "NVIDIA Nemotron 3" },
 ];
@@ -642,6 +660,11 @@ export function InputPanel({
     },
     [modelTrainingWorkload, presets],
   );
+  const activeModelFamily = modelTrainingWorkload
+    ? presets?.model_families?.[modelTrainingWorkload.model.family]
+    : null;
+  const showExpertDatatypeControls = Boolean(activeModelFamily?.capabilities?.has_moe);
+  const showIndexerDatatypeControls = Boolean(activeModelFamily?.capabilities?.has_indexer);
 
   return (
     <div className="panel input-panel">
@@ -823,39 +846,71 @@ export function InputPanel({
                       ))}
                     </select>
                   </label>
-                  <label className="form-field">
-                    <span className="form-field-label">Expert Weight DType</span>
-                    <select
-                      value={modelTrainingWorkload.datatypes.expert_weight_dtype}
-                      onChange={(e) => setDatatype("expert_weight_dtype", e.target.value as DTypeName)}
-                    >
-                      {DTYPE_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="form-field">
-                    <span className="form-field-label">Expert Compute Precision</span>
-                    <select
-                      value={modelTrainingWorkload.datatypes.expert_compute_precision}
-                      onChange={(e) => setDatatype("expert_compute_precision", e.target.value as DTypeName)}
-                    >
-                      {DTYPE_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="form-field">
-                    <span className="form-field-label">Expert Dispatch DType</span>
-                    <select
-                      value={modelTrainingWorkload.datatypes.expert_dispatch_dtype}
-                      onChange={(e) => setDatatype("expert_dispatch_dtype", e.target.value as DTypeName)}
-                    >
-                      {DTYPE_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
-                  </label>
+                  {showExpertDatatypeControls && (
+                    <label className="form-field">
+                      <span className="form-field-label">Expert Weight DType</span>
+                      <select
+                        value={modelTrainingWorkload.datatypes.expert_weight_dtype}
+                        onChange={(e) => setDatatype("expert_weight_dtype", e.target.value as DTypeName)}
+                      >
+                        {DTYPE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {showExpertDatatypeControls && (
+                    <label className="form-field">
+                      <span className="form-field-label">Expert Compute Precision</span>
+                      <select
+                        value={modelTrainingWorkload.datatypes.expert_compute_precision}
+                        onChange={(e) => setDatatype("expert_compute_precision", e.target.value as DTypeName)}
+                      >
+                        {DTYPE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {showIndexerDatatypeControls && (
+                    <label className="form-field">
+                      <span className="form-field-label">Indexer Activation DType</span>
+                      <select
+                        value={modelTrainingWorkload.datatypes.indexer_activation_dtype}
+                        onChange={(e) => setDatatype("indexer_activation_dtype", e.target.value as DTypeName)}
+                      >
+                        {DTYPE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {showIndexerDatatypeControls && (
+                    <label className="form-field">
+                      <span className="form-field-label">Indexer Compute Precision</span>
+                      <select
+                        value={modelTrainingWorkload.datatypes.indexer_compute_precision}
+                        onChange={(e) => setDatatype("indexer_compute_precision", e.target.value as DTypeName)}
+                      >
+                        {DTYPE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {showExpertDatatypeControls && (
+                    <label className="form-field">
+                      <span className="form-field-label">Expert Dispatch DType</span>
+                      <select
+                        value={modelTrainingWorkload.datatypes.expert_dispatch_dtype}
+                        onChange={(e) => setDatatype("expert_dispatch_dtype", e.target.value as DTypeName)}
+                      >
+                        {DTYPE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                 </div>
               </FormSubsection>
 

@@ -5,6 +5,7 @@
 - [workload-recipe.md](workload-recipe.md) — how to ingest a workload via the simulator API.
 - [simulator-api.md](simulator-api.md) — Python API reference for schema, engine, and policies.
 - [datatypes.md](datatypes.md) — precise semantics for model-training dtype and compute-precision controls.
+- [deepseek-v3.2-dsa-derivations.md](deepseek-v3.2-dsa-derivations.md) — provisional DSA forward/backward formulas for DeepSeek-V3.2.
 - [../src/dataflow_sim/workloads/MODEL_TRAINING.md](../src/dataflow_sim/workloads/MODEL_TRAINING.md) — how model training workloads are authored and lowered.
 - [../examples/](../examples/) — runnable custom dataflow-program and model-training examples.
 - [policy/](policy/) — one doc per built-in scheduling policy + decision table + [principles](policy/principles.md) shared across all policies.

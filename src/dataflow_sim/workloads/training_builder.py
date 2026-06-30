@@ -50,7 +50,7 @@ OptimizerOpsFactory = Callable[[str, OpDTypePolicy], list[DataflowCost]]
 OptimizerStateFactor = Callable[[str], int]
 ParamBytesFactory = Callable[[DTypePolicy], int]
 OptimizerStateBytesFactory = Callable[[str, DTypePolicy], int]
-SavedActivationBytesFactory = Callable[[int, DTypePolicy], int]
+SavedActivationBytesFactory = Callable[[int, int, DTypePolicy], int]
 
 
 @runtime_checkable
@@ -163,6 +163,7 @@ class TrainingLayerSpec:
     backward_ops: LayerOpsFactory
     recompute_ops: LayerOpsFactory
     optimizer_ops: OptimizerOpsFactory
+    gradient_count: int | None = None
     optimizer_state_factor: OptimizerStateFactor = default_optimizer_state_factor
     parameter_bytes: ParamBytesFactory | None = None
     optimizer_state_bytes: OptimizerStateBytesFactory | None = None
@@ -171,6 +172,10 @@ class TrainingLayerSpec:
     block_name: str = "Layer"
     optimizer_block_key: str = "optimizer_step"
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def gradient_param_count(self) -> int:
+        return self.param_count if self.gradient_count is None else self.gradient_count
 
 
 @dataclass(frozen=True)
@@ -253,10 +258,11 @@ class TrainingBuilder:
     def _saved_activation_bytes(
         spec: TrainingLayerSpec,
         tokens: int,
+        seqlen: int,
         policy: DTypePolicy,
     ) -> int:
         if spec.saved_activation_bytes is not None:
-            return spec.saved_activation_bytes(tokens, policy)
+            return spec.saved_activation_bytes(tokens, seqlen, policy)
         return math.ceil(
             tokens * spec.saved_activation_width * dtype_nbytes(policy.activation)
         )
@@ -444,6 +450,7 @@ class TrainingBuilder:
                                 size_bytes=self._saved_activation_bytes(
                                     layer,
                                     tokens,
+                                    seqlen,
                                     policy,
                                 ),
                             ),
@@ -553,6 +560,7 @@ class TrainingBuilder:
                                     size_bytes=self._saved_activation_bytes(
                                         layer,
                                         tokens,
+                                        seqlen,
                                         policy,
                                     ),
                                 )
@@ -592,7 +600,7 @@ class TrainingBuilder:
                         b_outputs.append(
                             tensor(
                                 grad_id,
-                                (layer.param_count, 1),
+                                (layer.gradient_param_count, 1),
                                 "gradient",
                                 policy.gradient,
                             )
@@ -747,6 +755,7 @@ class TrainingBuilder:
                             saved_bytes=self._saved_activation_bytes(
                                 layer,
                                 training.tokens,
+                                training.seqlen,
                                 policy,
                             ),
                             recompute_us=0,
