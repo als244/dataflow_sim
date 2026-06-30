@@ -1584,6 +1584,12 @@ def test_training_program_uses_model_order_reverse_backward_and_optimizer_tail()
         "lm_head.optimizer_step.adamw",
         "optimizer_step.adamw",
     }
+    assert blocks["optimizer_step.adamw"].name == (
+        "AdamW Optimizer Step: Transformer Block"
+    )
+    assert blocks["lm_head.optimizer_step.adamw"].name == (
+        "AdamW Optimizer Step: LM Head"
+    )
     assert "transformer_block.recompute_slot" not in _block_keys(program)
 
 
@@ -1612,6 +1618,12 @@ def test_lm_head_optimizer_defaults_to_adamw_for_non_none_layer_optimizer():
     muon_blocks = _blocks_by_key(muon_program)
     assert "optimizer_step.muon" in muon_blocks
     assert "lm_head.optimizer_step.adamw" in muon_blocks
+    assert muon_blocks["optimizer_step.muon"].name == (
+        "Muon Optimizer Step: Transformer Block"
+    )
+    assert muon_blocks["lm_head.optimizer_step.adamw"].name == (
+        "AdamW Optimizer Step: LM Head"
+    )
     assert [op.name for op in muon_blocks["lm_head.optimizer_step.adamw"].subops] == [
         "adamw_step"
     ]

@@ -150,6 +150,16 @@ def default_optimizer_state_factor(optimizer: str) -> int:
     raise ValueError(f"unknown optimizer mode: {optimizer!r}")
 
 
+def optimizer_display_name(optimizer: str) -> str:
+    labels = {
+        "adamw": "AdamW",
+        "muon": "Muon",
+        "sgd": "SGD",
+        "none": "None",
+    }
+    return labels.get(optimizer, optimizer.upper())
+
+
 @dataclass(frozen=True)
 class TrainingLayerSpec:
     """One model-authored layer/module entry in a training stack."""
@@ -632,7 +642,10 @@ class TrainingBuilder:
                         label=f"Step {k} Layer {i} Optimizer",
                         group="optimizer",
                         block_key=f"{layer.optimizer_block_key}.{training.optimizer}",
-                        block_name=f"{training.optimizer.upper()} Optimizer Step",
+                        block_name=(
+                            f"{optimizer_display_name(training.optimizer)} "
+                            f"Optimizer Step: {layer.block_name}"
+                        ),
                         subops=optimizer_ops,
                         inputs=inputs,
                         mutates=mutates,
@@ -652,7 +665,10 @@ class TrainingBuilder:
                         label=f"Step {k} Head Optimizer",
                         group="optimizer",
                         block_key=f"{self.head.optimizer_block_key}.{head_optimizer_mode}",
-                        block_name=f"{head_optimizer_mode.upper()} Head Optimizer Step",
+                        block_name=(
+                            f"{optimizer_display_name(head_optimizer_mode)} "
+                            f"Optimizer Step: {self.head.block_name}"
+                        ),
                         subops=head_optimizer_ops,
                         inputs=inputs,
                         mutates=mutates,
