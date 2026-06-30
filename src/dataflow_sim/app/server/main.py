@@ -32,7 +32,11 @@ from dataflow_sim.core.schema import EventLog, TaskChain
 from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS, HardwareSpec
 from dataflow_sim.workloads.common.workload import Workload
 from dataflow_sim.workloads.dataflow import DataflowProgram, realize_dataflow_program
-from dataflow_sim.workloads.dataflow_builder import DTypePolicy, TrainingConfig
+from dataflow_sim.workloads.dataflow_builder import (
+    DTypePolicy,
+    ParallelismConfig,
+    TrainingConfig,
+)
 from dataflow_sim.workloads.models.registry import (
     MODEL_FAMILIES,
     iter_model_presets,
@@ -77,6 +81,7 @@ class HardwareParams(BaseModel):
     peak_tflops_fp8: float = Field(..., gt=0)
     peak_tflops_fp4: float | None = Field(None, gt=0)
     fast_memory_bw_gbs: float = Field(..., gt=0)
+    scale_up_bw_gbs: float = Field(..., gt=0)
     from_slow_bw_gbs: float = Field(..., gt=0)
     to_slow_bw_gbs: float = Field(..., gt=0)
     matmul_eff_bf16: float = Field(..., gt=0, le=1)
@@ -158,12 +163,17 @@ class DatatypeParams(BaseModel):
     indexer_compute_precision: DTypeName = "fp8"
 
 
+class ParallelismParams(BaseModel):
+    ep_group_size: int = Field(1, ge=1)
+
+
 class ModelTrainingWorkloadParams(BaseModel):
     source: Literal["model_training"] = "model_training"
     preset: str = "custom"
     model: ModelParams
     training: TrainingParams = Field(default_factory=TrainingParams)
     datatypes: DatatypeParams = Field(default_factory=DatatypeParams)
+    parallelism: ParallelismParams = Field(default_factory=ParallelismParams)
 
 
 class SchemaWorkloadParams(BaseModel):
@@ -217,6 +227,7 @@ def presets() -> dict:
             "model": model,
             "training": TrainingParams().model_dump(mode="json"),
             "datatypes": DatatypeParams().model_dump(mode="json"),
+            "parallelism": ParallelismParams().model_dump(mode="json"),
             "description": f"{family} training workload for {name}",
         }
 
@@ -264,6 +275,7 @@ def _hardware_from_params(params: HardwareParams) -> HardwareSpec:
         peak_tflops_fp8=params.peak_tflops_fp8,
         peak_tflops_fp4=params.peak_tflops_fp4,
         fast_memory_bw_gbs=params.fast_memory_bw_gbs,
+        scale_up_bw_gbs=params.scale_up_bw_gbs,
         from_slow_bw_gbs=params.from_slow_bw_gbs,
         to_slow_bw_gbs=params.to_slow_bw_gbs,
         matmul_eff_bf16=params.matmul_eff_bf16,
@@ -301,22 +313,31 @@ def _dtype_policy_from_params(params: DatatypeParams) -> DTypePolicy:
     )
 
 
+def _parallelism_config_from_params(params: ParallelismParams) -> ParallelismConfig:
+    return ParallelismConfig(ep_group_size=params.ep_group_size)
+
+
 def _workload_from_params(
     params: WorkloadParams,
     hw: HardwareSpec,
-) -> tuple[Workload, tuple[TrainingWorkloadBuilder, TrainingConfig, DTypePolicy] | None]:
+) -> tuple[
+    Workload,
+    tuple[TrainingWorkloadBuilder, TrainingConfig, DTypePolicy, ParallelismConfig] | None,
+]:
     if params.source == "schema":
         return realize_dataflow_program(params.program, hw), None
     cfg = _training_config_from_params(params.training)
     dtype_policy = _dtype_policy_from_params(params.datatypes)
+    parallelism = _parallelism_config_from_params(params.parallelism)
     model = _training_model_from_params(params.model)
     workload = model.build_training_workload(
         cfg,
         hw,
         input_shape=(cfg.tokens, params.model.d_model),
         dtype_policy=dtype_policy,
+        parallelism=parallelism,
     )
-    return workload, (model, cfg, dtype_policy)
+    return workload, (model, cfg, dtype_policy, parallelism)
 
 
 @app.post("/api/workloads/preview")
@@ -371,9 +392,15 @@ def _run_config(
     bare = workload.chain
     diagnostics = None
     if params.planner.recompute and training_context is not None:
-        model, cfg, dtype_policy = training_context
+        model, cfg, dtype_policy, parallelism = training_context
         chain, workload, diagnostics = _plan_with_recompute(
-            params.planner, model, hw, cfg, dtype_policy, cap_bytes,
+            params.planner,
+            model,
+            hw,
+            cfg,
+            dtype_policy,
+            parallelism,
+            cap_bytes,
         )
     elif params.planner.policy == "pressurefit":
         chain, diagnostics = plan_pressurefit_policy(
@@ -396,6 +423,7 @@ def _plan_with_recompute(
     hw: HardwareSpec,
     cfg: TrainingConfig,
     dtype_policy: DTypePolicy,
+    parallelism: ParallelismConfig,
     cap_bytes: int | None,
 ) -> tuple[TaskChain, Workload, PressureFitDiagnostics | None]:
     """Select recompute levels, then return the chosen annotated chain.
@@ -411,6 +439,7 @@ def _plan_with_recompute(
         hw,
         input_shape=input_shape,
         dtype_policy=dtype_policy,
+        parallelism=parallelism,
     )
     rewrites = base.metadata["recompute_rewrites"]
 
@@ -420,6 +449,7 @@ def _plan_with_recompute(
             hw,
             input_shape=input_shape,
             dtype_policy=dtype_policy,
+            parallelism=parallelism,
             recompute=dict(levels),
         ).chain
 
@@ -434,6 +464,7 @@ def _plan_with_recompute(
         hw,
         input_shape=input_shape,
         dtype_policy=dtype_policy,
+        parallelism=parallelism,
         recompute=dict(result.levels),
     )
     # Re-derive PressureFit candidate diagnostics on the chosen variant so the

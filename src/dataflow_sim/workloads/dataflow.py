@@ -37,6 +37,7 @@ EfficiencyName = Literal[
     "attention_fwd",
     "attention_bwd",
     "memory",
+    "scale_up",
     "custom",
 ]
 
@@ -328,7 +329,7 @@ def _eff_value(cost: DataflowCost, hw: HardwareSpec) -> float:
         return hw.attn_fwd_eff
     if cost.efficiency == "attention_bwd":
         return hw.attn_bwd_eff
-    if cost.efficiency == "memory":
+    if cost.efficiency in {"memory", "scale_up"}:
         return 1.0
     raise ValueError("custom roofline cost requires compute_eff")
 
@@ -418,8 +419,12 @@ def resolve_cost(cost: DataflowCost, hw: HardwareSpec, *, default_name: str) -> 
 
     eff_flops = cost.effective_flops if cost.effective_flops is not None else cost.flops
     mem_eff = cost.mem_eff if cost.mem_eff is not None else hw.mem_eff
-    if cost.memory_bytes > 0 and hw.fast_memory_bw_gbs > 0 and mem_eff > 0:
-        mem_seconds = cost.memory_bytes / (hw.fast_memory_bw_gbs * 1e9 * mem_eff)
+    memory_bw_gbs = (
+        hw.scale_up_bw_gbs if cost.efficiency == "scale_up" else hw.fast_memory_bw_gbs
+    )
+    lane_mem_eff = 1.0 if cost.efficiency == "scale_up" else mem_eff
+    if cost.memory_bytes > 0 and memory_bw_gbs > 0 and lane_mem_eff > 0:
+        mem_seconds = cost.memory_bytes / (memory_bw_gbs * 1e9 * lane_mem_eff)
         mem_us_exact = mem_seconds * 1e6
         mem_us = mem_us_exact
     else:

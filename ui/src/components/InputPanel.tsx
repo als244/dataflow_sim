@@ -21,6 +21,7 @@ export interface HardwareParams {
   peak_tflops_fp8: number;
   peak_tflops_fp4: number | null;
   fast_memory_bw_gbs: number;
+  scale_up_bw_gbs: number;
   from_slow_bw_gbs: number;
   to_slow_bw_gbs: number;
   matmul_eff_bf16: number;
@@ -104,13 +105,17 @@ export interface DatatypeParams {
   indexer_compute_precision: DTypeName;
 }
 
+export interface ParallelismParams {
+  ep_group_size: number;
+}
+
 export interface DataflowCost {
   kind: "fixed" | "roofline" | "sum";
   name?: string | null;
   runtime_us?: number | null;
   flops?: number;
   memory_bytes?: number;
-  efficiency?: "matmul" | "matmul_bf16" | "matmul_fp8" | "matmul_fp4" | "attention" | "attention_fwd" | "attention_bwd" | "memory" | "custom";
+  efficiency?: "matmul" | "matmul_bf16" | "matmul_fp8" | "matmul_fp4" | "attention" | "attention_fwd" | "attention_bwd" | "memory" | "scale_up" | "custom";
   count?: number;
   effective_flops?: number | null;
   compute_eff?: number | null;
@@ -177,6 +182,7 @@ export interface ModelTrainingWorkloadParams {
   model: ModelParams;
   training: TrainingParams;
   datatypes: DatatypeParams;
+  parallelism: ParallelismParams;
 }
 
 export interface SchemaWorkloadParams {
@@ -205,6 +211,7 @@ export interface ModelTrainingWorkloadPreset {
   model: Omit<ModelParams, "preset">;
   training: TrainingParams;
   datatypes: DatatypeParams;
+  parallelism: ParallelismParams;
   description: string;
 }
 
@@ -249,6 +256,7 @@ export const DEFAULT_HARDWARE: HardwareParams = {
   peak_tflops_fp8: 1978,
   peak_tflops_fp4: null,
   fast_memory_bw_gbs: 3000,
+  scale_up_bw_gbs: 400,
   from_slow_bw_gbs: 50,
   to_slow_bw_gbs: 50,
   matmul_eff_bf16: 0.65,
@@ -319,6 +327,10 @@ export const DEFAULT_DATATYPES: DatatypeParams = {
   indexer_compute_precision: "fp8",
 };
 
+export const DEFAULT_PARALLELISM: ParallelismParams = {
+  ep_group_size: 1,
+};
+
 export const EXAMPLE_SCHEMA: DataflowProgram = {
   schema_version: "dataflow/v1",
   name: "two-task-dataflow",
@@ -357,6 +369,7 @@ export const DEFAULT_PARAMS: SimulationParams = {
     model: DEFAULT_MODEL,
     training: DEFAULT_TRAINING,
     datatypes: DEFAULT_DATATYPES,
+    parallelism: DEFAULT_PARALLELISM,
   },
   hardware: DEFAULT_HARDWARE,
   planner: {
@@ -410,6 +423,7 @@ const HW_ACCELERATOR_FIELDS: { key: keyof Omit<HardwareParams, "preset">; label:
 ];
 
 const HW_SLOW_MEMORY_FIELDS: { key: keyof Omit<HardwareParams, "preset">; label: string; step?: number; min?: number }[] = [
+  { key: "scale_up_bw_gbs", label: "Scale-Up BW (GB/s)", min: 0.1, step: 1 },
   { key: "from_slow_bw_gbs", label: "From-Slow BW (GB/s)", min: 0.1, step: 1 },
   { key: "to_slow_bw_gbs", label: "To-Slow BW (GB/s)", min: 0.1, step: 1 },
 ];
@@ -527,6 +541,7 @@ export function InputPanel({
         model: { preset, ...p.model },
         training: p.training,
         datatypes: p.datatypes,
+        parallelism: p.parallelism ?? DEFAULT_PARALLELISM,
       },
     });
   }
@@ -576,6 +591,17 @@ export function InputPanel({
     });
   }
 
+  function setParallelism<K extends keyof ParallelismParams>(key: K, value: ParallelismParams[K]) {
+    if (params.workload.source !== "model_training") return;
+    setParams({
+      ...params,
+      workload: {
+        ...params.workload,
+        parallelism: { ...params.workload.parallelism, [key]: value },
+      },
+    });
+  }
+
   function setRecompute(value: boolean) {
     setParams({
       ...params,
@@ -593,6 +619,7 @@ export function InputPanel({
         model: DEFAULT_MODEL,
         training: DEFAULT_TRAINING,
         datatypes: DEFAULT_DATATYPES,
+        parallelism: DEFAULT_PARALLELISM,
       },
     });
   }
@@ -669,6 +696,7 @@ export function InputPanel({
     : null;
   const showExpertDatatypeControls = Boolean(activeModelFamily?.capabilities?.has_moe);
   const showIndexerDatatypeControls = Boolean(activeModelFamily?.capabilities?.has_indexer);
+  const showParallelismControls = Boolean(modelTrainingWorkload && activeModelFamily?.capabilities?.has_moe);
 
   return (
     <div className="panel input-panel">
@@ -1066,6 +1094,25 @@ export function InputPanel({
               </label>
             </div>
           </FormSubsection>
+          {showParallelismControls && modelTrainingWorkload && (
+            <FormSubsection title="Parallelism">
+              <div className="form-grid">
+                <label className="form-field">
+                  <span className="form-field-label">EP Group Size</span>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={String(modelTrainingWorkload.parallelism.ep_group_size)}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (Number.isFinite(v)) setParallelism("ep_group_size", v);
+                    }}
+                  />
+                </label>
+              </div>
+            </FormSubsection>
+          )}
           {HW_FIELD_SECTIONS.map(({ title, fields }) => (
             <FormSubsection key={title} title={title}>
               <div className="form-grid">

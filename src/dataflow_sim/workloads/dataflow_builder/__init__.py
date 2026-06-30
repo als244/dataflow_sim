@@ -105,9 +105,15 @@ class OpDTypePolicy:
     compute_precision: ComputePrecision = "bf16"
     expert_compute_precision: ComputePrecision = "bf16"
     indexer_compute_precision: ComputePrecision = "fp8"
+    ep_group_size: int = 1
 
     @classmethod
-    def from_dtype_policy(cls, policy: DTypePolicy) -> "OpDTypePolicy":
+    def from_dtype_policy(
+        cls,
+        policy: DTypePolicy,
+        parallelism: "ParallelismConfig | None" = None,
+    ) -> "OpDTypePolicy":
+        ep_group_size = parallelism.ep_group_size if parallelism is not None else 1
         return cls(
             activation_bpe=dtype_nbytes(policy.activation),
             expert_dispatch_bpe=dtype_nbytes(policy.expert_dispatch),
@@ -119,6 +125,7 @@ class OpDTypePolicy:
             compute_precision=policy.compute_precision,
             expert_compute_precision=policy.expert_compute_precision,
             indexer_compute_precision=policy.indexer_compute_precision,
+            ep_group_size=ep_group_size,
         )
 
     @classmethod
@@ -190,6 +197,15 @@ class TrainingConfig:
     @property
     def tokens(self) -> int:
         return self.seqlen * self.num_seqs
+
+
+@dataclass(frozen=True)
+class ParallelismConfig:
+    ep_group_size: int = 1
+
+    def __post_init__(self) -> None:
+        if self.ep_group_size < 1:
+            raise ValueError("ep_group_size must be >= 1")
 
 
 class TraceContext:

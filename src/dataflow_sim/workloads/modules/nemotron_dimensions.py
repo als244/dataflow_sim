@@ -112,9 +112,12 @@ class NemotronDimensions:
         count: int = 1,
         *,
         expert: bool = False,
+        ep_sharded: bool = False,
     ) -> None:
         if rows > 0 and cols > 0 and count > 0:
-            matrices.append(opt_ops.OptimizerMatrix(name, rows, cols, count, expert))
+            matrices.append(
+                opt_ops.OptimizerMatrix(name, rows, cols, count, expert, ep_sharded)
+            )
 
     def mamba_matrices(self) -> list[opt_ops.OptimizerMatrix]:
         matrices: list[opt_ops.OptimizerMatrix] = []
@@ -146,6 +149,7 @@ class NemotronDimensions:
             self.expert_dim,
             self.num_routed_experts,
             expert=True,
+            ep_sharded=True,
         )
         self._add_matrix(
             matrices,
@@ -154,6 +158,7 @@ class NemotronDimensions:
             self.d_model,
             self.num_routed_experts,
             expert=True,
+            ep_sharded=True,
         )
         self._add_matrix(
             matrices,

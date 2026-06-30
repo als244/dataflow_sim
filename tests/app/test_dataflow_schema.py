@@ -118,6 +118,39 @@ def test_compute_block_summary_reports_total_effective_tflops():
     assert block["effective_tflops"] == pytest.approx(expected)
 
 
+def test_scale_up_roofline_uses_scale_up_bandwidth_without_memory_efficiency():
+    body = _program()
+    body["tasks"][0]["cost"]["terms"] = [
+        {
+            "kind": "roofline",
+            "name": "ep_all_to_all",
+            "memory_bytes": 400_000,
+            "efficiency": "scale_up",
+        }
+    ]
+    hw = HardwareSpec(
+        peak_tflops_bf16=100,
+        peak_tflops_fp8=200,
+        peak_tflops_fp4=400,
+        fast_memory_bw_gbs=10_000,
+        from_slow_bw_gbs=50,
+        to_slow_bw_gbs=40,
+        matmul_eff_bf16=0.8,
+        matmul_eff_fp8=0.8,
+        matmul_eff_fp4=0.8,
+        attn_fwd_eff=0.7,
+        attn_bwd_eff=0.6,
+        mem_eff=0.1,
+        scale_up_bw_gbs=100,
+    )
+
+    workload = realize_dataflow_program(DataflowProgram.model_validate(body), hw)
+    row = workload.metadata["compute_blocks"][0]["subops"][0]
+
+    assert row["mem_us"] == pytest.approx(4.0)
+    assert row["total_us"] == pytest.approx(4.0)
+
+
 def test_unsupported_fp4_matmul_hardware_fails_clearly():
     body = _program()
     body["tasks"][0]["cost"]["terms"][1]["efficiency"] = "matmul_fp4"

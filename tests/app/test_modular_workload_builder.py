@@ -7,6 +7,7 @@ from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS, HardwareSpe
 from dataflow_sim.workloads.dataflow_builder import (
     DTypePolicy,
     OpDTypePolicy,
+    ParallelismConfig,
     TensorRef,
     TrainingConfig,
     dtype_nbytes,
@@ -407,6 +408,95 @@ def test_expert_dispatch_dtype_changes_forward_and_backward_dispatch_lanes():
         "shared_mlp_down_wgrad",
     ):
         assert dispatch_bwd_ops[name].memory_bytes == bf16_bwd_ops[name].memory_bytes
+
+
+def test_ep_group_size_shards_routed_experts_and_uses_scale_up_movement():
+    training = TrainingConfig(seqlen=64, num_seqs=1, optimizer="muon")
+    config = Qwen3MoEConfig.preset(
+        "30B-3B",
+        n_layers=1,
+        d_model=256,
+        n_heads=4,
+        n_kv_heads=2,
+        expert_dim=64,
+        num_shared_experts=1,
+        num_routed_experts=8,
+        top_k=2,
+        vocab_size=4096,
+    )
+    model = Qwen3MoEForTraining(config)
+
+    ep1 = model.build_training_program(training)
+    ep2 = model.build_training_program(
+        training,
+        parallelism=ParallelismConfig(ep_group_size=2),
+    )
+
+    ep1_objects = {obj.id: obj.size_bytes for obj in ep1.objects}
+    ep2_objects = {obj.id: obj.size_bytes for obj in ep2.objects}
+    ep1_outputs = {
+        output.id: output.size_bytes
+        for task in ep1.tasks
+        for output in task.outputs
+    }
+    ep2_outputs = {
+        output.id: output.size_bytes
+        for task in ep2.tasks
+        for output in task.outputs
+    }
+    assert ep2_objects["W_0"] < ep1_objects["W_0"]
+    assert ep2_objects["O_0"] < ep1_objects["O_0"]
+    assert ep2_outputs["dW_0_0"] < ep1_outputs["dW_0_0"]
+
+    ep1_forward = _blocks_by_key(ep1)["transformer_block.forward"]
+    ep2_forward = _blocks_by_key(ep2)["transformer_block.forward"]
+    ep1_ops = {op.name: op for op in ep1_forward.subops}
+    ep2_ops = {op.name: op for op in ep2_forward.subops}
+
+    assert ep1_ops["x_scatter"].efficiency == "memory"
+    assert ep2_ops["x_scatter"].efficiency == "scale_up"
+    assert ep1_ops["x_gather"].efficiency == "memory"
+    assert ep2_ops["x_gather"].efficiency == "scale_up"
+    assert ep1_ops["routed_mlp_up_one_expert"].count == config.num_routed_experts
+    assert ep2_ops["routed_mlp_up_one_expert"].count == config.num_routed_experts // 2
+    assert ep2_ops["routed_mlp_up_one_expert"].flops == (
+        2 * ep1_ops["routed_mlp_up_one_expert"].flops
+    )
+    assert (
+        ep2_ops["routed_mlp_up_one_expert"].flops
+        * ep2_ops["routed_mlp_up_one_expert"].count
+    ) == (
+        ep1_ops["routed_mlp_up_one_expert"].flops
+        * ep1_ops["routed_mlp_up_one_expert"].count
+    )
+
+    ep2_optimizer = _blocks_by_key(ep2)["optimizer_step.muon"]
+    opt_rows = {op.name: op for op in ep2_optimizer.subops}
+    assert opt_rows["routed_mlp_gate_muon_step"].count == config.num_routed_experts // 2
+    assert opt_rows["shared_mlp_gate_muon_step"].count == config.num_shared_experts
+    assert ep2.metadata["parallelism"] == {"ep_group_size": 2}
+
+
+def test_invalid_ep_group_size_for_moe_raises_clear_error():
+    training = TrainingConfig(seqlen=64, num_seqs=1, optimizer="none")
+    model = Qwen3MoEForTraining(
+        Qwen3MoEConfig.preset(
+            "30B-3B",
+            n_layers=1,
+            num_routed_experts=8,
+            top_k=2,
+        )
+    )
+
+    try:
+        model.build_training_program(
+            training,
+            parallelism=ParallelismConfig(ep_group_size=3),
+        )
+    except ValueError as exc:
+        assert "ep_group_size=3 must divide routed expert count 8" in str(exc)
+    else:
+        raise AssertionError("expected invalid EP group size to raise")
 
 
 def test_compute_precision_changes_realized_runtime_under_unlimited_memory():

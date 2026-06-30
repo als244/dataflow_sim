@@ -15,10 +15,25 @@ class MoE(DataflowModule):
         self.dims = dims
 
     def routed_tokens(self, tokens: int) -> int:
+        return self.routed_tokens_for_ep(tokens, ep_group_size=1)
+
+    def local_routed_experts(self, *, ep_group_size: int) -> int:
         dims = self.dims
         if dims.num_routed_experts <= 0 or dims.top_k <= 0:
             return 0
-        return tokens * dims.top_k // dims.num_routed_experts
+        if dims.num_routed_experts % ep_group_size != 0:
+            raise ValueError(
+                f"ep_group_size={ep_group_size} must divide routed expert count "
+                f"{dims.num_routed_experts}"
+            )
+        return dims.num_routed_experts // ep_group_size
+
+    def routed_tokens_for_ep(self, tokens: int, *, ep_group_size: int) -> int:
+        dims = self.dims
+        if dims.num_routed_experts <= 0 or dims.top_k <= 0:
+            return 0
+        self.local_routed_experts(ep_group_size=ep_group_size)
+        return tokens * dims.top_k * ep_group_size // dims.num_routed_experts
 
     def optimizer_matrices(self) -> list[opt_ops.OptimizerMatrix]:
         dims = self.dims
@@ -59,6 +74,7 @@ class MoE(DataflowModule):
                         dims.expert_dim,
                         dims.num_routed_experts,
                         True,
+                        True,
                     ),
                     opt_ops.OptimizerMatrix(
                         "routed_mlp_up",
@@ -66,12 +82,14 @@ class MoE(DataflowModule):
                         dims.expert_dim,
                         dims.num_routed_experts,
                         True,
+                        True,
                     ),
                     opt_ops.OptimizerMatrix(
                         "routed_mlp_down",
                         dims.expert_dim,
                         dims.d_model,
                         dims.num_routed_experts,
+                        True,
                         True,
                     ),
                 ]
@@ -95,7 +113,14 @@ class MoE(DataflowModule):
         dims = self.dims
         policy = self._policy(bytes_per_element)
         dispatch_bpe = policy.expert_dispatch_bpe
-        routed_tokens = self.routed_tokens(tokens)
+        local_routed_experts = self.local_routed_experts(
+            ep_group_size=policy.ep_group_size
+        )
+        routed_tokens = self.routed_tokens_for_ep(
+            tokens,
+            ep_group_size=policy.ep_group_size,
+        )
+        movement_efficiency = "scale_up" if policy.ep_group_size > 1 else "memory"
         ops: list[DataflowCost] = [
             fwd.rms_norm(
                 "ffn_norm",
@@ -129,6 +154,7 @@ class MoE(DataflowModule):
                     bytes_per_element=policy.activation_bpe,
                     input_bytes_per_element=policy.activation_bpe,
                     output_bytes_per_element=dispatch_bpe,
+                    efficiency=movement_efficiency,
                 )
             )
             if routed_tokens > 0:
@@ -143,7 +169,7 @@ class MoE(DataflowModule):
                         weight_bytes_per_element=policy.expert_weight_bpe,
                         output_bytes_per_element=policy.activation_bpe,
                         compute_precision=policy.expert_compute_precision,
-                        count=dims.num_routed_experts,
+                        count=local_routed_experts,
                     )
                 )
         swiglu_branches = dims.num_shared_experts + dims.top_k
@@ -185,7 +211,7 @@ class MoE(DataflowModule):
                         weight_bytes_per_element=policy.expert_weight_bpe,
                         output_bytes_per_element=policy.activation_bpe,
                         compute_precision=policy.expert_compute_precision,
-                        count=dims.num_routed_experts,
+                        count=local_routed_experts,
                     )
                 )
             ops.append(
@@ -195,6 +221,7 @@ class MoE(DataflowModule):
                     dim=dims.d_model,
                     fanin=dims.top_k,
                     bytes_per_element=policy.activation_bpe,
+                    efficiency=movement_efficiency,
                 )
             )
         return ops
@@ -208,7 +235,14 @@ class MoE(DataflowModule):
         dims = self.dims
         policy = self._policy(bytes_per_element)
         dispatch_bpe = policy.expert_dispatch_bpe
-        routed_tokens = self.routed_tokens(tokens)
+        local_routed_experts = self.local_routed_experts(
+            ep_group_size=policy.ep_group_size
+        )
+        routed_tokens = self.routed_tokens_for_ep(
+            tokens,
+            ep_group_size=policy.ep_group_size,
+        )
+        movement_efficiency = "scale_up" if policy.ep_group_size > 1 else "memory"
         ops: list[DataflowCost] = []
         if dims.num_routed_experts > 0 and dims.top_k > 0:
             ops.append(
@@ -220,6 +254,7 @@ class MoE(DataflowModule):
                     bytes_per_element=policy.activation_bpe,
                     input_bytes_per_element=policy.activation_bpe,
                     output_bytes_per_element=dispatch_bpe,
+                    efficiency=movement_efficiency,
                 )
             )
         if dims.num_routed_experts > 0 and routed_tokens > 0:
@@ -235,7 +270,7 @@ class MoE(DataflowModule):
                     upstream_gradient_bytes_per_element=dispatch_bpe,
                     input_gradient_bytes_per_element=policy.activation_bpe,
                     compute_precision=policy.expert_compute_precision,
-                    count=dims.num_routed_experts,
+                    count=local_routed_experts,
                 )
             )
         if dims.num_shared_experts > 0:
@@ -280,7 +315,7 @@ class MoE(DataflowModule):
                     upstream_gradient_bytes_per_element=policy.activation_bpe,
                     input_gradient_bytes_per_element=dispatch_bpe,
                     compute_precision=policy.expert_compute_precision,
-                    count=dims.num_routed_experts,
+                    count=local_routed_experts,
                 )
             )
         if dims.num_routed_experts > 0 and dims.top_k > 0:
@@ -293,6 +328,7 @@ class MoE(DataflowModule):
                     bytes_per_element=policy.activation_bpe,
                     input_bytes_per_element=dispatch_bpe,
                     output_bytes_per_element=policy.activation_bpe,
+                    efficiency=movement_efficiency,
                 )
             )
         if dims.num_shared_experts > 0:
@@ -322,7 +358,13 @@ class MoE(DataflowModule):
         dims = self.dims
         policy = self._policy(bytes_per_element)
         dispatch_bpe = policy.expert_dispatch_bpe
-        routed_tokens = self.routed_tokens(tokens)
+        local_routed_experts = self.local_routed_experts(
+            ep_group_size=policy.ep_group_size
+        )
+        routed_tokens = self.routed_tokens_for_ep(
+            tokens,
+            ep_group_size=policy.ep_group_size,
+        )
         ops: list[DataflowCost] = []
         if dims.num_routed_experts > 0 and routed_tokens > 0:
             ops.append(
@@ -336,7 +378,7 @@ class MoE(DataflowModule):
                     upstream_gradient_bytes_per_element=dispatch_bpe,
                     parameter_gradient_bytes_per_element=policy.gradient_bpe,
                     compute_precision=policy.expert_compute_precision,
-                    count=dims.num_routed_experts,
+                    count=local_routed_experts,
                 )
             )
         if dims.num_shared_experts > 0:
@@ -366,7 +408,7 @@ class MoE(DataflowModule):
                     upstream_gradient_bytes_per_element=policy.activation_bpe,
                     parameter_gradient_bytes_per_element=policy.gradient_bpe,
                     compute_precision=policy.expert_compute_precision,
-                    count=dims.num_routed_experts,
+                    count=local_routed_experts,
                 )
             )
         if dims.num_shared_experts > 0:

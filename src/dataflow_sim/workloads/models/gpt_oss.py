@@ -13,6 +13,7 @@ from dataflow_sim.workloads.modules import (
     optimizer_ops_for_matrices,
 )
 from dataflow_sim.workloads.modules.optimizer import (
+    matrix_gradient_bytes,
     matrix_weight_bytes,
     optimizer_state_bytes_for_matrices,
 )
@@ -186,15 +187,22 @@ def _layer_spec(index: int, dims: GPTOSSDimensions) -> TrainingLayerSpec:
                 bytes_per_element=bpe,
             )
         ),
-        parameter_bytes=lambda policy, matrices=matrices: matrix_weight_bytes(
+        parameter_bytes=lambda policy, parallelism, matrices=matrices: matrix_weight_bytes(
             matrices,
             policy,
+            parallelism,
+        ),
+        gradient_bytes=lambda policy, parallelism, matrices=matrices: matrix_gradient_bytes(
+            matrices,
+            policy,
+            parallelism,
         ),
         optimizer_state_bytes=(
-            lambda optimizer, policy, matrices=matrices: optimizer_state_bytes_for_matrices(
+            lambda optimizer, policy, parallelism, matrices=matrices: optimizer_state_bytes_for_matrices(
                 matrices,
                 optimizer,
                 policy,
+                parallelism,
             )
         ),
         block_key=f"gpt_oss.{variant}_moe_block",

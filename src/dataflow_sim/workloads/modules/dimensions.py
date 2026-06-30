@@ -26,9 +26,19 @@ def layer_weight_matrices(dims: TransformerDimensions) -> list[opt_ops.Optimizer
 
     is_moe = dims.num_routed_experts > 0 and dims.top_k > 0
 
-    def add(name: str, rows: int, cols: int, count: int = 1, *, expert: bool = False) -> None:
+    def add(
+        name: str,
+        rows: int,
+        cols: int,
+        count: int = 1,
+        *,
+        expert: bool = False,
+        ep_sharded: bool = False,
+    ) -> None:
         if rows > 0 and cols > 0 and count > 0:
-            matrices.append(opt_ops.OptimizerMatrix(name, rows, cols, count, expert))
+            matrices.append(
+                opt_ops.OptimizerMatrix(name, rows, cols, count, expert, ep_sharded)
+            )
 
     d = dims.d_model
     hd = dims.head_dim
@@ -39,9 +49,30 @@ def layer_weight_matrices(dims: TransformerDimensions) -> list[opt_ops.Optimizer
     add("shared_mlp_gate", d, dims.expert_dim, dims.num_shared_experts, expert=is_moe)
     add("shared_mlp_up", d, dims.expert_dim, dims.num_shared_experts, expert=is_moe)
     add("shared_mlp_down", dims.expert_dim, d, dims.num_shared_experts, expert=is_moe)
-    add("routed_mlp_gate", d, dims.expert_dim, dims.num_routed_experts, expert=is_moe)
-    add("routed_mlp_up", d, dims.expert_dim, dims.num_routed_experts, expert=is_moe)
-    add("routed_mlp_down", dims.expert_dim, d, dims.num_routed_experts, expert=is_moe)
+    add(
+        "routed_mlp_gate",
+        d,
+        dims.expert_dim,
+        dims.num_routed_experts,
+        expert=is_moe,
+        ep_sharded=is_moe,
+    )
+    add(
+        "routed_mlp_up",
+        d,
+        dims.expert_dim,
+        dims.num_routed_experts,
+        expert=is_moe,
+        ep_sharded=is_moe,
+    )
+    add(
+        "routed_mlp_down",
+        dims.expert_dim,
+        d,
+        dims.num_routed_experts,
+        expert=is_moe,
+        ep_sharded=is_moe,
+    )
     return matrices
 
 

@@ -74,9 +74,19 @@ class QwenHybridDimensions:
     def attention_matrices(self, layer_type: str) -> list[opt_ops.OptimizerMatrix]:
         matrices: list[opt_ops.OptimizerMatrix] = []
 
-        def add(name: str, rows: int, cols: int, count: int = 1, *, expert: bool = False) -> None:
+        def add(
+            name: str,
+            rows: int,
+            cols: int,
+            count: int = 1,
+            *,
+            expert: bool = False,
+            ep_sharded: bool = False,
+        ) -> None:
             if rows > 0 and cols > 0 and count > 0:
-                matrices.append(opt_ops.OptimizerMatrix(name, rows, cols, count, expert))
+                matrices.append(
+                    opt_ops.OptimizerMatrix(name, rows, cols, count, expert, ep_sharded)
+                )
 
         if layer_type == "linear_attention":
             add("in_proj_q", self.d_model, self.linear_key_dim)
@@ -99,16 +109,47 @@ class QwenHybridDimensions:
     def ffn_matrices(self) -> list[opt_ops.OptimizerMatrix]:
         matrices: list[opt_ops.OptimizerMatrix] = []
 
-        def add(name: str, rows: int, cols: int, count: int = 1, *, expert: bool = False) -> None:
+        def add(
+            name: str,
+            rows: int,
+            cols: int,
+            count: int = 1,
+            *,
+            expert: bool = False,
+            ep_sharded: bool = False,
+        ) -> None:
             if rows > 0 and cols > 0 and count > 0:
-                matrices.append(opt_ops.OptimizerMatrix(name, rows, cols, count, expert))
+                matrices.append(
+                    opt_ops.OptimizerMatrix(name, rows, cols, count, expert, ep_sharded)
+                )
 
         add("shared_mlp_gate", self.d_model, self.expert_dim, self.num_shared_experts, expert=self.is_moe)
         add("shared_mlp_up", self.d_model, self.expert_dim, self.num_shared_experts, expert=self.is_moe)
         add("shared_mlp_down", self.expert_dim, self.d_model, self.num_shared_experts, expert=self.is_moe)
-        add("routed_mlp_gate", self.d_model, self.expert_dim, self.num_routed_experts, expert=self.is_moe)
-        add("routed_mlp_up", self.d_model, self.expert_dim, self.num_routed_experts, expert=self.is_moe)
-        add("routed_mlp_down", self.expert_dim, self.d_model, self.num_routed_experts, expert=self.is_moe)
+        add(
+            "routed_mlp_gate",
+            self.d_model,
+            self.expert_dim,
+            self.num_routed_experts,
+            expert=self.is_moe,
+            ep_sharded=self.is_moe,
+        )
+        add(
+            "routed_mlp_up",
+            self.d_model,
+            self.expert_dim,
+            self.num_routed_experts,
+            expert=self.is_moe,
+            ep_sharded=self.is_moe,
+        )
+        add(
+            "routed_mlp_down",
+            self.expert_dim,
+            self.d_model,
+            self.num_routed_experts,
+            expert=self.is_moe,
+            ep_sharded=self.is_moe,
+        )
         return matrices
 
     def layer_matrices(self, layer_type: str) -> list[opt_ops.OptimizerMatrix]:

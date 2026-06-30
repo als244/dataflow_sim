@@ -63,7 +63,7 @@ interface WorkloadPreviewResponse {
   }[];
 }
 
-const PARAM_STORAGE_KEY = "dataflow-sim:simulation-params:v5";
+const PARAM_STORAGE_KEY = "dataflow-sim:simulation-params:v6";
 
 function cloneDefaultParams(): SimulationParams {
   return JSON.parse(JSON.stringify(DEFAULT_PARAMS)) as SimulationParams;

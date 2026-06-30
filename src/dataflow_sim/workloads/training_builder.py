@@ -36,6 +36,7 @@ from dataflow_sim.workloads.dataflow import (
 from dataflow_sim.workloads.dataflow_builder import (
     DTypePolicy,
     OpDTypePolicy,
+    ParallelismConfig,
     TensorRef,
     TraceContext,
     TrainingConfig,
@@ -48,8 +49,9 @@ LayerOpsFactory = Callable[[int, int, OpDTypePolicy], list[DataflowCost]]
 HeadOpsFactory = Callable[[int, OpDTypePolicy], list[DataflowCost]]
 OptimizerOpsFactory = Callable[[str, OpDTypePolicy], list[DataflowCost]]
 OptimizerStateFactor = Callable[[str], int]
-ParamBytesFactory = Callable[[DTypePolicy], int]
-OptimizerStateBytesFactory = Callable[[str, DTypePolicy], int]
+ParamBytesFactory = Callable[[DTypePolicy, ParallelismConfig], int]
+GradientBytesFactory = Callable[[DTypePolicy, ParallelismConfig], int]
+OptimizerStateBytesFactory = Callable[[str, DTypePolicy, ParallelismConfig], int]
 SavedActivationBytesFactory = Callable[[int, int, DTypePolicy], int]
 
 
@@ -63,6 +65,7 @@ class TrainingProgramBuilder(Protocol):
       builder. Builders should validate this when supplied.
     - `name`: optional program name override.
     - `dtype_policy`: optional role-wise dtype policy; default should be bf16.
+    - `parallelism`: optional workload parallelism settings.
     - `recompute`: optional map of saved activation/object id to recompute
       level. Builders define which ids and levels are valid.
     """
@@ -74,6 +77,7 @@ class TrainingProgramBuilder(Protocol):
         input_shape: tuple[int, int] | None = None,
         name: str | None = None,
         dtype_policy: DTypePolicy | None = None,
+        parallelism: ParallelismConfig | None = None,
         recompute: Mapping[str, int] | None = None,
     ) -> DataflowProgram:
         ...
@@ -93,6 +97,7 @@ class TrainingWorkloadBuilder(TrainingProgramBuilder, Protocol):
         input_shape: tuple[int, int] | None = None,
         name: str | None = None,
         dtype_policy: DTypePolicy | None = None,
+        parallelism: ParallelismConfig | None = None,
         recompute: Mapping[str, int] | None = None,
     ) -> Workload:
         ...
@@ -176,6 +181,7 @@ class TrainingLayerSpec:
     gradient_count: int | None = None
     optimizer_state_factor: OptimizerStateFactor = default_optimizer_state_factor
     parameter_bytes: ParamBytesFactory | None = None
+    gradient_bytes: GradientBytesFactory | None = None
     optimizer_state_bytes: OptimizerStateBytesFactory | None = None
     saved_activation_bytes: SavedActivationBytesFactory | None = None
     block_key: str = "layer"
@@ -246,19 +252,36 @@ class TrainingBuilder:
     def _parameter_bytes(
         spec: TrainingLayerSpec | TrainingHeadSpec,
         policy: DTypePolicy,
+        parallelism: ParallelismConfig,
     ) -> int:
         if spec.parameter_bytes is not None:
-            return spec.parameter_bytes(policy)
+            return spec.parameter_bytes(policy, parallelism)
         return math.ceil(spec.param_count * dtype_nbytes(policy.param))
+
+    @staticmethod
+    def _gradient_bytes(
+        spec: TrainingLayerSpec | TrainingHeadSpec,
+        policy: DTypePolicy,
+        parallelism: ParallelismConfig,
+    ) -> int:
+        if isinstance(spec, TrainingLayerSpec) and spec.gradient_bytes is not None:
+            return spec.gradient_bytes(policy, parallelism)
+        count = (
+            spec.gradient_param_count
+            if isinstance(spec, TrainingLayerSpec)
+            else spec.param_count
+        )
+        return math.ceil(count * dtype_nbytes(policy.gradient))
 
     @staticmethod
     def _optimizer_state_bytes(
         spec: TrainingLayerSpec | TrainingHeadSpec,
         optimizer: str,
         policy: DTypePolicy,
+        parallelism: ParallelismConfig,
     ) -> int:
         if spec.optimizer_state_bytes is not None:
-            return spec.optimizer_state_bytes(optimizer, policy)
+            return spec.optimizer_state_bytes(optimizer, policy, parallelism)
         return optimizer_state_bytes(
             math.ceil(spec.param_count * dtype_nbytes(policy.optimizer_state)),
             optimizer,
@@ -284,6 +307,7 @@ class TrainingBuilder:
         input_shape: tuple[int, int] | None = None,
         name: str | None = None,
         dtype_policy: DTypePolicy | None = None,
+        parallelism: ParallelismConfig | None = None,
         recompute: Mapping[str, int] | None = None,
     ) -> DataflowProgram:
         """Build a hardware-independent training `DataflowProgram`.
@@ -300,6 +324,7 @@ class TrainingBuilder:
         validate_input_shape(input_shape, (training.tokens, self.input_dim))
 
         policy = dtype_policy or DTypePolicy()
+        parallel = parallelism or ParallelismConfig()
         param_bytes = dtype_nbytes(policy.param)
         activation_bytes = dtype_nbytes(policy.activation)
         expert_dispatch_bytes = dtype_nbytes(policy.expert_dispatch)
@@ -314,7 +339,7 @@ class TrainingBuilder:
         tokens = training.tokens
         seqlen = training.seqlen
 
-        op_policy = OpDTypePolicy.from_dtype_policy(policy)
+        op_policy = OpDTypePolicy.from_dtype_policy(policy, parallel)
 
         ctx = TraceContext(
             name=name or f"{self.family_name}-{self.preset_name}-training",
@@ -332,7 +357,7 @@ class TrainingBuilder:
                     dtype=policy.activation,
                 )
         for i, layer in enumerate(self.layers):
-            layer_param_bytes = self._parameter_bytes(layer, policy)
+            layer_param_bytes = self._parameter_bytes(layer, policy, parallel)
             ctx.initial_tensor(
                 f"W_{i}",
                 (layer.param_count, 1),
@@ -341,7 +366,12 @@ class TrainingBuilder:
                 dtype=policy.param,
                 size_bytes=layer_param_bytes,
             )
-            state_bytes = self._optimizer_state_bytes(layer, training.optimizer, policy)
+            state_bytes = self._optimizer_state_bytes(
+                layer,
+                training.optimizer,
+                policy,
+                parallel,
+            )
             if state_bytes > 0:
                 ctx.initial_tensor(
                     f"O_{i}",
@@ -351,7 +381,7 @@ class TrainingBuilder:
                     dtype=policy.optimizer_state,
                     size_bytes=state_bytes,
                 )
-        head_param_bytes = self._parameter_bytes(self.head, policy)
+        head_param_bytes = self._parameter_bytes(self.head, policy, parallel)
         ctx.initial_tensor(
             "W_head",
             (self.head.param_count, 1),
@@ -363,7 +393,12 @@ class TrainingBuilder:
         head_optimizer_mode = "adamw" if training.optimizer != "none" else "none"
         head_optimizer_enabled = head_optimizer_mode != "none"
         head_state_bytes = (
-            self._optimizer_state_bytes(self.head, head_optimizer_mode, policy)
+            self._optimizer_state_bytes(
+                self.head,
+                head_optimizer_mode,
+                policy,
+                parallel,
+            )
             if head_optimizer_enabled
             else 0
         )
@@ -405,9 +440,7 @@ class TrainingBuilder:
                 adamw_step(
                     "adamw_step",
                     weight_bytes=head_param_bytes,
-                    gradient_bytes=math.ceil(
-                        self.head.param_count * dtype_nbytes(policy.gradient)
-                    ),
+                    gradient_bytes=self._gradient_bytes(self.head, policy, parallel),
                     optimizer_state_bytes=head_state_bytes,
                 )
             ]
@@ -528,6 +561,11 @@ class TrainingBuilder:
                             (self.head.param_count, 1),
                             "gradient",
                             policy.gradient,
+                            size_bytes=self._gradient_bytes(
+                                self.head,
+                                policy,
+                                parallel,
+                            ),
                         )
                     )
                 else:
@@ -611,6 +649,11 @@ class TrainingBuilder:
                                 (layer.gradient_param_count, 1),
                                 "gradient",
                                 policy.gradient,
+                                size_bytes=self._gradient_bytes(
+                                    layer,
+                                    policy,
+                                    parallel,
+                                ),
                             )
                         )
                     else:
@@ -634,7 +677,12 @@ class TrainingBuilder:
                     _, _, _, optimizer_ops = layer_phase_ops[i]
                     inputs = [t(step_grad_id(k, i)), t(f"W_{i}")]
                     mutates = [t(f"W_{i}")]
-                    if self._optimizer_state_bytes(layer, training.optimizer, policy) > 0:
+                    if self._optimizer_state_bytes(
+                        layer,
+                        training.optimizer,
+                        policy,
+                        parallel,
+                    ) > 0:
                         inputs.append(t(f"O_{i}"))
                         mutates.append(t(f"O_{i}"))
                     ctx.emit_task(
@@ -686,7 +734,12 @@ class TrainingBuilder:
         if training.optimizer != "none" and training.final_model_state_on_backing:
             for i, layer in enumerate(self.layers):
                 final_locations[f"W_{i}"] = "backing"
-                if self._optimizer_state_bytes(layer, training.optimizer, policy) > 0:
+                if self._optimizer_state_bytes(
+                    layer,
+                    training.optimizer,
+                    policy,
+                    parallel,
+                ) > 0:
                     final_locations[f"O_{i}"] = "backing"
             if head_optimizer_enabled:
                 final_locations["W_head"] = "backing"
@@ -702,6 +755,7 @@ class TrainingBuilder:
                 "model": dict(self.model_metadata),
                 "training": asdict(training),
                 "dtype_policy": asdict(policy),
+                "parallelism": asdict(parallel),
             },
             metrics=DataflowMetrics(
                 primary_unit="tokens",
@@ -729,6 +783,7 @@ class TrainingBuilder:
         input_shape: tuple[int, int] | None = None,
         name: str | None = None,
         dtype_policy: DTypePolicy | None = None,
+        parallelism: ParallelismConfig | None = None,
         recompute: Mapping[str, int] | None = None,
     ) -> Workload:
         """Realize the program on hardware and attach planner-facing metadata."""
@@ -738,12 +793,14 @@ class TrainingBuilder:
             input_shape=input_shape,
             name=name,
             dtype_policy=dtype_policy,
+            parallelism=parallelism,
             recompute=recompute,
         )
         workload = realize_dataflow_program(program, hw)
 
         policy = dtype_policy or DTypePolicy()
-        op_policy = OpDTypePolicy.from_dtype_policy(policy)
+        parallel = parallelism or ParallelismConfig()
+        op_policy = OpDTypePolicy.from_dtype_policy(policy, parallel)
 
         rewrites: list[RecomputeRewrite] = []
         levels = dict(recompute or {})

@@ -17,6 +17,7 @@ class HardwareSpec:
     attn_fwd_eff: float
     attn_bwd_eff: float
     mem_eff: float = 0.9
+    scale_up_bw_gbs: float = 400.0
 
     @property
     def peak_tflops(self) -> float:
@@ -38,6 +39,7 @@ HARDWARE_PRESETS: dict[str, HardwareSpec] = {
         peak_tflops_fp8=1978.0,
         peak_tflops_fp4=None,
         fast_memory_bw_gbs=3000.0,
+        scale_up_bw_gbs=400.0,
         from_slow_bw_gbs=50.0,
         to_slow_bw_gbs=50.0,
         matmul_eff_bf16=0.65,
@@ -52,6 +54,7 @@ HARDWARE_PRESETS: dict[str, HardwareSpec] = {
         peak_tflops_fp8=5000.0,
         peak_tflops_fp4=15000.0,
         fast_memory_bw_gbs=8000.0,
+        scale_up_bw_gbs=800.0,
         from_slow_bw_gbs=400.0,
         to_slow_bw_gbs=400.0,
         matmul_eff_bf16=0.65,
@@ -66,6 +69,7 @@ HARDWARE_PRESETS: dict[str, HardwareSpec] = {
         peak_tflops_fp8=420.0,
         peak_tflops_fp4=840.0,
         fast_memory_bw_gbs=1500.0,
+        scale_up_bw_gbs=30.0,
         from_slow_bw_gbs=30.0,
         to_slow_bw_gbs=30.0,
         matmul_eff_bf16=0.95,
@@ -80,6 +84,7 @@ HARDWARE_PRESETS: dict[str, HardwareSpec] = {
         peak_tflops_fp8=6400.0,
         peak_tflops_fp4=12800.0,
         fast_memory_bw_gbs=40000.0,
+        scale_up_bw_gbs=800.0,
         from_slow_bw_gbs=3000.0,
         to_slow_bw_gbs=3000.0,
         matmul_eff_bf16=1.0,

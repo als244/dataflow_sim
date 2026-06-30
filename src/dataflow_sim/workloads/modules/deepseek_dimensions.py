@@ -77,9 +77,19 @@ class DeepSeekDimensions:
     def attention_matrices(self) -> list[opt_ops.OptimizerMatrix]:
         matrices: list[opt_ops.OptimizerMatrix] = []
 
-        def add(name: str, rows: int, cols: int, count: int = 1, *, expert: bool = False) -> None:
+        def add(
+            name: str,
+            rows: int,
+            cols: int,
+            count: int = 1,
+            *,
+            expert: bool = False,
+            ep_sharded: bool = False,
+        ) -> None:
             if rows > 0 and cols > 0 and count > 0:
-                matrices.append(opt_ops.OptimizerMatrix(name, rows, cols, count, expert))
+                matrices.append(
+                    opt_ops.OptimizerMatrix(name, rows, cols, count, expert, ep_sharded)
+                )
 
         if self.q_lora_rank > 0:
             add("q_a_proj", self.d_model, self.q_lora_rank)
@@ -95,17 +105,48 @@ class DeepSeekDimensions:
         ffn_dims = self.ffn_dimensions(dense=dense)
         matrices: list[opt_ops.OptimizerMatrix] = []
 
-        def add(name: str, rows: int, cols: int, count: int = 1, *, expert: bool = False) -> None:
+        def add(
+            name: str,
+            rows: int,
+            cols: int,
+            count: int = 1,
+            *,
+            expert: bool = False,
+            ep_sharded: bool = False,
+        ) -> None:
             if rows > 0 and cols > 0 and count > 0:
-                matrices.append(opt_ops.OptimizerMatrix(name, rows, cols, count, expert))
+                matrices.append(
+                    opt_ops.OptimizerMatrix(name, rows, cols, count, expert, ep_sharded)
+                )
 
         is_moe = not dense and ffn_dims.num_routed_experts > 0 and ffn_dims.top_k > 0
         add("shared_mlp_gate", ffn_dims.d_model, ffn_dims.expert_dim, ffn_dims.num_shared_experts, expert=is_moe)
         add("shared_mlp_up", ffn_dims.d_model, ffn_dims.expert_dim, ffn_dims.num_shared_experts, expert=is_moe)
         add("shared_mlp_down", ffn_dims.expert_dim, ffn_dims.d_model, ffn_dims.num_shared_experts, expert=is_moe)
-        add("routed_mlp_gate", ffn_dims.d_model, ffn_dims.expert_dim, ffn_dims.num_routed_experts, expert=is_moe)
-        add("routed_mlp_up", ffn_dims.d_model, ffn_dims.expert_dim, ffn_dims.num_routed_experts, expert=is_moe)
-        add("routed_mlp_down", ffn_dims.expert_dim, ffn_dims.d_model, ffn_dims.num_routed_experts, expert=is_moe)
+        add(
+            "routed_mlp_gate",
+            ffn_dims.d_model,
+            ffn_dims.expert_dim,
+            ffn_dims.num_routed_experts,
+            expert=is_moe,
+            ep_sharded=is_moe,
+        )
+        add(
+            "routed_mlp_up",
+            ffn_dims.d_model,
+            ffn_dims.expert_dim,
+            ffn_dims.num_routed_experts,
+            expert=is_moe,
+            ep_sharded=is_moe,
+        )
+        add(
+            "routed_mlp_down",
+            ffn_dims.expert_dim,
+            ffn_dims.d_model,
+            ffn_dims.num_routed_experts,
+            expert=is_moe,
+            ep_sharded=is_moe,
+        )
         return matrices
 
     def layer_matrices(self, *, dense: bool) -> list[opt_ops.OptimizerMatrix]:

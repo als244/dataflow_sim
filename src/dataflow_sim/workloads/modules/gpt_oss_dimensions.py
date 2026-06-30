@@ -54,9 +54,19 @@ class GPTOSSDimensions:
         matrices: list[opt_ops.OptimizerMatrix] = []
         is_moe = self.num_routed_experts > 0 and self.top_k > 0
 
-        def add(name: str, rows: int, cols: int, count: int = 1, *, expert: bool = False) -> None:
+        def add(
+            name: str,
+            rows: int,
+            cols: int,
+            count: int = 1,
+            *,
+            expert: bool = False,
+            ep_sharded: bool = False,
+        ) -> None:
             if rows > 0 and cols > 0 and count > 0:
-                matrices.append(opt_ops.OptimizerMatrix(name, rows, cols, count, expert))
+                matrices.append(
+                    opt_ops.OptimizerMatrix(name, rows, cols, count, expert, ep_sharded)
+                )
 
         add("q_proj", self.d_model, self.attn_q_dim)
         add("k_proj", self.d_model, self.attn_kv_dim)
@@ -65,9 +75,30 @@ class GPTOSSDimensions:
         add("shared_mlp_gate", self.d_model, self.expert_dim, self.num_shared_experts, expert=is_moe)
         add("shared_mlp_up", self.d_model, self.expert_dim, self.num_shared_experts, expert=is_moe)
         add("shared_mlp_down", self.expert_dim, self.d_model, self.num_shared_experts, expert=is_moe)
-        add("routed_mlp_gate", self.d_model, self.expert_dim, self.num_routed_experts, expert=is_moe)
-        add("routed_mlp_up", self.d_model, self.expert_dim, self.num_routed_experts, expert=is_moe)
-        add("routed_mlp_down", self.expert_dim, self.d_model, self.num_routed_experts, expert=is_moe)
+        add(
+            "routed_mlp_gate",
+            self.d_model,
+            self.expert_dim,
+            self.num_routed_experts,
+            expert=is_moe,
+            ep_sharded=is_moe,
+        )
+        add(
+            "routed_mlp_up",
+            self.d_model,
+            self.expert_dim,
+            self.num_routed_experts,
+            expert=is_moe,
+            ep_sharded=is_moe,
+        )
+        add(
+            "routed_mlp_down",
+            self.expert_dim,
+            self.d_model,
+            self.num_routed_experts,
+            expert=is_moe,
+            ep_sharded=is_moe,
+        )
         return matrices
 
     def params_per_layer(self) -> int:

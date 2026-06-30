@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataflow_sim.workloads.dataflow import DataflowCost
-from dataflow_sim.workloads.ops._common import memory_op
+from dataflow_sim.workloads.ops._common import Efficiency, memory_op
 
 
 def scatter(
@@ -14,10 +14,15 @@ def scatter(
     bytes_per_element: float = 2,
     input_bytes_per_element: float | None = None,
     output_bytes_per_element: float | None = None,
+    efficiency: Efficiency = "memory",
 ) -> DataflowCost:
     in_bpe = bytes_per_element if input_bytes_per_element is None else input_bytes_per_element
     out_bpe = bytes_per_element if output_bytes_per_element is None else output_bytes_per_element
-    return memory_op(name, tokens * dim * in_bpe + tokens * fanout * dim * out_bpe)
+    return memory_op(
+        name,
+        tokens * dim * in_bpe + tokens * fanout * dim * out_bpe,
+        efficiency=efficiency,
+    )
 
 
 def gather(
@@ -29,10 +34,15 @@ def gather(
     bytes_per_element: float = 2,
     input_bytes_per_element: float | None = None,
     output_bytes_per_element: float | None = None,
+    efficiency: Efficiency = "memory",
 ) -> DataflowCost:
     in_bpe = bytes_per_element if input_bytes_per_element is None else input_bytes_per_element
     out_bpe = bytes_per_element if output_bytes_per_element is None else output_bytes_per_element
-    return memory_op(name, tokens * fanin * dim * in_bpe + tokens * dim * out_bpe)
+    return memory_op(
+        name,
+        tokens * fanin * dim * in_bpe + tokens * dim * out_bpe,
+        efficiency=efficiency,
+    )
 
 
 def reduce(

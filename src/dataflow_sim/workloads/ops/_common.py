@@ -15,6 +15,7 @@ Efficiency = Literal[
     "attention_fwd",
     "attention_bwd",
     "memory",
+    "scale_up",
     "custom",
 ]
 
@@ -55,13 +56,19 @@ def roofline(
     )
 
 
-def memory_op(name: str, memory_bytes: float, *, count: int = 1) -> DataflowCost:
+def memory_op(
+    name: str,
+    memory_bytes: float,
+    *,
+    count: int = 1,
+    efficiency: Efficiency = "memory",
+) -> DataflowCost:
     return roofline(
         name,
         flops=0,
         effective_flops=0,
         memory_bytes=memory_bytes,
-        efficiency="memory",
+        efficiency=efficiency,
         count=count,
     )
 

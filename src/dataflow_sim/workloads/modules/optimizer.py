@@ -1,10 +1,17 @@
 """Optimizer step module."""
 from __future__ import annotations
 
+from dataclasses import replace
 import math
 
 from dataflow_sim.workloads.dataflow import DataflowCost
-from dataflow_sim.workloads.dataflow_builder import DTypePolicy, DataflowModule, OpDTypePolicy, dtype_nbytes
+from dataflow_sim.workloads.dataflow_builder import (
+    DTypePolicy,
+    DataflowModule,
+    OpDTypePolicy,
+    ParallelismConfig,
+    dtype_nbytes,
+)
 from dataflow_sim.workloads.modules.dimensions import (
     TransformerDimensions,
     layer_weight_matrices,
@@ -27,6 +34,7 @@ def optimizer_ops_for_matrices(
         if isinstance(bytes_per_element, OpDTypePolicy)
         else OpDTypePolicy.from_single_bpe(bytes_per_element)
     )
+    local_matrices = local_optimizer_matrices(matrices, policy)
     weight_bytes = matrix_weight_bytes(matrices, policy)
     gradient_bytes = matrix_gradient_bytes(matrices, policy)
     state_bytes = optimizer_state_bytes_for_matrices(matrices, optimizer, policy)
@@ -46,7 +54,7 @@ def optimizer_ops_for_matrices(
                 matrix=matrix,
                 bytes_per_element=policy.optimizer_state_bpe,
             )
-            for matrix in matrices
+            for matrix in local_matrices
         ]
     if optimizer == "sgd":
         return [
@@ -59,9 +67,46 @@ def optimizer_ops_for_matrices(
     raise ValueError(f"unknown optimizer mode for {name}: {optimizer!r}")
 
 
+def _ep_group_size(
+    policy: DTypePolicy | OpDTypePolicy,
+    parallelism: ParallelismConfig | None = None,
+) -> int:
+    if parallelism is not None:
+        return parallelism.ep_group_size
+    return policy.ep_group_size if isinstance(policy, OpDTypePolicy) else 1
+
+
+def local_matrix_count(
+    matrix: opt_ops.OptimizerMatrix,
+    policy: DTypePolicy | OpDTypePolicy,
+    parallelism: ParallelismConfig | None = None,
+) -> int:
+    ep_group_size = _ep_group_size(policy, parallelism)
+    if not matrix.ep_sharded:
+        return matrix.count
+    if matrix.count % ep_group_size != 0:
+        raise ValueError(
+            f"ep_group_size={ep_group_size} must divide routed expert count "
+            f"{matrix.count} for {matrix.name}"
+        )
+    return matrix.count // ep_group_size
+
+
+def local_optimizer_matrices(
+    matrices: list[opt_ops.OptimizerMatrix],
+    policy: DTypePolicy | OpDTypePolicy,
+    parallelism: ParallelismConfig | None = None,
+) -> list[opt_ops.OptimizerMatrix]:
+    return [
+        replace(matrix, count=local_matrix_count(matrix, policy, parallelism))
+        for matrix in matrices
+    ]
+
+
 def matrix_weight_bytes(
     matrices: list[opt_ops.OptimizerMatrix],
     policy: DTypePolicy | OpDTypePolicy,
+    parallelism: ParallelismConfig | None = None,
 ) -> int:
     if isinstance(policy, DTypePolicy):
         default_bpe = dtype_nbytes(policy.param)
@@ -73,7 +118,7 @@ def matrix_weight_bytes(
         sum(
             matrix.rows
             * matrix.cols
-            * matrix.count
+            * local_matrix_count(matrix, policy, parallelism)
             * (expert_bpe if matrix.expert else default_bpe)
             for matrix in matrices
         )
@@ -83,10 +128,17 @@ def matrix_weight_bytes(
 def matrix_gradient_bytes(
     matrices: list[opt_ops.OptimizerMatrix],
     policy: DTypePolicy | OpDTypePolicy,
+    parallelism: ParallelismConfig | None = None,
 ) -> int:
     bpe = dtype_nbytes(policy.gradient) if isinstance(policy, DTypePolicy) else policy.gradient_bpe
     return math.ceil(
-        sum(matrix.rows * matrix.cols * matrix.count for matrix in matrices) * bpe
+        sum(
+            matrix.rows
+            * matrix.cols
+            * local_matrix_count(matrix, policy, parallelism)
+            for matrix in matrices
+        )
+        * bpe
     )
 
 
@@ -94,6 +146,7 @@ def optimizer_state_bytes_for_matrices(
     matrices: list[opt_ops.OptimizerMatrix],
     optimizer: opt_ops.OptimizerMode,
     policy: DTypePolicy | OpDTypePolicy,
+    parallelism: ParallelismConfig | None = None,
 ) -> int:
     if optimizer in {"none", "sgd"}:
         return 0
@@ -105,7 +158,12 @@ def optimizer_state_bytes_for_matrices(
     )
     return math.ceil(
         state_factor
-        * sum(matrix.rows * matrix.cols * matrix.count for matrix in matrices)
+        * sum(
+            matrix.rows
+            * matrix.cols
+            * local_matrix_count(matrix, policy, parallelism)
+            for matrix in matrices
+        )
         * bpe
     )
 

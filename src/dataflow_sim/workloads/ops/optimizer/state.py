@@ -15,6 +15,7 @@ class OptimizerMatrix:
     cols: int
     count: int = 1
     expert: bool = False
+    ep_sharded: bool = False
 
 
 def optimizer_state_bytes(weight_bytes: int, optimizer: OptimizerMode) -> int:

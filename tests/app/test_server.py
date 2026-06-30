@@ -57,6 +57,9 @@ def _payload(**overrides):
                 "optimizer": "none",
                 "final_model_state_on_backing": False,
             },
+            "parallelism": {
+                "ep_group_size": 1,
+            },
         },
         "hardware": {
             "preset": "custom",
@@ -64,6 +67,7 @@ def _payload(**overrides):
             "peak_tflops_fp8": 200,
             "peak_tflops_fp4": 400,
             "fast_memory_bw_gbs": 1000,
+            "scale_up_bw_gbs": 100,
             "from_slow_bw_gbs": 100,
             "to_slow_bw_gbs": 100,
             "matmul_eff_bf16": 0.8,
@@ -334,6 +338,7 @@ def test_presets_include_only_public_model_workloads():
         "indexer_activation_dtype": "fp8",
         "indexer_compute_precision": "fp8",
     }
+    assert body["workloads"]["llama3_8B"]["parallelism"] == {"ep_group_size": 1}
     for name, family in expected_models.items():
         assert body["workloads"][name]["model"]["family"] == family
         assert body["workloads"][name]["source"] == "model_training"
@@ -454,6 +459,7 @@ def test_presets_include_sram_accelerator_hardware():
         "peak_tflops_fp8": 6400.0,
         "peak_tflops_fp4": 12800.0,
         "fast_memory_bw_gbs": 40000.0,
+        "scale_up_bw_gbs": 800.0,
         "from_slow_bw_gbs": 3000.0,
         "to_slow_bw_gbs": 3000.0,
         "matmul_eff_bf16": 1.0,
@@ -474,6 +480,7 @@ def test_presets_include_gb300_hardware():
         "peak_tflops_fp8": 5000.0,
         "peak_tflops_fp4": 15000.0,
         "fast_memory_bw_gbs": 8000.0,
+        "scale_up_bw_gbs": 800.0,
         "from_slow_bw_gbs": 400.0,
         "to_slow_bw_gbs": 400.0,
         "matmul_eff_bf16": 0.65,
@@ -491,6 +498,7 @@ def test_h100_marks_fp4_matmul_as_unsupported():
 
     assert hw["peak_tflops_fp4"] is None
     assert hw["matmul_eff_fp4"] is None
+    assert hw["scale_up_bw_gbs"] == 400.0
 
 
 def test_simulate_uploaded_schema_workload():
