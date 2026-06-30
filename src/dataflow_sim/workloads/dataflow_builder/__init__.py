@@ -112,7 +112,7 @@ class OpDTypePolicy:
         )
 
     @classmethod
-    def from_single_bpe(cls, bytes_per_element: int) -> "OpDTypePolicy":
+    def from_single_bpe(cls, bytes_per_element: float) -> "OpDTypePolicy":
         return cls(
             activation_bpe=bytes_per_element,
             expert_dispatch_bpe=bytes_per_element,

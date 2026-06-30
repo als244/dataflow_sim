@@ -25,9 +25,9 @@ Object sizes are rounded up to whole bytes.
 | UI Field | Builder Field | Controls |
 | --- | --- | --- |
 | Weight DType | `DTypePolicy.param` | Default parameter bytes for non-expert weights, including attention, dense MLPs, and LM head weights. |
-| Activation DType | `DTypePolicy.activation` | Main activation tensors and activation memory traffic: `input_*`, `y_*`, `A_*`, forward outputs, saved backward context, norm/activation memory terms, attention activation traffic, dense MLP activation traffic, and MoE non-dispatch activation traffic. |
-| Expert Dispatch DType | `DTypePolicy.expert_dispatch` | MoE dispatch representation for forward expert routing, specifically `x_scatter` output traffic and the activation input read side of `shared_mlp_up` and `routed_mlp_up_one_expert`. The corresponding up-projection wgrad input read also uses this dtype because it reads the dispatched expert input. |
-| Gradient DType | `DTypePolicy.gradient` | Gradient tensors and gradient memory traffic: `dy_*`, `dW_*`, backward gradient reads/writes, wgrad outputs, and wgrad accumulation traffic. |
+| Activation DType | `DTypePolicy.activation` | Main activation tensors and activation-gradient tensors/traffic: `input_*`, `y_*`, `A_*`, `dy_*`, forward outputs, saved backward context, norm/activation memory terms, attention activation traffic, dense MLP activation traffic, and MoE non-dispatch activation traffic. |
+| Expert Dispatch DType | `DTypePolicy.expert_dispatch` | MoE dispatch representation for forward expert routing and the symmetric routed activation-gradient dispatch path in backward. It covers `x_scatter` output traffic, `dy_scatter` output traffic, `dy_gather` input traffic, expert up-projection input reads, expert up-projection dgrad output writes, routed down-projection upstream-gradient reads, and the matching up-projection wgrad input reads. |
+| Parameter Gradient DType | `DTypePolicy.gradient` | Parameter-gradient tensors and parameter-gradient memory traffic: `dW_*`, wgrad outputs, wgrad accumulation traffic, and optimizer reads of parameter gradients. It does not control `dy_*`; activation gradients follow Activation DType unless an op explicitly overrides a dispatched lane. |
 | Optimizer DType | `DTypePolicy.optimizer_state` | Optimizer-state objects such as `O_*` and optimizer-state traffic inside optimizer steps. |
 | Compute Precision | `DTypePolicy.compute` | Default matmul math precision for non-expert matmuls. This selects the matching hardware peak TFLOP/s and matmul efficiency field. |
 | Expert Weight DType | `DTypePolicy.expert_param` | MoE expert weight bytes for both shared and routed expert matrices: `shared_mlp_up/down` and `routed_mlp_up/down`. This overrides Weight DType only for matrices marked as expert weights. |
@@ -42,8 +42,8 @@ The model-training builder emits these major objects:
 | `input_<step>_<round>` | activation | `tokens * input_dim * Activation DType` |
 | `y_<step>_<round>_<layer>` | activation | `tokens * layer_output_dim * Activation DType` |
 | `A_<step>_<round>_<layer>` | activation | `tokens * saved_activation_width * Activation DType` |
-| `dy_*` | gradient | shape elements times Gradient DType |
-| `dW_*` | gradient | parameter elements times Gradient DType |
+| `dy_*` | activation | shape elements times Activation DType |
+| `dW_*` | gradient | parameter elements times Parameter Gradient DType |
 | `W_*` | parameter | Weight DType for non-expert matrices, Expert Weight DType for expert matrices when matrix metadata is available |
 | `W_head` | parameter | Weight DType |
 | `O_*`, `O_head` | optimizer state | Optimizer DType |
@@ -56,7 +56,8 @@ persistent saved object.
 ## MoE Expert Dispatch
 
 Expert Dispatch DType is intentionally narrow. It models the dtype used for the
-dispatched activation stream entering expert up projections.
+dispatched activation stream entering expert up projections and the matching
+dispatched activation-gradient stream in backward.
 
 It currently affects:
 
@@ -67,9 +68,26 @@ It currently affects:
 - `routed_mlp_up_one_expert`: reads dispatched routed inputs in Expert Dispatch
   DType, reads weights in Expert Weight DType, and writes outputs in Activation
   DType.
+- `dy_scatter`: reads the main upstream activation gradient in Activation DType
+  and writes routed upstream gradients in Expert Dispatch DType.
+- `routed_mlp_down_one_expert_dgrad`: reads the routed upstream gradient side in
+  Expert Dispatch DType and writes expert-intermediate activation gradients in
+  Activation DType.
+- `routed_mlp_down_one_expert_wgrad`: reads the routed upstream gradient side in
+  Expert Dispatch DType and writes/accumulates parameter gradients in Parameter
+  Gradient DType.
+- `routed_mlp_up_one_expert_dgrad`: reads expert-intermediate activation
+  gradients in Activation DType and writes dispatched input gradients in Expert
+  Dispatch DType.
+- `shared_mlp_up_dgrad`: reads expert-intermediate activation gradients in
+  Activation DType and writes its input-gradient side in Expert Dispatch DType,
+  mirroring the shared expert up-projection input read in forward.
+- `dy_gather`: reads dispatched input gradients in Expert Dispatch DType and
+  writes the main activation gradient in Activation DType.
 - `shared_mlp_up_wgrad` and `routed_mlp_up_one_expert_wgrad`: read the
-  up-projection input side in Expert Dispatch DType, while gradient operands and
-  gradient outputs use Gradient DType.
+  up-projection input side in Expert Dispatch DType. Their upstream gradient
+  operands use Activation DType and their output/accumulator traffic uses
+  Parameter Gradient DType.
 
 It does not affect:
 
@@ -78,7 +96,7 @@ It does not affect:
 - SwiGLU memory terms,
 - expert down-projection activation operands,
 - `x_gather`,
-- backward dgrad movement, which uses Gradient DType,
+- non-dispatched activation-gradient movement, which uses Activation DType,
 - optimizer state.
 
 ## Expert Weights
@@ -104,8 +122,8 @@ Expert Weight DType affects:
 - expert matmul weight-read bytes,
 - optimizer-step weight-read/write bytes for expert matrices.
 
-It does not change gradient object dtype or optimizer-state dtype. Those remain
-controlled by Gradient DType and Optimizer DType.
+It does not change parameter-gradient object dtype or optimizer-state dtype.
+Those remain controlled by Parameter Gradient DType and Optimizer DType.
 
 ## Compute Precision And Hardware
 
@@ -143,8 +161,9 @@ The matmul op helpers support separate byte sizes for:
 - activation input,
 - weight matrix,
 - output activation,
-- gradient operands,
-- gradient outputs/accumulators.
+- activation-gradient operands,
+- activation-gradient outputs,
+- parameter-gradient outputs/accumulators.
 
 For example, an MoE routed up projection can model:
 
@@ -166,8 +185,18 @@ When changing only Expert Dispatch DType on a Qwen3.5 MoE preset, expect:
 - `A_*` object sizes to stay unchanged.
 - `x_scatter`, `shared_mlp_up`, and `routed_mlp_up_one_expert` byte counts to
   change.
+- `dy_scatter`, `routed_mlp_down_one_expert_dgrad`,
+  `routed_mlp_up_one_expert_dgrad`, `shared_mlp_up_dgrad`, `dy_gather`, and
+  up-projection wgrad input byte counts to change. Routed down-projection wgrad
+  also changes because it reads the dispatched upstream-gradient side.
 - `swiglu`, expert down projections, and `x_gather` byte counts to stay
   unchanged.
+
+When changing only Parameter Gradient DType, expect:
+
+- `dW_*` object sizes and wgrad output/accumulator traffic to change.
+- `dy_*` object sizes and activation-gradient dgrad traffic to stay tied to
+  Activation DType.
 
 When changing only Expert Weight DType, expect:
 

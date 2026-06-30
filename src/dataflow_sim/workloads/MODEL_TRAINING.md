@@ -132,7 +132,7 @@ training = TrainingConfig(
 ```
 
 `DTypePolicy` controls byte sizes. The default is bf16 for parameters,
-activations, expert dispatch traffic, gradients, and optimizer state:
+activations, expert dispatch traffic, parameter gradients, and optimizer state:
 
 ```python
 from dataflow_sim.workloads.dataflow_builder import DTypePolicy
@@ -290,7 +290,7 @@ Users can customize:
 - dimension overrides such as layers, width, heads, expert width, routed
   experts, and top-k,
 - loop shape through `TrainingConfig`,
-- dtype policy for params, activations, gradients, and optimizer state,
+- dtype policy for params, activations, parameter gradients, and optimizer state,
 - optimizer mode,
 - final placement of updated model state,
 - module composition and per-phase op specs,

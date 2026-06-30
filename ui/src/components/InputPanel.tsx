@@ -778,7 +778,7 @@ export function InputPanel({
                     </select>
                   </label>
                   <label className="form-field">
-                    <span className="form-field-label">Gradient DType</span>
+                    <span className="form-field-label">Parameter Gradient DType</span>
                     <select
                       value={modelTrainingWorkload.datatypes.gradient_dtype}
                       onChange={(e) => setDatatype("gradient_dtype", e.target.value as DTypeName)}

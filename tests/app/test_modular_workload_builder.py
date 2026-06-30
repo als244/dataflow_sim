@@ -6,6 +6,7 @@ from dataflow_sim.policies.pressurefit import apply_pressurefit_policy
 from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS, HardwareSpec
 from dataflow_sim.workloads.dataflow_builder import (
     DTypePolicy,
+    OpDTypePolicy,
     TensorRef,
     TrainingConfig,
     dtype_nbytes,
@@ -100,6 +101,29 @@ def test_matmul_accumulate_epilogue_bytes():
     assert wgrad_accum.memory_bytes == base.memory_bytes + 3 * 5 * 2
 
 
+def test_backward_matmul_policy_separates_activation_and_parameter_gradients():
+    policy = OpDTypePolicy.from_dtype_policy(
+        DTypePolicy(param="fp8", activation="fp8", gradient="bf16")
+    )
+    dgrad = bwd.matmul_input_grad(
+        "proj_dgrad",
+        tokens=4,
+        input_dim=3,
+        output_dim=5,
+        bytes_per_element=policy,
+    )
+    wgrad = bwd.matmul_weight_grad(
+        "proj_wgrad",
+        tokens=4,
+        input_dim=3,
+        output_dim=5,
+        bytes_per_element=policy,
+    )
+
+    assert dgrad.memory_bytes == 4 * 5 + 3 * 5 + 4 * 3
+    assert wgrad.memory_bytes == 4 * 3 + 4 * 5 + 3 * 5 * 2 + 3 * 5 * 2
+
+
 def test_datatype_policy_changes_program_bytes_and_compute_precision():
     training = TrainingConfig(seqlen=64, num_seqs=1, optimizer="adamw")
     model = Qwen3MoEForTraining(
@@ -127,6 +151,10 @@ def test_datatype_policy_changes_program_bytes_and_compute_precision():
             expert_compute="fp8",
         ),
     )
+    split_grad_program = model.build_training_program(
+        training,
+        dtype_policy=DTypePolicy(activation="bf16", gradient="fp8"),
+    )
 
     bf16_objects = {obj.id: obj.size_bytes for obj in bf16_program.objects}
     lowp_objects = {obj.id: obj.size_bytes for obj in lowp_program.objects}
@@ -150,6 +178,15 @@ def test_datatype_policy_changes_program_bytes_and_compute_precision():
     assert lowp_outputs["y_0_0_0"] == training.tokens * model.dims.d_model
     assert bf16_outputs["A_0_0_0"] == training.tokens * saved_width * 2
     assert lowp_outputs["A_0_0_0"] == training.tokens * saved_width
+    assert lowp_outputs["dy_head_0_0"] == training.tokens * model.dims.d_model
+    assert lowp_outputs["dW_0_0"] == model.layers[0].param_count
+    split_grad_outputs = {
+        output.id: output.size_bytes
+        for task in split_grad_program.tasks
+        for output in task.outputs
+    }
+    assert split_grad_outputs["dy_head_0_0"] == training.tokens * model.dims.d_model * 2
+    assert split_grad_outputs["dW_0_0"] == model.layers[0].param_count
 
     moe_forward = next(
         block
@@ -164,7 +201,7 @@ def test_datatype_policy_changes_program_bytes_and_compute_precision():
     assert qkv.efficiency == "matmul_bf16"
 
 
-def test_expert_dispatch_dtype_only_changes_dispatch_and_up_projection_inputs():
+def test_expert_dispatch_dtype_changes_forward_and_backward_dispatch_lanes():
     training = TrainingConfig(seqlen=64, num_seqs=1, optimizer="none")
     model = QwenHybridMoEForTraining(
         QwenHybridMoEConfig.preset("35B-A3B", n_layers=1)
@@ -187,6 +224,8 @@ def test_expert_dispatch_dtype_only_changes_dispatch_and_up_projection_inputs():
         for output in task.outputs
     }
     assert dispatch_outputs["A_0_0_0"] == bf16_outputs["A_0_0_0"]
+    assert dispatch_outputs["dy_head_0_0"] == bf16_outputs["dy_head_0_0"]
+    assert dispatch_outputs["dW_0_0"] == bf16_outputs["dW_0_0"]
 
     bf16_forward = next(
         block for block in bf16_program.compute_blocks
@@ -209,6 +248,34 @@ def test_expert_dispatch_dtype_only_changes_dispatch_and_up_projection_inputs():
         "x_gather",
     ):
         assert dispatch_ops[name].memory_bytes == bf16_ops[name].memory_bytes
+
+    bf16_backward = next(
+        block for block in bf16_program.compute_blocks
+        if any(op.name == "dy_scatter" for op in block.subops)
+    )
+    dispatch_backward = next(
+        block for block in dispatch_program.compute_blocks
+        if any(op.name == "dy_scatter" for op in block.subops)
+    )
+    bf16_bwd_ops = {op.name: op for op in bf16_backward.subops}
+    dispatch_bwd_ops = {op.name: op for op in dispatch_backward.subops}
+    for name in (
+        "dy_scatter",
+        "routed_mlp_down_one_expert_dgrad",
+        "routed_mlp_up_one_expert_dgrad",
+        "dy_gather",
+        "shared_mlp_up_dgrad",
+        "routed_mlp_down_one_expert_wgrad",
+        "routed_mlp_up_one_expert_wgrad",
+        "shared_mlp_up_wgrad",
+    ):
+        assert dispatch_bwd_ops[name].memory_bytes < bf16_bwd_ops[name].memory_bytes
+    for name in (
+        "shared_mlp_down_dgrad",
+        "swiglu_bwd",
+        "shared_mlp_down_wgrad",
+    ):
+        assert dispatch_bwd_ops[name].memory_bytes == bf16_bwd_ops[name].memory_bytes
 
 
 def test_compute_precision_changes_realized_runtime_under_unlimited_memory():
@@ -294,6 +361,7 @@ def test_family_presets_are_easy_to_override():
     qwen_4b = Qwen3Config.preset("4B", n_layers=12)
     qwen_32b = Qwen3Config.preset("32B", n_layers=36)
     moe = Qwen3MoEConfig.preset("30B-3B", top_k=4)
+    qwen_235b_moe = Qwen3MoEConfig.preset("235B-A22B", n_layers=8)
     olmoe = OLMoEConfig.preset("7B-1B", top_k=4)
     qwen_hybrid = QwenHybridDenseConfig.preset("9B", n_layers=12)
     qwen_hybrid_moe = QwenHybridMoEConfig.preset("397B-A17B", top_k=8)
@@ -310,6 +378,9 @@ def test_family_presets_are_easy_to_override():
     assert qwen_32b.n_layers == 36
     assert moe.top_k == 4
     assert moe.preset_name == "qwen3_moe_30B-3B"
+    assert qwen_235b_moe.preset_name == "qwen3_moe_235B-A22B"
+    assert qwen_235b_moe.n_layers == 8
+    assert qwen_235b_moe.d_model == 4096
     assert olmoe.preset_name == "olmoe_7B-1B"
     assert olmoe.top_k == 4
     assert qwen_hybrid.preset_name == "qwen3_5_9B"
@@ -331,6 +402,7 @@ def test_family_presets_are_easy_to_override():
 
 def test_new_family_public_preset_values_match_source_configs():
     qwen_dense = QwenHybridDenseConfig.preset("qwen3_5_27B")
+    qwen3_moe = Qwen3MoEConfig.preset("qwen3_moe_235B-A22B")
     qwen_moe = QwenHybridMoEConfig.preset("qwen3_5_35B-A3B")
     qwen_large_moe = QwenHybridMoEConfig.preset("qwen3_5_397B-A17B")
     deepseek = DeepSeekV3Config.preset("671B-37B")
@@ -341,6 +413,14 @@ def test_new_family_public_preset_values_match_source_configs():
     assert qwen_dense.d_model == 5120
     assert qwen_dense.linear_num_value_heads == 48
     assert QwenHybridDenseConfig.preset("qwen3_6_27B").preset_name == "qwen3_5_27B"
+    assert qwen3_moe.vocab_size == 151_936
+    assert qwen3_moe.n_layers == 94
+    assert qwen3_moe.d_model == 4096
+    assert qwen3_moe.n_heads == 64
+    assert qwen3_moe.n_kv_heads == 4
+    assert qwen3_moe.expert_dim == 1536
+    assert qwen3_moe.num_routed_experts == 128
+    assert qwen3_moe.top_k == 8
     assert qwen_moe.n_layers == 40
     assert qwen_moe.expert_dim == 512
     assert qwen_moe.num_routed_experts == 256

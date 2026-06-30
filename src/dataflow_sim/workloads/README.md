@@ -82,7 +82,7 @@ Each layer spec provides:
 
 - `TrainingConfig`: `seqlen`, `num_seqs`, grad accumulation, steps, optimizer.
 - optional `input_shape`, which must equal `[seqlen * num_seqs, input_dim]`.
-- optional `DTypePolicy`, defaulting params/activations/gradients/optimizer
+- optional `DTypePolicy`, defaulting params/activations/parameter gradients/optimizer
   state to bf16.
 - optional recompute levels keyed by saved activation ids such as `A_0_0_3`.
 

@@ -97,6 +97,20 @@
         "is_causal": true,
         "qk_norm": true
     },
+    "qwen3_moe_235B-A22B": {
+        "vocab_size": 151936,
+        "n_layers": 94,
+        "d_model": 4096,
+        "head_dim": 128,
+        "n_heads": 64,
+        "n_kv_heads": 4,
+        "expert_dim": 1536,
+        "num_shared_experts": 0,
+        "num_routed_experts": 128,
+        "top_k": 8,
+        "is_causal": true,
+        "qk_norm": true
+    },
     "olmoe_7B-1B": {
         "vocab_size": 50304,
         "n_layers": 16,

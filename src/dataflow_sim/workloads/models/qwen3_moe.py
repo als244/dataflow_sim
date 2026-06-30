@@ -34,6 +34,12 @@ _ALIASES = {
     "qwen3_moe_30bx3b": "qwen3_moe_30B-3B",
     "qwen3_moe_30b-a3b": "qwen3_moe_30B-3B",
     "qwen3_moe_30B-3B": "qwen3_moe_30B-3B",
+    "235b-a22b": "qwen3_moe_235B-A22B",
+    "235b-22b": "qwen3_moe_235B-A22B",
+    "235b-a22B": "qwen3_moe_235B-A22B",
+    "qwen3_moe_235b-a22b": "qwen3_moe_235B-A22B",
+    "qwen3_moe_235b-22b": "qwen3_moe_235B-A22B",
+    "qwen3_moe_235B-A22B": "qwen3_moe_235B-A22B",
 }
 
 
@@ -45,7 +51,8 @@ class Qwen3MoEConfig(TransformerFamilyConfig):
         if key is None:
             raise ValueError(
                 f"unknown Qwen3 MoE scale {scale!r}; use a known preset or "
-                "start from Qwen3MoEConfig.preset('30B-3B', ...) with explicit overrides"
+                "start from Qwen3MoEConfig.preset('30B-3B', ...) or "
+                "Qwen3MoEConfig.preset('235B-A22B', ...) with explicit overrides"
             )
         return cls.from_model_dims(key, **overrides)
 

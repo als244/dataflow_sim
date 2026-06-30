@@ -276,7 +276,7 @@ class TrainingBuilder:
         - `training.tokens = seqlen * num_seqs` sets the first tensor dimension.
         - `input_shape`, when supplied, must be `[training.tokens, input_dim]`.
         - `dtype_policy` controls object sizes for params, activations,
-          gradients, and optimizer state; defaults are bf16.
+          parameter gradients, and optimizer state; defaults are bf16.
         - `recompute` maps saved activation ids like `A_0_0_3` to level 0/1.
         """
 
@@ -287,11 +287,11 @@ class TrainingBuilder:
         param_bytes = dtype_nbytes(policy.param)
         activation_bytes = dtype_nbytes(policy.activation)
         expert_dispatch_bytes = dtype_nbytes(policy.expert_dispatch)
-        grad_bytes = dtype_nbytes(policy.gradient)
+        param_grad_bytes = dtype_nbytes(policy.gradient)
         opt_bytes = dtype_nbytes(policy.optimizer_state)
         if any(
             value <= 0
-            for value in (param_bytes, activation_bytes, grad_bytes, opt_bytes)
+            for value in (param_bytes, activation_bytes, param_grad_bytes, opt_bytes)
         ) or expert_dispatch_bytes <= 0:
             raise ValueError("dtype byte sizes must be positive")
 
@@ -487,8 +487,8 @@ class TrainingBuilder:
                     tensor(
                         round_id("dy_head", k, j),
                         (tokens, self.head.input_dim),
-                        "gradient",
-                        policy.gradient,
+                        "activation",
+                        policy.activation,
                     )
                 ]
                 head_backward_mutates: list[TensorRef] = []
@@ -583,8 +583,8 @@ class TrainingBuilder:
                         tensor(
                             layer_round_id("dy", k, j, i),
                             (tokens, layer.input_dim),
-                            "gradient",
-                            policy.gradient,
+                            "activation",
+                            policy.activation,
                         )
                     ]
                     b_mutates: list[TensorRef] = []

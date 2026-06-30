@@ -297,6 +297,7 @@ def test_presets_include_only_public_model_workloads():
         "qwen3_8B": "qwen3",
         "qwen3_32B": "qwen3",
         "qwen3_moe_30B-3B": "qwen3_moe",
+        "qwen3_moe_235B-A22B": "qwen3_moe",
         "olmoe_7B-1B": "olmoe",
         "qwen3_5_9B": "qwen3_hybrid_dense",
         "qwen3_5_27B": "qwen3_hybrid_dense",

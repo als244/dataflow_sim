@@ -112,7 +112,7 @@ MODEL_FAMILIES: dict[str, ModelFamilyRegistryEntry] = {
         label="Qwen3 MoE",
         config_cls=Qwen3MoEConfig,
         builder_cls=Qwen3MoEForTraining,
-        presets=("qwen3_moe_30B-3B",),
+        presets=("qwen3_moe_30B-3B", "qwen3_moe_235B-A22B"),
         fields=BASE_FIELDS,
     ),
     "olmoe": ModelFamilyRegistryEntry(
