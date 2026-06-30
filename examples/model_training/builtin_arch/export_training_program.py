@@ -59,6 +59,8 @@ DIMENSION_ARGS = {
     "index_n_heads",
     "index_head_dim",
     "index_topk",
+    "index_topk_freq",
+    "index_skip_topk_offset",
     "train_indexer",
     "routed_scaling_factor",
     "scoring_func",
@@ -161,6 +163,8 @@ def main() -> None:
     parser.add_argument("--index-n-heads", dest="index_n_heads", type=int, default=None)
     parser.add_argument("--index-head-dim", dest="index_head_dim", type=int, default=None)
     parser.add_argument("--index-topk", dest="index_topk", type=int, default=None)
+    parser.add_argument("--index-topk-freq", dest="index_topk_freq", type=int, default=None)
+    parser.add_argument("--index-skip-topk-offset", dest="index_skip_topk_offset", type=int, default=None)
     parser.add_argument("--train-indexer", dest="train_indexer", action="store_true", default=None)
     parser.add_argument("--no-train-indexer", dest="train_indexer", action="store_false")
     parser.add_argument("--routed-scaling-factor", dest="routed_scaling_factor", type=float, default=None)

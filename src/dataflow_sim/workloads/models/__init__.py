@@ -8,6 +8,7 @@ from dataflow_sim.workloads.models.deepseek_v3_2 import (
     DeepSeekV32ForTraining,
 )
 from dataflow_sim.workloads.models.glm5 import GLM5Config, GLM5ForTraining
+from dataflow_sim.workloads.models.glm5_2 import GLM52Config, GLM52ForTraining
 from dataflow_sim.workloads.models.kimi_k2 import KimiK2Config, KimiK2ForTraining
 from dataflow_sim.workloads.models.gpt_oss import GPTOSSConfig, GPTOSSForTraining
 from dataflow_sim.workloads.models.llama3 import Llama3Config, Llama3ForTraining
@@ -31,6 +32,8 @@ __all__ = [
     "DeepSeekV32ForTraining",
     "GLM5Config",
     "GLM5ForTraining",
+    "GLM52Config",
+    "GLM52ForTraining",
     "KimiK2Config",
     "KimiK2ForTraining",
     "GPTOSSConfig",

@@ -39,11 +39,14 @@ The webapp hides family-specific fields when they do not apply. Expert dtype
 controls appear only for MoE families. Indexer dtype controls appear only for
 DeepSeek-V3.2-style DSA families.
 
-DeepSeek-V3.2 also exposes a model-architecture checkbox, **Train Indexer**.
-When unchecked, forward index scoring still runs to select sparse KV entries,
-but indexer score backward, indexer projection wgrads, indexer optimizer state,
-and selected indexer-score context in `A_*` are omitted. The dense quadratic
-score tensor is never materialized in either mode.
+DeepSeek-V3.2-style families also expose a model-architecture checkbox,
+**Train Indexer**. When unchecked, forward index scoring still runs to select
+sparse KV entries, but indexer score backward, indexer projection wgrads,
+indexer optimizer state, and selected indexer-score context in `A_*` are
+omitted. GLM-5.2 IndexShare additionally has shared-index layers that reuse
+sparse positions from full-index layers; those shared layers omit indexer
+projection/scoring costs and do not add a repeated selected-index object in v1.
+The dense quadratic score tensor is never materialized in any mode.
 
 ## Object Sizing
 
@@ -79,6 +82,9 @@ dense quadratic score tensor is assumed to be streamed by the Lightning Indexer
 kernel and is not part of `A_*`. Other saved context in the same `A_*` object
 follows Activation DType, except saved indexer q/k/w activation lanes, which
 follow Indexer Activation DType.
+
+For GLM-5.2 IndexShare shared-index layers, this selected-state addend is
+omitted. Full-index GLM-5.2 layers follow the DeepSeek-V3.2 sizing above.
 
 ## MoE Expert Dispatch
 

@@ -26,6 +26,7 @@ from dataflow_sim.workloads.models.qwen3_moe import Qwen3MoEConfig, Qwen3MoEForT
 from dataflow_sim.workloads.models.deepseek_v3 import DeepSeekV3Config, DeepSeekV3ForTraining
 from dataflow_sim.workloads.models.deepseek_v3_2 import DeepSeekV32Config, DeepSeekV32ForTraining
 from dataflow_sim.workloads.models.glm5 import GLM5Config, GLM5ForTraining
+from dataflow_sim.workloads.models.glm5_2 import GLM52Config, GLM52ForTraining
 from dataflow_sim.workloads.models.gpt_oss import GPTOSSConfig, GPTOSSForTraining
 from dataflow_sim.workloads.models.kimi_k2 import KimiK2Config, KimiK2ForTraining
 from dataflow_sim.workloads.models.nemotron_h import NemotronHConfig, NemotronHForTraining
@@ -380,6 +381,7 @@ def test_family_presets_are_easy_to_override():
     deepseek_v32 = DeepSeekV32Config.preset("671B-37B", n_layers=4)
     glm5 = GLM5Config.preset("5", n_layers=4)
     glm51 = DeepSeekV32Config.preset("glm-5.1", n_layers=4)
+    glm52 = GLM52Config.preset("5.2", n_layers=4)
     kimi = KimiK2Config.preset("1T-32B", first_k_dense_replace=2)
     nemotron = NemotronHConfig.preset("nano", n_layers=4, hybrid_override_pattern="M*E-")
     gpt_oss = GPTOSSConfig.preset("20B", n_layers=4)
@@ -419,6 +421,9 @@ def test_family_presets_are_easy_to_override():
     assert GLM5ForTraining(glm5).family_name == "deepseek_v3_2"
     assert glm51.preset_name == "glm_5_744B-40B"
     assert glm51.n_layers == 4
+    assert glm52.preset_name == "glm_5_2_744B-40B"
+    assert glm52.n_layers == 4
+    assert glm52.indexer_modes() == ("full", "full", "full", "shared")
     assert kimi.preset_name == "kimi_k2_1T-32B"
     assert kimi.first_k_dense_replace == 2
     assert KimiK2ForTraining(kimi).family_name == "deepseek_v3"
@@ -444,6 +449,7 @@ def test_new_family_public_preset_values_match_source_configs():
     deepseek_v32 = DeepSeekV32Config.preset("671B-37B")
     glm5 = GLM5Config.preset("5")
     glm51 = GLM5Config.preset("5.1")
+    glm52 = GLM52Config.preset("5.2")
     kimi = KimiK2Config.preset("1T-32B")
     nemotron_nano = NemotronHConfig.preset("nano")
     nemotron_super = NemotronHConfig.preset("super")
@@ -514,6 +520,35 @@ def test_new_family_public_preset_values_match_source_configs():
     assert glm5.index_head_dim == 128
     assert glm5.index_topk == 2048
     assert glm51 == glm5
+    assert glm52.vocab_size == 154_880
+    assert glm52.n_layers == 78
+    assert glm52.first_k_dense_replace == 3
+    assert glm52.d_model == 6144
+    assert glm52.head_dim == 192
+    assert glm52.n_heads == 64
+    assert glm52.n_kv_heads == 64
+    assert glm52.intermediate_size == 12_288
+    assert glm52.expert_dim == 2048
+    assert glm52.num_routed_experts == 256
+    assert glm52.num_shared_experts == 1
+    assert glm52.top_k == 8
+    assert glm52.q_lora_rank == 2048
+    assert glm52.kv_lora_rank == 512
+    assert glm52.qk_nope_head_dim == 192
+    assert glm52.qk_rope_head_dim == 64
+    assert glm52.v_head_dim == 256
+    assert glm52.index_n_heads == 32
+    assert glm52.index_head_dim == 128
+    assert glm52.index_topk == 2048
+    assert glm52.index_topk_freq == 4
+    assert glm52.index_skip_topk_offset == 3
+    glm52_modes = glm52.indexer_modes()
+    assert len(glm52_modes) == 78
+    assert glm52_modes.count("full") == 21
+    assert glm52_modes.count("shared") == 57
+    assert [i for i, mode in enumerate(glm52_modes) if mode == "full"] == [
+        0, 1, 2, 6, 10, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62, 66, 70, 74
+    ]
     assert kimi.vocab_size == 163_840
     assert kimi.n_heads == 64
     assert kimi.num_routed_experts == 384
@@ -1098,6 +1133,98 @@ def test_deepseek_v32_modules_emit_expected_subop_chains_blocks_and_indexer_dtyp
     frozen_objects = {obj.id: obj.size_bytes for obj in frozen_program.objects}
     assert frozen_objects["W_0"] == default_objects["W_0"]
     assert frozen_objects["O_0"] < default_objects["O_0"]
+
+
+def test_glm52_indexshare_blocks_skip_shared_indexer_work():
+    config = GLM52Config.preset(
+        "5.2",
+        n_layers=8,
+        first_k_dense_replace=3,
+        d_model=256,
+        n_heads=4,
+        n_kv_heads=4,
+        intermediate_size=512,
+        expert_dim=128,
+        num_routed_experts=8,
+        top_k=2,
+        vocab_size=4096,
+        q_lora_rank=64,
+        kv_lora_rank=32,
+        qk_nope_head_dim=32,
+        qk_rope_head_dim=16,
+        v_head_dim=32,
+        head_dim=48,
+        index_n_heads=2,
+        index_head_dim=16,
+        index_topk=4,
+        index_topk_freq=4,
+        index_skip_topk_offset=3,
+    )
+    assert config.indexer_modes() == (
+        "full",
+        "full",
+        "full",
+        "shared",
+        "shared",
+        "shared",
+        "full",
+        "shared",
+    )
+
+    model = GLM52ForTraining(config)
+    program = model.build_training_program(
+        TrainingConfig(seqlen=16, num_seqs=1, optimizer="adamw")
+    )
+    blocks = _blocks_by_key(program)
+    task_counts = {
+        key: sum(1 for task in program.tasks if task.compute_block_key == key)
+        for key in _block_keys(program)
+    }
+    assert task_counts["glm_5_2.dense_full_index_block.forward"] == 3
+    assert task_counts["glm_5_2.moe_full_index_block.forward"] == 1
+    assert task_counts["glm_5_2.moe_shared_index_block.forward"] == 4
+    assert task_counts["glm_5_2.moe_shared_index_block.backward"] == 4
+
+    assert blocks["glm_5_2.dense_full_index_block.forward"].name == (
+        "GLM-5.2 Dense Full-Index Block Forward"
+    )
+    assert blocks["glm_5_2.moe_full_index_block.forward"].name == (
+        "GLM-5.2 MoE Full-Index Block Forward"
+    )
+    assert blocks["glm_5_2.moe_shared_index_block.forward"].name == (
+        "GLM-5.2 MoE Shared-Index Block Forward"
+    )
+
+    full_forward_names = [
+        op.name for op in blocks["glm_5_2.moe_full_index_block.forward"].subops
+    ]
+    shared_forward_names = [
+        op.name for op in blocks["glm_5_2.moe_shared_index_block.forward"].subops
+    ]
+    shared_backward_names = [
+        op.name for op in blocks["glm_5_2.moe_shared_index_block.backward"].subops
+    ]
+
+    assert "lightning_index_score" in full_forward_names
+    assert "index_q_b_proj" in full_forward_names
+    assert "dsa_sparse_attn" in shared_forward_names
+    assert "lightning_index_score" not in shared_forward_names
+    assert "index_q_b_proj" not in shared_forward_names
+    assert "index_k_proj" not in shared_forward_names
+    assert "index_weight_proj" not in shared_forward_names
+    assert "lightning_index_score_bwd" not in shared_backward_names
+    assert not any(name.startswith("index_") for name in shared_backward_names)
+
+    indexer_matrix_params = (
+        config.q_lora_rank * config.index_n_heads * config.index_head_dim
+        + config.d_model * config.index_head_dim
+        + config.d_model * config.index_n_heads
+    )
+    assert model.layers[6].param_count - model.layers[7].param_count == indexer_matrix_params
+    assert (
+        model.layers[6].gradient_param_count - model.layers[7].gradient_param_count
+        == indexer_matrix_params
+    )
 
 
 def test_gpt_oss_modules_emit_expected_subop_chains_and_block_keys():

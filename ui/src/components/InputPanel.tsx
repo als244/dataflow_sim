@@ -11,6 +11,7 @@ export type ModelFamily =
   | "qwen3_hybrid_moe"
   | "deepseek_v3"
   | "deepseek_v3_2"
+  | "glm_5_2"
   | "gpt_oss"
   | "nemotron_h";
 
@@ -63,6 +64,8 @@ export interface ModelParams {
   index_n_heads?: number;
   index_head_dim?: number;
   index_topk?: number;
+  index_topk_freq?: number;
+  index_skip_topk_offset?: number;
   train_indexer?: boolean;
   routed_scaling_factor?: number;
   scoring_func?: string;
@@ -394,6 +397,7 @@ const MODEL_FAMILY_OPTIONS: { value: ModelFamily; label: string }[] = [
   { value: "qwen3_hybrid_moe", label: "Qwen3.5/3.6 MoE" },
   { value: "deepseek_v3", label: "DeepSeek-V3" },
   { value: "deepseek_v3_2", label: "DeepSeek-V3.2" },
+  { value: "glm_5_2", label: "GLM-5.2 IndexShare" },
   { value: "gpt_oss", label: "GPT-OSS" },
   { value: "nemotron_h", label: "NVIDIA Nemotron 3" },
 ];

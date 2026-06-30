@@ -43,8 +43,9 @@ The modular path is dependency-free:
   `workloads.models.qwen3_moe`, `workloads.models.olmoe`,
   `workloads.models.qwen3_hybrid_dense`, `workloads.models.qwen3_hybrid_moe`,
   `workloads.models.deepseek_v3`, `workloads.models.deepseek_v3_2`,
-  `workloads.models.glm5`, `workloads.models.gpt_oss`, and
-  `workloads.models.nemotron_h` define real model workloads with
+  `workloads.models.glm5`, `workloads.models.glm5_2`,
+  `workloads.models.gpt_oss`, and `workloads.models.nemotron_h` define real
+  model workloads with
   preset-plus-overrides config APIs. Each model file
   constructs its ordered module list explicitly.
 - `workloads.training_builder` schedules a model-authored module list into

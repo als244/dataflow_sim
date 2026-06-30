@@ -4,17 +4,24 @@ from __future__ import annotations
 from dataflow_sim.workloads.dataflow import DataflowCost
 from dataflow_sim.workloads.dataflow_builder import DataflowModule, OpDTypePolicy
 from dataflow_sim.workloads.modules.deepseek_v3_2_dimensions import DeepSeekV32Dimensions
-from dataflow_sim.workloads.modules.dsa_sparse_attention import DSASparseAttention
+from dataflow_sim.workloads.modules.dsa_sparse_attention import DSASparseAttention, IndexerMode
 from dataflow_sim.workloads.modules.mlp import SwiGLUMLP
 from dataflow_sim.workloads.modules.moe import MoE
 
 
 class DeepSeekV32Block(DataflowModule):
-    def __init__(self, dims: DeepSeekV32Dimensions, *, dense_ffn: bool) -> None:
+    def __init__(
+        self,
+        dims: DeepSeekV32Dimensions,
+        *,
+        dense_ffn: bool,
+        indexer_mode: IndexerMode = "full",
+    ) -> None:
         super().__init__(name="DeepSeekV32Block")
         self.dims = dims
         self.dense_ffn = dense_ffn
-        self.attention = DSASparseAttention(dims)
+        self.indexer_mode = indexer_mode
+        self.attention = DSASparseAttention(dims, indexer_mode=indexer_mode)
         ffn_dims = dims.ffn_dimensions(dense=dense_ffn)
         self.feed_forward = SwiGLUMLP(ffn_dims) if dense_ffn else MoE(ffn_dims)
 

@@ -13,7 +13,7 @@ After that, examples can be run with plain `python` commands.
 | Path | Use when | Output |
 | --- | --- | --- |
 | `generic_dataflow/` | You already know the ordered compute and memory objects. | Uploadable `DataflowProgram v1` JSON. |
-| `model_training/builtin_arch/` | You want a built-in Llama/Qwen/OLMoE/DeepSeek/Kimi/GPT-OSS/Nemotron training workload with preset-plus-overrides dimensions. | Uploadable `DataflowProgram v1` JSON. |
+| `model_training/builtin_arch/` | You want a built-in Llama/Qwen/OLMoE/DeepSeek/Kimi/GLM/GPT-OSS/Nemotron training workload with preset-plus-overrides dimensions. | Uploadable `DataflowProgram v1` JSON. |
 | `model_training/custom_arch/` | You want to add custom ops, modules, and a custom trainable architecture. | Uploadable program, bare plan, annotated plan, and summary metrics. |
 
 ## Generic Dataflow Program

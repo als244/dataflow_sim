@@ -65,6 +65,7 @@ ModelFamily = Literal[
     "qwen3_hybrid_moe",
     "deepseek_v3",
     "deepseek_v3_2",
+    "glm_5_2",
     "gpt_oss",
     "nemotron_h",
 ]
@@ -119,6 +120,8 @@ class ModelParams(BaseModel):
     index_n_heads: int = Field(1, ge=1)
     index_head_dim: int = Field(1, ge=1)
     index_topk: int = Field(1, ge=1)
+    index_topk_freq: int = Field(4, ge=1)
+    index_skip_topk_offset: int = Field(3, ge=0)
     train_indexer: bool = Field(True)
     routed_scaling_factor: float = Field(1.0, ge=0)
     scoring_func: str = "sigmoid"

@@ -86,6 +86,7 @@ examples are:
 - `deepseek_v3.py`
 - `deepseek_v3_2.py`
 - `glm5.py`
+- `glm5_2.py`
 - `gpt_oss.py`
 - `nemotron_h.py`
 

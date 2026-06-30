@@ -1,6 +1,8 @@
 """DeepSeek-V3.2 DeepSeek Sparse Attention module."""
 from __future__ import annotations
 
+from typing import Literal
+
 from dataflow_sim.workloads.dataflow import DataflowCost
 from dataflow_sim.workloads.dataflow_builder import DataflowModule, OpDTypePolicy
 from dataflow_sim.workloads.modules.deepseek_v3_2_dimensions import DeepSeekV32Dimensions
@@ -8,10 +10,16 @@ from dataflow_sim.workloads.ops import backward as bwd
 from dataflow_sim.workloads.ops import forward as fwd
 
 
+IndexerMode = Literal["full", "shared"]
+
+
 class DSASparseAttention(DataflowModule):
-    def __init__(self, dims: DeepSeekV32Dimensions) -> None:
+    def __init__(self, dims: DeepSeekV32Dimensions, *, indexer_mode: IndexerMode = "full") -> None:
         super().__init__(name="DSASparseAttention")
+        if indexer_mode not in ("full", "shared"):
+            raise ValueError(f"unknown DSA indexer mode: {indexer_mode!r}")
         self.dims = dims
+        self.indexer_mode = indexer_mode
 
     @staticmethod
     def _policy(bytes_per_element: float | OpDTypePolicy) -> OpDTypePolicy:
@@ -30,7 +38,7 @@ class DSASparseAttention(DataflowModule):
     ) -> list[DataflowCost]:
         dims = self.dims
         policy = self._policy(bytes_per_element)
-        return [
+        ops = [
             fwd.rms_norm("attn_norm", tokens=tokens, dim=dims.d_model, bytes_per_element=policy.activation_bpe),
             fwd.matmul(
                 "q_a_proj",
@@ -50,40 +58,47 @@ class DSASparseAttention(DataflowModule):
                 output_dim=dims.q_dim,
                 bytes_per_element=policy,
             ),
-            fwd.matmul(
-                "index_q_b_proj",
-                tokens=tokens,
-                input_dim=dims.q_lora_rank,
-                output_dim=dims.index_q_dim,
-                bytes_per_element=policy,
-                output_bytes_per_element=policy.indexer_activation_bpe,
-            ),
-            fwd.matmul(
-                "index_k_proj",
-                tokens=tokens,
-                input_dim=dims.d_model,
-                output_dim=dims.index_head_dim,
-                bytes_per_element=policy,
-                output_bytes_per_element=policy.indexer_activation_bpe,
-            ),
-            fwd.matmul(
-                "index_weight_proj",
-                tokens=tokens,
-                input_dim=dims.d_model,
-                output_dim=dims.index_n_heads,
-                bytes_per_element=policy,
-                output_bytes_per_element=policy.indexer_activation_bpe,
-            ),
-            fwd.lightning_index_score(
-                "lightning_index_score",
-                tokens=tokens,
-                index_n_heads=dims.index_n_heads,
-                index_head_dim=dims.index_head_dim,
-                index_topk=dims.index_topk,
-                seqlen=seqlen,
-                bytes_per_element=policy,
-                save_selected_scores=dims.train_indexer,
-            ),
+        ]
+        if self.indexer_mode == "full":
+            ops.extend(
+                [
+                    fwd.matmul(
+                        "index_q_b_proj",
+                        tokens=tokens,
+                        input_dim=dims.q_lora_rank,
+                        output_dim=dims.index_q_dim,
+                        bytes_per_element=policy,
+                        output_bytes_per_element=policy.indexer_activation_bpe,
+                    ),
+                    fwd.matmul(
+                        "index_k_proj",
+                        tokens=tokens,
+                        input_dim=dims.d_model,
+                        output_dim=dims.index_head_dim,
+                        bytes_per_element=policy,
+                        output_bytes_per_element=policy.indexer_activation_bpe,
+                    ),
+                    fwd.matmul(
+                        "index_weight_proj",
+                        tokens=tokens,
+                        input_dim=dims.d_model,
+                        output_dim=dims.index_n_heads,
+                        bytes_per_element=policy,
+                        output_bytes_per_element=policy.indexer_activation_bpe,
+                    ),
+                    fwd.lightning_index_score(
+                        "lightning_index_score",
+                        tokens=tokens,
+                        index_n_heads=dims.index_n_heads,
+                        index_head_dim=dims.index_head_dim,
+                        index_topk=dims.index_topk,
+                        seqlen=seqlen,
+                        bytes_per_element=policy,
+                        save_selected_scores=dims.train_indexer,
+                    ),
+                ]
+            )
+        ops.extend([
             fwd.matmul(
                 "kv_a_proj_with_mqa",
                 tokens=tokens,
@@ -128,7 +143,8 @@ class DSASparseAttention(DataflowModule):
                 bytes_per_element=policy,
                 accumulate=True,
             ),
-        ]
+        ])
+        return ops
 
     def dgrad_ops(
         self,
@@ -159,7 +175,7 @@ class DSASparseAttention(DataflowModule):
                 bytes_per_element=policy.activation_bpe,
             ),
         ]
-        if dims.train_indexer:
+        if self.indexer_mode == "full" and dims.train_indexer:
             ops.append(
                 bwd.lightning_index_score_grad(
                     "lightning_index_score_bwd",
@@ -264,7 +280,7 @@ class DSASparseAttention(DataflowModule):
                 bytes_per_element=policy,
             ),
         ]
-        if dims.train_indexer:
+        if self.indexer_mode == "full" and dims.train_indexer:
             ops.extend([
                 bwd.matmul_weight_grad(
                     "index_q_b_proj_wgrad",

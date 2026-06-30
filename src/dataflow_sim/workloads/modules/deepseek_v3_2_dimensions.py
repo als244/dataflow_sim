@@ -119,20 +119,36 @@ class DeepSeekV32Dimensions:
         add("routed_mlp_down", ffn_dims.expert_dim, ffn_dims.d_model, ffn_dims.num_routed_experts, expert=is_moe)
         return matrices
 
-    def layer_matrices(self, *, dense: bool, trainable_only: bool = False) -> list[opt_ops.OptimizerMatrix]:
-        include_indexer = self.train_indexer or not trainable_only
-        return self.attention_matrices(include_indexer=include_indexer) + self.ffn_matrices(dense=dense)
-
-    def params_per_layer(self, *, dense: bool) -> int:
-        return sum(matrix.rows * matrix.cols * matrix.count for matrix in self.layer_matrices(dense=dense))
-
-    def trainable_params_per_layer(self, *, dense: bool) -> int:
-        return sum(
-            matrix.rows * matrix.cols * matrix.count
-            for matrix in self.layer_matrices(dense=dense, trainable_only=True)
+    def layer_matrices(
+        self,
+        *,
+        dense: bool,
+        trainable_only: bool = False,
+        include_indexer: bool = True,
+    ) -> list[opt_ops.OptimizerMatrix]:
+        include_indexer_matrices = include_indexer and (self.train_indexer or not trainable_only)
+        return (
+            self.attention_matrices(include_indexer=include_indexer_matrices)
+            + self.ffn_matrices(dense=dense)
         )
 
-    def saved_activation_width(self, *, dense: bool) -> int:
+    def params_per_layer(self, *, dense: bool, include_indexer: bool = True) -> int:
+        return sum(
+            matrix.rows * matrix.cols * matrix.count
+            for matrix in self.layer_matrices(dense=dense, include_indexer=include_indexer)
+        )
+
+    def trainable_params_per_layer(self, *, dense: bool, include_indexer: bool = True) -> int:
+        return sum(
+            matrix.rows * matrix.cols * matrix.count
+            for matrix in self.layer_matrices(
+                dense=dense,
+                trainable_only=True,
+                include_indexer=include_indexer,
+            )
+        )
+
+    def saved_activation_width(self, *, dense: bool, include_indexer: bool = True) -> int:
         ffn_dims = self.ffn_dimensions(dense=dense)
         ffn_width = 2 * (ffn_dims.num_shared_experts + ffn_dims.top_k) * ffn_dims.expert_dim
         attn_width = (
@@ -143,7 +159,7 @@ class DeepSeekV32Dimensions:
             + self.n_heads * (self.qk_nope_head_dim + self.v_head_dim)
             + self.o_dim
         )
-        if self.train_indexer:
+        if include_indexer and self.train_indexer:
             attn_width += self.indexer_saved_activation_width()
         return attn_width + 2 * self.d_model + ffn_width
 
@@ -152,9 +168,20 @@ class DeepSeekV32Dimensions:
             return 0
         return self.index_q_dim + self.index_head_dim + self.index_n_heads
 
-    def saved_activation_bytes(self, *, tokens: int, seqlen: int, dense: bool, policy: DTypePolicy) -> int:
-        indexer_width = self.indexer_saved_activation_width()
-        regular_width = self.saved_activation_width(dense=dense) - indexer_width
+    def saved_activation_bytes(
+        self,
+        *,
+        tokens: int,
+        seqlen: int,
+        dense: bool,
+        policy: DTypePolicy,
+        include_indexer: bool = True,
+    ) -> int:
+        indexer_width = self.indexer_saved_activation_width() if include_indexer else 0
+        regular_width = self.saved_activation_width(
+            dense=dense,
+            include_indexer=include_indexer,
+        ) - indexer_width
         activation_bytes = (
             tokens
             * regular_width
@@ -165,12 +192,14 @@ class DeepSeekV32Dimensions:
             * indexer_width
             * dtype_nbytes(policy.indexer_activation)
         )
-        selected_terms = topk_attention_score_terms(
-            tokens,
-            top_k=self.index_topk,
-            seqlen=seqlen,
-        )
-        selection_bytes = selected_terms * INDEX_BYTES
-        if self.train_indexer:
-            selection_bytes += selected_terms * dtype_nbytes(policy.indexer_activation)
+        selection_bytes = 0
+        if include_indexer:
+            selected_terms = topk_attention_score_terms(
+                tokens,
+                top_k=self.index_topk,
+                seqlen=seqlen,
+            )
+            selection_bytes = selected_terms * INDEX_BYTES
+            if self.train_indexer:
+                selection_bytes += selected_terms * dtype_nbytes(policy.indexer_activation)
         return math.ceil(activation_bytes + indexer_activation_bytes + selection_bytes)

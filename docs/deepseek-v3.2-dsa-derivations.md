@@ -21,6 +21,9 @@ same major-op style as the existing model families.
 - `V`: value head dimension.
 - `train_indexer`: whether the Lightning Indexer projection/scoring branch is
   trained. Forward sparse selection always runs either way.
+- `indexer_mode`: `full` for layers that compute Lightning Indexer projections,
+  scores, and selected sparse positions; `shared` for GLM-5.2 IndexShare layers
+  that reuse positions from a previous full-index layer.
 
 ## Training Stage Assumptions
 
@@ -42,6 +45,17 @@ dense_warmup_indexer_bwd_effective_flops = 4 * S * Hi * Di
 That mode would also save or recompute dense-score loss state differently. It is
 not emitted by the current built-in DeepSeek-V3.2 training preset.
 
+GLM-5.2 uses the same DSA sparse-attention core with IndexShare. In the public
+744B-40B preset, 21 of 78 layers are `full` indexer layers and 57 are `shared`
+indexer layers. The first three dense-prefix layers are full-index layers; in
+the sparse suffix, the first full-index layer appears at offset 3 and then
+every four layers. Shared-index layers emit the sparse DSA attention core, but
+skip Lightning Indexer projection, score, score backward, indexer projection
+wgrad, indexer parameter, indexer optimizer-state, and indexer saved-activation
+costs. The v1 builder also omits an explicit shared selected-index dependency
+or object for those layers because it is small compared with score and sparse
+attention math.
+
 ## Forward
 
 Projection matmuls are emitted as regular matmul sub-ops:
@@ -56,6 +70,10 @@ kv_a_proj_with_mqa:  2 * T * D  * (KL + Qr)
 kv_b_proj:           2 * T * KL * H * (Qn + V)
 o_proj:              2 * T * H * V * D
 ```
+
+For `indexer_mode=shared`, the three `index_*_proj` matmuls and
+`lightning_index_score` are not emitted. The later MLA/DSA projection and
+sparse attention terms are unchanged.
 
 The Lightning Indexer score is modeled as the quadratic scoring matmul:
 
@@ -164,3 +182,8 @@ to the normal activation-context estimate for each DeepSeek-V3.2 DSA block.
 The builder never adds the dense quadratic `S * Hi` score tensor to `A_*`.
 With `train_indexer=false`, selected indices remain saved for sparse attention
 backward, but selected indexer scores are omitted from `A_*`.
+
+For GLM-5.2 `indexer_mode=shared` layers, the whole selected-state addend above
+is omitted in v1. This models the shared sparse positions as a small dependency
+from an earlier full-index layer rather than as a repeated per-layer activation
+object.

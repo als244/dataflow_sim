@@ -310,6 +310,7 @@ def test_presets_include_only_public_model_workloads():
         "deepseek_v3_671B-37B": "deepseek_v3",
         "deepseek_v3_2_671B-37B": "deepseek_v3_2",
         "glm_5_744B-40B": "deepseek_v3_2",
+        "glm_5_2_744B-40B": "glm_5_2",
         "kimi_k2_1T-32B": "deepseek_v3",
         "gpt_oss_20B": "gpt_oss",
         "gpt_oss_120B": "gpt_oss",
@@ -345,6 +346,7 @@ def test_presets_include_only_public_model_workloads():
         "qwen3_hybrid_moe",
         "deepseek_v3",
         "deepseek_v3_2",
+        "glm_5_2",
         "gpt_oss",
         "nemotron_h",
     }
@@ -359,6 +361,10 @@ def test_presets_include_only_public_model_workloads():
     deepseek_v32_fields = {
         field["key"]
         for field in body["model_families"]["deepseek_v3_2"]["fields"]
+    }
+    glm52_fields = {
+        field["key"]
+        for field in body["model_families"]["glm_5_2"]["fields"]
     }
     nemotron_fields = {
         field["key"]
@@ -379,7 +385,11 @@ def test_presets_include_only_public_model_workloads():
     assert "index_head_dim" in deepseek_v32_fields
     assert "index_topk" in deepseek_v32_fields
     assert "train_indexer" in deepseek_v32_fields
+    assert "index_topk_freq" in glm52_fields
+    assert "index_skip_topk_offset" in glm52_fields
     assert body["workloads"]["deepseek_v3_2_671B-37B"]["model"]["train_indexer"] is True
+    assert body["workloads"]["glm_5_2_744B-40B"]["model"]["index_topk_freq"] == 4
+    assert body["workloads"]["glm_5_2_744B-40B"]["model"]["index_skip_topk_offset"] == 3
     assert body["model_families"]["llama3"]["capabilities"] == {
         "has_moe": False,
         "has_indexer": False,
@@ -389,6 +399,10 @@ def test_presets_include_only_public_model_workloads():
         "has_indexer": False,
     }
     assert body["model_families"]["deepseek_v3_2"]["capabilities"] == {
+        "has_moe": True,
+        "has_indexer": True,
+    }
+    assert body["model_families"]["glm_5_2"]["capabilities"] == {
         "has_moe": True,
         "has_indexer": True,
     }

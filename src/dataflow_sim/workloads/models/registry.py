@@ -6,6 +6,7 @@ from typing import Any
 
 from dataflow_sim.workloads.models.deepseek_v3 import DeepSeekV3Config, DeepSeekV3ForTraining
 from dataflow_sim.workloads.models.deepseek_v3_2 import DeepSeekV32Config, DeepSeekV32ForTraining
+from dataflow_sim.workloads.models.glm5_2 import GLM52Config, GLM52ForTraining
 from dataflow_sim.workloads.models.gpt_oss import GPTOSSConfig, GPTOSSForTraining
 from dataflow_sim.workloads.models.llama3 import Llama3Config, Llama3ForTraining
 from dataflow_sim.workloads.models.nemotron_h import NemotronHConfig, NemotronHForTraining
@@ -106,6 +107,11 @@ DEEPSEEK_V32_FIELDS = DEEPSEEK_FIELDS + (
     ModelFieldDescriptor("train_indexer", "Train Indexer", kind="boolean", min=None, step=None, advanced=True),
 )
 
+GLM52_FIELDS = DEEPSEEK_V32_FIELDS + (
+    ModelFieldDescriptor("index_topk_freq", "IndexShare Frequency", min=1, advanced=True),
+    ModelFieldDescriptor("index_skip_topk_offset", "IndexShare Offset", min=0, advanced=True),
+)
+
 NEMOTRON_FIELDS = BASE_FIELDS + (
     ModelFieldDescriptor("shared_expert_dim", "Shared Expert Dim", min=0),
     ModelFieldDescriptor("intermediate_size", "Dense Intermediate", min=0, advanced=True),
@@ -197,6 +203,16 @@ MODEL_FAMILIES: dict[str, ModelFamilyRegistryEntry] = {
             "glm_5_744B-40B",
         ),
         fields=DEEPSEEK_V32_FIELDS,
+        has_moe=True,
+        has_indexer=True,
+    ),
+    "glm_5_2": ModelFamilyRegistryEntry(
+        key="glm_5_2",
+        label="GLM-5.2 IndexShare",
+        config_cls=GLM52Config,
+        builder_cls=GLM52ForTraining,
+        presets=("glm_5_2_744B-40B",),
+        fields=GLM52_FIELDS,
         has_moe=True,
         has_indexer=True,
     ),
