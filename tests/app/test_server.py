@@ -309,6 +309,7 @@ def test_presets_include_only_public_model_workloads():
         "qwen3_5_397B-A17B": "qwen3_hybrid_moe",
         "deepseek_v3_671B-37B": "deepseek_v3",
         "deepseek_v3_2_671B-37B": "deepseek_v3_2",
+        "glm_5_744B-40B": "deepseek_v3_2",
         "kimi_k2_1T-32B": "deepseek_v3",
         "gpt_oss_20B": "gpt_oss",
         "gpt_oss_120B": "gpt_oss",

@@ -85,6 +85,7 @@ examples are:
 - `qwen3_hybrid_moe.py`
 - `deepseek_v3.py`
 - `deepseek_v3_2.py`
+- `glm5.py`
 - `gpt_oss.py`
 - `nemotron_h.py`
 

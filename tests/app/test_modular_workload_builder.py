@@ -25,6 +25,7 @@ from dataflow_sim.workloads.models.qwen3_hybrid_moe import (
 from dataflow_sim.workloads.models.qwen3_moe import Qwen3MoEConfig, Qwen3MoEForTraining
 from dataflow_sim.workloads.models.deepseek_v3 import DeepSeekV3Config, DeepSeekV3ForTraining
 from dataflow_sim.workloads.models.deepseek_v3_2 import DeepSeekV32Config, DeepSeekV32ForTraining
+from dataflow_sim.workloads.models.glm5 import GLM5Config, GLM5ForTraining
 from dataflow_sim.workloads.models.gpt_oss import GPTOSSConfig, GPTOSSForTraining
 from dataflow_sim.workloads.models.kimi_k2 import KimiK2Config, KimiK2ForTraining
 from dataflow_sim.workloads.models.nemotron_h import NemotronHConfig, NemotronHForTraining
@@ -377,6 +378,8 @@ def test_family_presets_are_easy_to_override():
     qwen_hybrid_moe = QwenHybridMoEConfig.preset("397B-A17B", top_k=8)
     deepseek = DeepSeekV3Config.preset("671B-37B", n_layers=4)
     deepseek_v32 = DeepSeekV32Config.preset("671B-37B", n_layers=4)
+    glm5 = GLM5Config.preset("5", n_layers=4)
+    glm51 = DeepSeekV32Config.preset("glm-5.1", n_layers=4)
     kimi = KimiK2Config.preset("1T-32B", first_k_dense_replace=2)
     nemotron = NemotronHConfig.preset("nano", n_layers=4, hybrid_override_pattern="M*E-")
     gpt_oss = GPTOSSConfig.preset("20B", n_layers=4)
@@ -411,6 +414,11 @@ def test_family_presets_are_easy_to_override():
     assert deepseek_v32.preset_name == "deepseek_v3_2_671B-37B"
     assert deepseek_v32.n_layers == 4
     assert DeepSeekV32ForTraining(deepseek_v32).family_name == "deepseek_v3_2"
+    assert glm5.preset_name == "glm_5_744B-40B"
+    assert glm5.n_layers == 4
+    assert GLM5ForTraining(glm5).family_name == "deepseek_v3_2"
+    assert glm51.preset_name == "glm_5_744B-40B"
+    assert glm51.n_layers == 4
     assert kimi.preset_name == "kimi_k2_1T-32B"
     assert kimi.first_k_dense_replace == 2
     assert KimiK2ForTraining(kimi).family_name == "deepseek_v3"
@@ -434,6 +442,8 @@ def test_new_family_public_preset_values_match_source_configs():
     qwen_large_moe = QwenHybridMoEConfig.preset("qwen3_5_397B-A17B")
     deepseek = DeepSeekV3Config.preset("671B-37B")
     deepseek_v32 = DeepSeekV32Config.preset("671B-37B")
+    glm5 = GLM5Config.preset("5")
+    glm51 = GLM5Config.preset("5.1")
     kimi = KimiK2Config.preset("1T-32B")
     nemotron_nano = NemotronHConfig.preset("nano")
     nemotron_super = NemotronHConfig.preset("super")
@@ -483,6 +493,27 @@ def test_new_family_public_preset_values_match_source_configs():
     assert deepseek_v32.index_n_heads == 64
     assert deepseek_v32.index_head_dim == 128
     assert deepseek_v32.index_topk == 2048
+    assert glm5.vocab_size == 154_880
+    assert glm5.n_layers == 78
+    assert glm5.first_k_dense_replace == 3
+    assert glm5.d_model == 6144
+    assert glm5.head_dim == 64
+    assert glm5.n_heads == 64
+    assert glm5.n_kv_heads == 64
+    assert glm5.intermediate_size == 12_288
+    assert glm5.expert_dim == 2048
+    assert glm5.num_routed_experts == 256
+    assert glm5.num_shared_experts == 1
+    assert glm5.top_k == 8
+    assert glm5.q_lora_rank == 2048
+    assert glm5.kv_lora_rank == 512
+    assert glm5.qk_nope_head_dim == 192
+    assert glm5.qk_rope_head_dim == 64
+    assert glm5.v_head_dim == 256
+    assert glm5.index_n_heads == 32
+    assert glm5.index_head_dim == 128
+    assert glm5.index_topk == 2048
+    assert glm51 == glm5
     assert kimi.vocab_size == 163_840
     assert kimi.n_heads == 64
     assert kimi.num_routed_experts == 384
@@ -982,6 +1013,37 @@ def test_deepseek_v32_modules_emit_expected_subop_chains_blocks_and_indexer_dtyp
     assert blocks["deepseek_v3_2.moe_suffix_block.forward"].name == (
         "DeepSeek-V3.2 MoE Block Forward"
     )
+
+    glm_program = GLM5ForTraining(
+        GLM5Config.preset(
+            "5",
+            n_layers=4,
+            first_k_dense_replace=1,
+            d_model=256,
+            n_heads=4,
+            n_kv_heads=4,
+            intermediate_size=512,
+            expert_dim=128,
+            num_routed_experts=8,
+            top_k=2,
+            vocab_size=4096,
+            q_lora_rank=64,
+            kv_lora_rank=32,
+            qk_nope_head_dim=32,
+            qk_rope_head_dim=16,
+            v_head_dim=32,
+            head_dim=48,
+            index_n_heads=2,
+            index_head_dim=16,
+            index_topk=4,
+        )
+    ).build_training_program(TrainingConfig(seqlen=16, num_seqs=1, optimizer="adamw"))
+    assert _block_keys(glm_program) >= {
+        "deepseek_v3_2.dense_prefix_block.forward",
+        "deepseek_v3_2.moe_suffix_block.forward",
+        "deepseek_v3_2.dense_prefix_block.backward",
+        "deepseek_v3_2.moe_suffix_block.backward",
+    }
 
     default_forward = blocks["deepseek_v3_2.dense_prefix_block.forward"]
     index_score = next(op for op in default_forward.subops if op.name == "lightning_index_score")

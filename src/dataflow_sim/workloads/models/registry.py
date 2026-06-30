@@ -192,7 +192,10 @@ MODEL_FAMILIES: dict[str, ModelFamilyRegistryEntry] = {
         label="DeepSeek-V3.2",
         config_cls=DeepSeekV32Config,
         builder_cls=DeepSeekV32ForTraining,
-        presets=("deepseek_v3_2_671B-37B",),
+        presets=(
+            "deepseek_v3_2_671B-37B",
+            "glm_5_744B-40B",
+        ),
         fields=DEEPSEEK_V32_FIELDS,
         has_moe=True,
         has_indexer=True,

@@ -2,7 +2,7 @@
 
 Use this example when you want a supported model family with preset-plus-
 override dimensions: Llama 3, Qwen3, Qwen3 MoE, OLMoE, Qwen3.5/3.6 hybrid,
-DeepSeek-V3/Kimi-K2, DeepSeek-V3.2, GPT-OSS, or NVIDIA Nemotron 3.
+DeepSeek-V3/Kimi-K2, DeepSeek-V3.2/GLM-5, GPT-OSS, or NVIDIA Nemotron 3.
 
 ## Contract
 

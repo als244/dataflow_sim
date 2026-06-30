@@ -56,6 +56,16 @@ _ALIASES = {
     "deepseek_v3_2": "deepseek_v3_2_671B-37B",
     "deepseek_v3_2_671b-37b": "deepseek_v3_2_671B-37B",
     "deepseek_v3_2_671B-37B": "deepseek_v3_2_671B-37B",
+    "glm-5": "glm_5_744B-40B",
+    "glm5": "glm_5_744B-40B",
+    "glm_5": "glm_5_744B-40B",
+    "glm_5_744b-40b": "glm_5_744B-40B",
+    "glm_5_744B-40B": "glm_5_744B-40B",
+    "glm-5.1": "glm_5_744B-40B",
+    "glm5.1": "glm_5_744B-40B",
+    "glm_5_1": "glm_5_744B-40B",
+    "glm_5_1_744b-40b": "glm_5_744B-40B",
+    "glm_5_1_744B-40B": "glm_5_744B-40B",
 }
 
 _FIELD_ALIASES = {
@@ -130,7 +140,8 @@ class DeepSeekV32Config:
         key = _ALIASES.get(scale, _ALIASES.get(scale.lower()))
         if key is None:
             raise ValueError(
-                f"unknown DeepSeek-V3.2 scale {scale!r}; use 671B-37B or a deepseek_v3_2_* preset key"
+                f"unknown DeepSeek-V3.2 scale {scale!r}; use 671B-37B, GLM-5, "
+                "GLM-5.1, or a deepseek_v3_2_* preset key"
             )
         return cls.from_model_dims(key, **overrides)
 
