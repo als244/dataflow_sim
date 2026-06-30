@@ -10,7 +10,12 @@ from dataflow_sim.app.server.main import (
 _MODEL_KEYS = {
     "family", "vocab_size", "n_layers", "d_model", "head_dim", "n_heads",
     "n_kv_heads", "expert_dim", "num_shared_experts", "num_routed_experts",
-    "top_k", "qk_norm",
+    "top_k", "qk_norm", "intermediate_size", "full_attention_interval",
+    "linear_num_key_heads", "linear_key_head_dim", "linear_num_value_heads",
+    "linear_value_head_dim", "linear_conv_kernel_dim", "gdn_chunk_size",
+    "router_aux_loss_coef", "mtp_num_hidden_layers", "first_k_dense_replace", "q_lora_rank",
+    "kv_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim", "v_head_dim",
+    "routed_scaling_factor", "scoring_func",
 }
 _TRAINING_KEYS = {
     "seqlen", "num_seqs", "grad_accum_rounds", "num_steps", "optimizer",
@@ -52,11 +57,15 @@ def _payload(**overrides):
         },
         "hardware": {
             "preset": "custom",
-            "peak_tflops": 100,
+            "peak_tflops_bf16": 100,
+            "peak_tflops_fp8": 200,
+            "peak_tflops_fp4": 400,
             "fast_memory_bw_gbs": 1000,
             "from_slow_bw_gbs": 100,
             "to_slow_bw_gbs": 100,
-            "matmul_eff": 0.8,
+            "matmul_eff_bf16": 0.8,
+            "matmul_eff_fp8": 0.8,
+            "matmul_eff_fp4": 0.8,
             "attn_fwd_eff": 0.8,
             "attn_bwd_eff": 0.8,
             "mem_eff": 0.9,
@@ -289,13 +298,82 @@ def test_presets_include_only_public_model_workloads():
         "qwen3_32B": "qwen3",
         "qwen3_moe_30B-3B": "qwen3_moe",
         "olmoe_7B-1B": "olmoe",
+        "qwen3_5_9B": "qwen3_hybrid_dense",
+        "qwen3_5_27B": "qwen3_hybrid_dense",
+        "qwen3_5_35B-A3B": "qwen3_hybrid_moe",
+        "qwen3_5_122B-A10B": "qwen3_hybrid_moe",
+        "qwen3_5_397B-A17B": "qwen3_hybrid_moe",
+        "deepseek_v3_671B-37B": "deepseek_v3",
+        "kimi_k2_1T-32B": "deepseek_v3",
     }
 
-    assert set(body["models"]) == set(expected_models)
     assert set(body["workloads"]) == set(expected_models)
+    assert list(body["workloads"]) == sorted(body["workloads"], key=str.lower)
+    assert body["workloads"]["llama3_8B"]["datatypes"] == {
+        "weight_dtype": "bf16",
+        "activation_dtype": "bf16",
+        "expert_dispatch_dtype": "bf16",
+        "gradient_dtype": "bf16",
+        "optimizer_dtype": "bf16",
+        "compute_precision": "bf16",
+        "expert_weight_dtype": "bf16",
+        "expert_compute_precision": "bf16",
+    }
     for name, family in expected_models.items():
-        assert body["models"][name]["family"] == family
+        assert body["workloads"][name]["model"]["family"] == family
         assert body["workloads"][name]["source"] == "model_training"
+
+    assert set(body["model_families"]) == {
+        "llama3",
+        "qwen3",
+        "qwen3_moe",
+        "olmoe",
+        "qwen3_hybrid_dense",
+        "qwen3_hybrid_moe",
+        "deepseek_v3",
+    }
+    qwen_fields = {
+        field["key"]
+        for field in body["model_families"]["qwen3_hybrid_moe"]["fields"]
+    }
+    deepseek_fields = {
+        field["key"]
+        for field in body["model_families"]["deepseek_v3"]["fields"]
+    }
+    assert "linear_num_value_heads" in qwen_fields
+    assert "gdn_chunk_size" in qwen_fields
+    assert "router_aux_loss_coef" not in qwen_fields
+    assert "mtp_num_hidden_layers" not in qwen_fields
+    assert "q_lora_rank" in deepseek_fields
+    assert "routed_scaling_factor" not in deepseek_fields
+    assert "scoring_func" not in deepseek_fields
+    assert "layer_types" not in qwen_fields
+
+
+def test_preview_accepts_datatype_policy_and_exports_metadata():
+    payload = _payload()
+    payload["workload"]["datatypes"] = {
+        "weight_dtype": "fp8",
+        "activation_dtype": "fp8",
+        "expert_dispatch_dtype": "fp8",
+        "gradient_dtype": "fp8",
+        "optimizer_dtype": "fp8",
+        "compute_precision": "fp8",
+        "expert_weight_dtype": "fp4",
+        "expert_compute_precision": "fp4",
+    }
+
+    body = preview_workload(WorkloadPreviewParams.model_validate(payload))
+    policy = body["schema"]["metadata"]["dtype_policy"]
+
+    assert policy["param"] == "fp8"
+    assert policy["activation"] == "fp8"
+    assert policy["expert_dispatch"] == "fp8"
+    assert policy["gradient"] == "fp8"
+    assert policy["optimizer_state"] == "fp8"
+    assert policy["compute"] == "fp8"
+    assert policy["expert_param"] == "fp4"
+    assert policy["expert_compute"] == "fp4"
 
 
 def test_presets_include_sram_accelerator_hardware():
@@ -303,15 +381,27 @@ def test_presets_include_sram_accelerator_hardware():
     hw = body["hardware"]["SRAM Accelerator"]
 
     assert hw == {
-        "peak_tflops": 3200.0,
+        "peak_tflops_bf16": 3200.0,
+        "peak_tflops_fp8": 6400.0,
+        "peak_tflops_fp4": 12800.0,
         "fast_memory_bw_gbs": 40000.0,
         "from_slow_bw_gbs": 3000.0,
         "to_slow_bw_gbs": 3000.0,
-        "matmul_eff": 1.0,
+        "matmul_eff_bf16": 1.0,
+        "matmul_eff_fp8": 1.0,
+        "matmul_eff_fp4": 1.0,
         "attn_fwd_eff": 1.0,
         "attn_bwd_eff": 1.0,
         "mem_eff": 1.0,
     }
+
+
+def test_h100_marks_fp4_matmul_as_unsupported():
+    body = presets()
+    hw = body["hardware"]["H100"]
+
+    assert hw["peak_tflops_fp4"] is None
+    assert hw["matmul_eff_fp4"] is None
 
 
 def test_simulate_uploaded_schema_workload():

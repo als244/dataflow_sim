@@ -13,7 +13,7 @@ After that, examples can be run with plain `python` commands.
 | Path | Use when | Output |
 | --- | --- | --- |
 | `generic_dataflow/` | You already know the ordered compute and memory objects. | Uploadable `DataflowProgram v1` JSON. |
-| `model_training/builtin_arch/` | You want a built-in Llama/Qwen/OLMoE training workload with preset-plus-overrides dimensions. | Uploadable `DataflowProgram v1` JSON. |
+| `model_training/builtin_arch/` | You want a built-in Llama/Qwen/OLMoE/DeepSeek/Kimi training workload with preset-plus-overrides dimensions. | Uploadable `DataflowProgram v1` JSON. |
 | `model_training/custom_arch/` | You want to add custom ops, modules, and a custom trainable architecture. | Uploadable program, bare plan, annotated plan, and summary metrics. |
 
 ## Generic Dataflow Program
@@ -35,12 +35,12 @@ Built-in architecture export:
 
 ```bash
 python examples/model_training/builtin_arch/export_training_program.py \
-  --model qwen3_moe \
-  --scale 30B-3B \
+  --model deepseek_v3 \
+  --scale 671B-37B \
   --n-layers 8 \
   --seqlen 1024 \
   --optimizer adamw \
-  --out /tmp/qwen3_moe_training.dataflow.json
+  --out /tmp/deepseek_v3_training.dataflow.json
 ```
 
 Custom architecture export:

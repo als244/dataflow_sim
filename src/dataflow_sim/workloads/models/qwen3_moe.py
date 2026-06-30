@@ -14,6 +14,11 @@ from dataflow_sim.workloads.modules import (
     layer_activation_elements_per_token,
     params_per_layer,
 )
+from dataflow_sim.workloads.modules.dimensions import layer_weight_matrices
+from dataflow_sim.workloads.modules.optimizer import (
+    matrix_weight_bytes,
+    optimizer_state_bytes_for_matrices,
+)
 from dataflow_sim.workloads.training_builder import (
     TrainingBuilder,
     TrainingHeadSpec,
@@ -47,6 +52,7 @@ class Qwen3MoEConfig(TransformerFamilyConfig):
 
 def _layer_spec(index: int, dims: TransformerDimensions) -> TrainingLayerSpec:
     block = TransformerBlock(dims)
+    matrices = layer_weight_matrices(dims)
     return TrainingLayerSpec(
         name=f"layer_{index}",
         input_dim=dims.d_model,
@@ -79,6 +85,17 @@ def _layer_spec(index: int, dims: TransformerDimensions) -> TrainingLayerSpec:
                 dims,
                 optimizer,
             ).step_ops(bytes_per_element=bpe)
+        ),
+        parameter_bytes=lambda policy, matrices=matrices: matrix_weight_bytes(
+            matrices,
+            policy,
+        ),
+        optimizer_state_bytes=(
+            lambda optimizer, policy, matrices=matrices: optimizer_state_bytes_for_matrices(
+                matrices,
+                optimizer,
+                policy,
+            )
         ),
         block_key="transformer_block",
         block_name="Transformer Block",

@@ -19,17 +19,12 @@ from dataflow_sim.workloads.dataflow_builder import (
     TrainingConfig,
     trace_training_model,
 )
-from dataflow_sim.workloads.models.llama3 import Llama3Config, Llama3ForTraining
-from dataflow_sim.workloads.models.olmoe import OLMoEConfig, OLMoEForTraining
-from dataflow_sim.workloads.models.qwen3 import Qwen3Config, Qwen3ForTraining
-from dataflow_sim.workloads.models.qwen3_moe import Qwen3MoEConfig, Qwen3MoEForTraining
+from dataflow_sim.workloads.models.registry import MODEL_FAMILIES
 
 
 MODEL_FACTORIES = {
-    "llama3": (Llama3Config, Llama3ForTraining, "8B"),
-    "qwen3": (Qwen3Config, Qwen3ForTraining, "8B"),
-    "qwen3_moe": (Qwen3MoEConfig, Qwen3MoEForTraining, "30B-3B"),
-    "olmoe": (OLMoEConfig, OLMoEForTraining, "7B-1B"),
+    key: (entry.config_cls, entry.builder_cls, entry.presets[0])
+    for key, entry in MODEL_FAMILIES.items()
 }
 
 
@@ -45,6 +40,24 @@ DIMENSION_ARGS = {
     "num_routed_experts",
     "top_k",
     "qk_norm",
+    "intermediate_size",
+    "full_attention_interval",
+    "linear_num_key_heads",
+    "linear_key_head_dim",
+    "linear_num_value_heads",
+    "linear_value_head_dim",
+    "linear_conv_kernel_dim",
+    "gdn_chunk_size",
+    "router_aux_loss_coef",
+    "mtp_num_hidden_layers",
+    "first_k_dense_replace",
+    "q_lora_rank",
+    "kv_lora_rank",
+    "qk_nope_head_dim",
+    "qk_rope_head_dim",
+    "v_head_dim",
+    "routed_scaling_factor",
+    "scoring_func",
 }
 
 
@@ -96,7 +109,7 @@ def main() -> None:
     parser.add_argument(
         "--scale",
         default=None,
-        help="Family scale preset, e.g. 8B, 70B, 405B, 32B, 30B-3B, or 7B-1B.",
+        help="Family scale preset, e.g. 8B, 30B-3B, qwen3_5_27B, or 1T-32B.",
     )
     parser.add_argument("--name", default=None)
     parser.add_argument("--vocab-size", dest="vocab_size", type=int, default=None)
@@ -111,6 +124,24 @@ def main() -> None:
     parser.add_argument("--top-k", dest="top_k", type=int, default=None)
     parser.add_argument("--qk-norm", dest="qk_norm", action="store_true", default=None)
     parser.add_argument("--no-qk-norm", dest="qk_norm", action="store_false")
+    parser.add_argument("--intermediate-size", dest="intermediate_size", type=int, default=None)
+    parser.add_argument("--full-attention-interval", dest="full_attention_interval", type=int, default=None)
+    parser.add_argument("--linear-num-key-heads", dest="linear_num_key_heads", type=int, default=None)
+    parser.add_argument("--linear-key-head-dim", dest="linear_key_head_dim", type=int, default=None)
+    parser.add_argument("--linear-num-value-heads", dest="linear_num_value_heads", type=int, default=None)
+    parser.add_argument("--linear-value-head-dim", dest="linear_value_head_dim", type=int, default=None)
+    parser.add_argument("--linear-conv-kernel-dim", dest="linear_conv_kernel_dim", type=int, default=None)
+    parser.add_argument("--gdn-chunk-size", dest="gdn_chunk_size", type=int, default=None)
+    parser.add_argument("--router-aux-loss-coef", dest="router_aux_loss_coef", type=float, default=None)
+    parser.add_argument("--mtp-num-hidden-layers", dest="mtp_num_hidden_layers", type=int, default=None)
+    parser.add_argument("--first-k-dense-replace", dest="first_k_dense_replace", type=int, default=None)
+    parser.add_argument("--q-lora-rank", dest="q_lora_rank", type=int, default=None)
+    parser.add_argument("--kv-lora-rank", dest="kv_lora_rank", type=int, default=None)
+    parser.add_argument("--qk-nope-head-dim", dest="qk_nope_head_dim", type=int, default=None)
+    parser.add_argument("--qk-rope-head-dim", dest="qk_rope_head_dim", type=int, default=None)
+    parser.add_argument("--v-head-dim", dest="v_head_dim", type=int, default=None)
+    parser.add_argument("--routed-scaling-factor", dest="routed_scaling_factor", type=float, default=None)
+    parser.add_argument("--scoring-func", dest="scoring_func", default=None)
     parser.add_argument("--seqlen", type=int, default=128)
     parser.add_argument("--num-seqs", type=int, default=1)
     parser.add_argument("--grad-accum-rounds", type=int, default=1)

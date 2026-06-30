@@ -13,11 +13,15 @@ from dataflow_sim.workloads.dataflow import (
 
 def _hw() -> HardwareSpec:
     return HardwareSpec(
-        peak_tflops=100,
+        peak_tflops_bf16=100,
+        peak_tflops_fp8=200,
+        peak_tflops_fp4=400,
         fast_memory_bw_gbs=1000,
         from_slow_bw_gbs=50,
         to_slow_bw_gbs=40,
-        matmul_eff=0.8,
+        matmul_eff_bf16=0.8,
+        matmul_eff_fp8=0.8,
+        matmul_eff_fp4=0.8,
         attn_fwd_eff=0.7,
         attn_bwd_eff=0.6,
         mem_eff=0.9,
@@ -100,6 +104,40 @@ def test_inline_cost_normalizes_to_one_off_compute_block():
     assert program.tasks[0].compute_block_key == "inline:op0"
     assert program.compute_blocks[0].key == "inline:op0"
     assert program.compute_blocks[0].subops[0].name == "measured"
+
+
+def test_compute_block_summary_reports_total_effective_tflops():
+    workload = realize_dataflow_program(DataflowProgram.model_validate(_program()), _hw())
+    block = workload.metadata["compute_blocks"][0]
+
+    expected = (
+        block["total_effective_flops"]
+        / (block["total_runtime_us"] * 1e-6)
+        / 1e12
+    )
+    assert block["effective_tflops"] == pytest.approx(expected)
+
+
+def test_unsupported_fp4_matmul_hardware_fails_clearly():
+    body = _program()
+    body["tasks"][0]["cost"]["terms"][1]["efficiency"] = "matmul_fp4"
+    hw = HardwareSpec(
+        peak_tflops_bf16=100,
+        peak_tflops_fp8=200,
+        peak_tflops_fp4=None,
+        fast_memory_bw_gbs=1000,
+        from_slow_bw_gbs=50,
+        to_slow_bw_gbs=40,
+        matmul_eff_bf16=0.8,
+        matmul_eff_fp8=0.8,
+        matmul_eff_fp4=None,
+        attn_fwd_eff=0.7,
+        attn_bwd_eff=0.6,
+        mem_eff=0.9,
+    )
+
+    with pytest.raises(ValueError, match="FP4"):
+        realize_dataflow_program(DataflowProgram.model_validate(body), hw)
 
 
 def test_repeated_tasks_share_compute_block_summary():

@@ -17,6 +17,7 @@ from dataflow_sim.workloads.dataflow import (
 
 
 DType = Literal["fp4", "fp8", "bf16", "bfloat16", "fp16", "float16", "fp32", "float32"]
+ComputePrecision = Literal["bf16", "fp8", "fp4"]
 TensorRole = Literal["input", "activation", "parameter", "gradient", "optimizer_state", "output", "other"]
 OptimizerMode = Literal["none", "adamw", "muon", "sgd"]
 
@@ -50,12 +51,23 @@ def dtype_nbytes(dtype: str) -> float:
     return _DTYPE_BYTES[normalize_dtype(dtype)]
 
 
+def normalize_compute_precision(precision: str) -> ComputePrecision:
+    key = normalize_dtype(precision)
+    if key not in {"bf16", "fp8", "fp4"}:
+        raise ValueError(f"unsupported compute precision {precision!r}")
+    return key  # type: ignore[return-value]
+
+
 @dataclass(frozen=True)
 class DTypePolicy:
     param: str = "bf16"
     activation: str = "bf16"
+    expert_dispatch: str = "bf16"
     gradient: str = "bf16"
     optimizer_state: str = "bf16"
+    compute: str = "bf16"
+    expert_param: str = "bf16"
+    expert_compute: str = "bf16"
 
     def dtype_for_role(self, role: str) -> str:
         if role in {"parameter", "param", "weight"}:
@@ -66,6 +78,59 @@ class DTypePolicy:
             return normalize_dtype(self.optimizer_state)
         return normalize_dtype(self.activation)
 
+    @property
+    def compute_precision(self) -> ComputePrecision:
+        return normalize_compute_precision(self.compute)
+
+    @property
+    def expert_compute_precision(self) -> ComputePrecision:
+        return normalize_compute_precision(self.expert_compute)
+
+
+@dataclass(frozen=True)
+class OpDTypePolicy:
+    activation_bpe: float = 2
+    expert_dispatch_bpe: float = 2
+    weight_bpe: float = 2
+    gradient_bpe: float = 2
+    optimizer_state_bpe: float = 2
+    expert_weight_bpe: float = 2
+    compute_precision: ComputePrecision = "bf16"
+    expert_compute_precision: ComputePrecision = "bf16"
+
+    @classmethod
+    def from_dtype_policy(cls, policy: DTypePolicy) -> "OpDTypePolicy":
+        return cls(
+            activation_bpe=dtype_nbytes(policy.activation),
+            expert_dispatch_bpe=dtype_nbytes(policy.expert_dispatch),
+            weight_bpe=dtype_nbytes(policy.param),
+            gradient_bpe=dtype_nbytes(policy.gradient),
+            optimizer_state_bpe=dtype_nbytes(policy.optimizer_state),
+            expert_weight_bpe=dtype_nbytes(policy.expert_param),
+            compute_precision=policy.compute_precision,
+            expert_compute_precision=policy.expert_compute_precision,
+        )
+
+    @classmethod
+    def from_single_bpe(cls, bytes_per_element: int) -> "OpDTypePolicy":
+        return cls(
+            activation_bpe=bytes_per_element,
+            expert_dispatch_bpe=bytes_per_element,
+            weight_bpe=bytes_per_element,
+            gradient_bpe=bytes_per_element,
+            optimizer_state_bpe=bytes_per_element,
+            expert_weight_bpe=bytes_per_element,
+        )
+
+    def __float__(self) -> float:
+        return self.activation_bpe
+
+    def __mul__(self, other: float) -> float:
+        return self.activation_bpe * other
+
+    def __rmul__(self, other: float) -> float:
+        return other * self.activation_bpe
+
 
 @dataclass(frozen=True)
 class TensorRef:
@@ -74,6 +139,7 @@ class TensorRef:
     dtype: str = "bf16"
     role: TensorRole = "activation"
     metadata: dict[str, Any] = field(default_factory=dict)
+    size_bytes_override: int | None = None
 
     @property
     def numel(self) -> int:
@@ -81,6 +147,8 @@ class TensorRef:
 
     @property
     def size_bytes(self) -> int:
+        if self.size_bytes_override is not None:
+            return self.size_bytes_override
         bytes_per_element = dtype_nbytes(self.dtype)
         return math.ceil(self.numel * bytes_per_element)
 
@@ -142,6 +210,7 @@ class TraceContext:
         role: TensorRole = "activation",
         dtype: str | None = None,
         metadata: dict[str, Any] | None = None,
+        size_bytes: int | None = None,
     ) -> TensorRef:
         tensor = TensorRef(
             id=id,
@@ -149,6 +218,7 @@ class TraceContext:
             dtype=normalize_dtype(dtype or self.dtype_policy.dtype_for_role(role)),
             role=role,
             metadata=dict(metadata or {}),
+            size_bytes_override=size_bytes,
         )
         self.tensors[id] = tensor
         return tensor
@@ -162,10 +232,18 @@ class TraceContext:
         initial_location: Literal["fast", "backing"] = "backing",
         dtype: str | None = None,
         metadata: dict[str, Any] | None = None,
+        size_bytes: int | None = None,
     ) -> TensorRef:
         if id in self._object_ids:
             raise ValueError(f"duplicate initial tensor id {id!r}")
-        tensor = self.tensor(id, shape, role=role, dtype=dtype, metadata=metadata)
+        tensor = self.tensor(
+            id,
+            shape,
+            role=role,
+            dtype=dtype,
+            metadata=metadata,
+            size_bytes=size_bytes,
+        )
         self.objects.append(
             DataflowObject(
                 id=tensor.id,

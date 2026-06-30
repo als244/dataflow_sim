@@ -32,6 +32,16 @@ _TRANSFORMER_FIELDS = {
 ConfigT = TypeVar("ConfigT", bound="TransformerFamilyConfig")
 
 
+def load_model_dims(key: str) -> dict[str, Any]:
+    raw = json.loads(
+        (files("dataflow_sim.workloads.models") / "model_dims.json").read_text()
+    )
+    if key not in raw:
+        known = ", ".join(sorted(raw))
+        raise ValueError(f"unknown model preset {key!r}; known presets: {known}")
+    return dict(raw[key])
+
+
 @dataclass(frozen=True)
 class TransformerFamilyConfig:
     """Base config for dense and MoE transformer-family presets.
@@ -55,13 +65,7 @@ class TransformerFamilyConfig:
 
     @classmethod
     def from_model_dims(cls: type[ConfigT], key: str, **overrides: Any) -> ConfigT:
-        raw = json.loads(
-            (files("dataflow_sim.workloads.models") / "model_dims.json").read_text()
-        )
-        if key not in raw:
-            known = ", ".join(sorted(raw))
-            raise ValueError(f"unknown model preset {key!r}; known presets: {known}")
-        body = raw[key]
+        body = load_model_dims(key)
         kwargs = {field: body[field] for field in _TRANSFORMER_FIELDS if field in body}
         kwargs.update(overrides)
         kwargs.setdefault("preset_name", key)

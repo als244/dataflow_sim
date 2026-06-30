@@ -32,11 +32,12 @@ from dataflow_sim.core.schema import EventLog, TaskChain
 from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS, HardwareSpec
 from dataflow_sim.workloads.common.workload import Workload
 from dataflow_sim.workloads.dataflow import DataflowProgram, realize_dataflow_program
-from dataflow_sim.workloads.dataflow_builder import TrainingConfig
-from dataflow_sim.workloads.models.llama3 import Llama3Config, Llama3ForTraining
-from dataflow_sim.workloads.models.olmoe import OLMoEConfig, OLMoEForTraining
-from dataflow_sim.workloads.models.qwen3 import Qwen3Config, Qwen3ForTraining
-from dataflow_sim.workloads.models.qwen3_moe import Qwen3MoEConfig, Qwen3MoEForTraining
+from dataflow_sim.workloads.dataflow_builder import DTypePolicy, TrainingConfig
+from dataflow_sim.workloads.models.registry import (
+    MODEL_FAMILIES,
+    iter_model_presets,
+    model_families_payload,
+)
 from dataflow_sim.workloads.summary import compute_workload_summary
 from dataflow_sim.workloads.training_builder import TrainingWorkloadBuilder
 
@@ -54,16 +55,29 @@ Policy = Literal[
     "pressurefit",
 ]
 Optimizer = Literal["none", "adamw", "muon"]
-ModelFamily = Literal["llama3", "qwen3", "qwen3_moe", "olmoe"]
+DTypeName = Literal["bf16", "fp8", "fp4"]
+ModelFamily = Literal[
+    "llama3",
+    "qwen3",
+    "qwen3_moe",
+    "olmoe",
+    "qwen3_hybrid_dense",
+    "qwen3_hybrid_moe",
+    "deepseek_v3",
+]
 
 
 class HardwareParams(BaseModel):
     preset: str = "custom"
-    peak_tflops: float = Field(..., gt=0)
+    peak_tflops_bf16: float = Field(..., gt=0)
+    peak_tflops_fp8: float = Field(..., gt=0)
+    peak_tflops_fp4: float | None = Field(None, gt=0)
     fast_memory_bw_gbs: float = Field(..., gt=0)
     from_slow_bw_gbs: float = Field(..., gt=0)
     to_slow_bw_gbs: float = Field(..., gt=0)
-    matmul_eff: float = Field(..., gt=0, le=1)
+    matmul_eff_bf16: float = Field(..., gt=0, le=1)
+    matmul_eff_fp8: float = Field(..., gt=0, le=1)
+    matmul_eff_fp4: float | None = Field(None, gt=0, le=1)
     attn_fwd_eff: float = Field(..., gt=0, le=1)
     attn_bwd_eff: float = Field(..., gt=0, le=1)
     mem_eff: float = Field(0.9, gt=0, le=1)
@@ -71,7 +85,7 @@ class HardwareParams(BaseModel):
 
 class ModelParams(BaseModel):
     preset: str = "custom"
-    family: ModelFamily | None = None
+    family: ModelFamily
     vocab_size: int = Field(..., ge=1)
     n_layers: int = Field(..., ge=1, le=256)
     d_model: int = Field(..., ge=1)
@@ -83,6 +97,24 @@ class ModelParams(BaseModel):
     num_routed_experts: int = Field(0, ge=0)
     top_k: int = Field(0, ge=0)
     qk_norm: bool = Field(True)
+    intermediate_size: int = Field(0, ge=0)
+    full_attention_interval: int = Field(4, ge=1)
+    linear_num_key_heads: int = Field(1, ge=1)
+    linear_key_head_dim: int = Field(1, ge=1)
+    linear_num_value_heads: int = Field(1, ge=1)
+    linear_value_head_dim: int = Field(1, ge=1)
+    linear_conv_kernel_dim: int = Field(1, ge=1)
+    gdn_chunk_size: int = Field(64, ge=1)
+    router_aux_loss_coef: float = Field(0.0, ge=0)
+    mtp_num_hidden_layers: int = Field(0, ge=0)
+    first_k_dense_replace: int = Field(0, ge=0)
+    q_lora_rank: int = Field(0, ge=0)
+    kv_lora_rank: int = Field(0, ge=0)
+    qk_nope_head_dim: int = Field(0, ge=0)
+    qk_rope_head_dim: int = Field(0, ge=0)
+    v_head_dim: int = Field(0, ge=0)
+    routed_scaling_factor: float = Field(1.0, ge=0)
+    scoring_func: str = "sigmoid"
 
 
 class TrainingParams(BaseModel):
@@ -94,11 +126,23 @@ class TrainingParams(BaseModel):
     final_model_state_on_backing: bool = False
 
 
+class DatatypeParams(BaseModel):
+    weight_dtype: DTypeName = "bf16"
+    activation_dtype: DTypeName = "bf16"
+    expert_dispatch_dtype: DTypeName = "bf16"
+    gradient_dtype: DTypeName = "bf16"
+    optimizer_dtype: DTypeName = "bf16"
+    compute_precision: DTypeName = "bf16"
+    expert_weight_dtype: DTypeName = "bf16"
+    expert_compute_precision: DTypeName = "bf16"
+
+
 class ModelTrainingWorkloadParams(BaseModel):
     source: Literal["model_training"] = "model_training"
     preset: str = "custom"
     model: ModelParams
     training: TrainingParams = Field(default_factory=TrainingParams)
+    datatypes: DatatypeParams = Field(default_factory=DatatypeParams)
 
 
 class SchemaWorkloadParams(BaseModel):
@@ -135,37 +179,6 @@ class WorkloadPreviewParams(BaseModel):
     hardware: HardwareParams
 
 
-_MODEL_FIELDS = (
-    "vocab_size",
-    "n_layers",
-    "d_model",
-    "head_dim",
-    "n_heads",
-    "n_kv_heads",
-    "expert_dim",
-    "num_shared_experts",
-    "num_routed_experts",
-    "top_k",
-    "qk_norm",
-)
-_MODEL_FAMILY_BUILDERS = {
-    "llama3": (Llama3Config, Llama3ForTraining),
-    "qwen3": (Qwen3Config, Qwen3ForTraining),
-    "qwen3_moe": (Qwen3MoEConfig, Qwen3MoEForTraining),
-    "olmoe": (OLMoEConfig, OLMoEForTraining),
-}
-_MODULAR_PRESET_KEYS: dict[str, ModelFamily] = {
-    "llama3_8B": "llama3",
-    "llama3_70B": "llama3",
-    "llama3_405B": "llama3",
-    "qwen3_4B": "qwen3",
-    "qwen3_8B": "qwen3",
-    "qwen3_32B": "qwen3",
-    "qwen3_moe_30B-3B": "qwen3_moe",
-    "olmoe_7B-1B": "olmoe",
-}
-
-
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -175,32 +188,25 @@ def health() -> dict:
 def presets() -> dict:
     """Workload + hardware preset registries for UI dropdowns."""
     workloads = {}
-    models = {}
-    for name, family, config in _modular_model_presets():
+    for name, family, config in iter_model_presets():
         model = _model_params_from_config(config, family)
         workloads[name] = {
             "source": "model_training",
             "preset": name,
             "model": model,
             "training": TrainingParams().model_dump(mode="json"),
+            "datatypes": DatatypeParams().model_dump(mode="json"),
             "description": f"{family} training workload for {name}",
         }
-        models[name] = model
 
     return {
         "workloads": workloads,
-        "models": models,
+        "model_families": model_families_payload(),
         "hardware": {name: asdict(hw) for name, hw in HARDWARE_PRESETS.items()},
     }
 
 
-def _modular_model_presets():
-    for name, family in _MODULAR_PRESET_KEYS.items():
-        config_cls, _ = _MODEL_FAMILY_BUILDERS[family]
-        yield name, family, config_cls.from_model_dims(name)
-
-
-def _model_params_from_config(config, family: ModelFamily) -> dict:
+def _model_params_from_config(config, family: str) -> dict:
     """Return the preset payload consumed by the webapp model editor.
 
     The workload preset already carries its top-level preset name, so this
@@ -210,45 +216,38 @@ def _model_params_from_config(config, family: ModelFamily) -> dict:
 
     data = asdict(config)
     data.pop("preset_name", None)
+    data.pop("layer_types", None)
     return {"family": family, **data}
 
 
-def _family_from_params(params: ModelParams) -> ModelFamily:
-    if params.family is not None:
-        return params.family
-    preset = params.preset.lower()
-    if preset.startswith("olmoe"):
-        return "olmoe"
-    if (
-        preset.startswith("qwen3_moe")
-        or preset.startswith("qwen3_30")
-        or params.num_routed_experts > 0
-    ):
-        return "qwen3_moe"
-    if preset.startswith("qwen3"):
-        return "qwen3"
-    return "llama3"
-
-
-def _config_kwargs_from_params(params: ModelParams) -> dict:
-    kwargs = {field: getattr(params, field) for field in _MODEL_FIELDS}
+def _config_kwargs_from_params(params: ModelParams, family: str) -> dict:
+    entry = MODEL_FAMILIES[family]
+    kwargs = {
+        field: getattr(params, field)
+        for field in entry.config_field_names
+        if hasattr(params, field)
+    }
     kwargs["preset_name"] = params.preset
     return kwargs
 
 
 def _training_model_from_params(params: ModelParams) -> TrainingWorkloadBuilder:
-    family = _family_from_params(params)
-    config_cls, model_cls = _MODEL_FAMILY_BUILDERS[family]
-    return model_cls(config_cls(**_config_kwargs_from_params(params)))
+    family = params.family
+    entry = MODEL_FAMILIES[family]
+    return entry.builder_cls(entry.config_cls(**_config_kwargs_from_params(params, family)))
 
 
 def _hardware_from_params(params: HardwareParams) -> HardwareSpec:
     return HardwareSpec(
-        peak_tflops=params.peak_tflops,
+        peak_tflops_bf16=params.peak_tflops_bf16,
+        peak_tflops_fp8=params.peak_tflops_fp8,
+        peak_tflops_fp4=params.peak_tflops_fp4,
         fast_memory_bw_gbs=params.fast_memory_bw_gbs,
         from_slow_bw_gbs=params.from_slow_bw_gbs,
         to_slow_bw_gbs=params.to_slow_bw_gbs,
-        matmul_eff=params.matmul_eff,
+        matmul_eff_bf16=params.matmul_eff_bf16,
+        matmul_eff_fp8=params.matmul_eff_fp8,
+        matmul_eff_fp4=params.matmul_eff_fp4,
         attn_fwd_eff=params.attn_fwd_eff,
         attn_bwd_eff=params.attn_bwd_eff,
         mem_eff=params.mem_eff,
@@ -266,20 +265,35 @@ def _training_config_from_params(params: TrainingParams) -> TrainingConfig:
     )
 
 
+def _dtype_policy_from_params(params: DatatypeParams) -> DTypePolicy:
+    return DTypePolicy(
+        param=params.weight_dtype,
+        activation=params.activation_dtype,
+        expert_dispatch=params.expert_dispatch_dtype,
+        gradient=params.gradient_dtype,
+        optimizer_state=params.optimizer_dtype,
+        compute=params.compute_precision,
+        expert_param=params.expert_weight_dtype,
+        expert_compute=params.expert_compute_precision,
+    )
+
+
 def _workload_from_params(
     params: WorkloadParams,
     hw: HardwareSpec,
-) -> tuple[Workload, tuple[TrainingWorkloadBuilder, TrainingConfig] | None]:
+) -> tuple[Workload, tuple[TrainingWorkloadBuilder, TrainingConfig, DTypePolicy] | None]:
     if params.source == "schema":
         return realize_dataflow_program(params.program, hw), None
     cfg = _training_config_from_params(params.training)
+    dtype_policy = _dtype_policy_from_params(params.datatypes)
     model = _training_model_from_params(params.model)
     workload = model.build_training_workload(
         cfg,
         hw,
         input_shape=(cfg.tokens, params.model.d_model),
+        dtype_policy=dtype_policy,
     )
-    return workload, (model, cfg)
+    return workload, (model, cfg, dtype_policy)
 
 
 @app.post("/api/workloads/preview")
@@ -334,9 +348,9 @@ def _run_config(
     bare = workload.chain
     diagnostics = None
     if params.planner.recompute and training_context is not None:
-        model, cfg = training_context
+        model, cfg, dtype_policy = training_context
         chain, workload, diagnostics = _plan_with_recompute(
-            params.planner, model, hw, cfg, cap_bytes,
+            params.planner, model, hw, cfg, dtype_policy, cap_bytes,
         )
     elif params.planner.policy == "pressurefit":
         chain, diagnostics = plan_pressurefit_policy(
@@ -358,6 +372,7 @@ def _plan_with_recompute(
     model: TrainingWorkloadBuilder,
     hw: HardwareSpec,
     cfg: TrainingConfig,
+    dtype_policy: DTypePolicy,
     cap_bytes: int | None,
 ) -> tuple[TaskChain, Workload, PressureFitDiagnostics | None]:
     """Select recompute levels, then return the chosen annotated chain.
@@ -368,7 +383,12 @@ def _plan_with_recompute(
     """
 
     input_shape = (cfg.tokens, model.input_dim)
-    base = model.build_training_workload(cfg, hw, input_shape=input_shape)
+    base = model.build_training_workload(
+        cfg,
+        hw,
+        input_shape=input_shape,
+        dtype_policy=dtype_policy,
+    )
     rewrites = base.metadata["recompute_rewrites"]
 
     def build_variant(levels) -> TaskChain:
@@ -376,6 +396,7 @@ def _plan_with_recompute(
             cfg,
             hw,
             input_shape=input_shape,
+            dtype_policy=dtype_policy,
             recompute=dict(levels),
         ).chain
 
@@ -389,6 +410,7 @@ def _plan_with_recompute(
         cfg,
         hw,
         input_shape=input_shape,
+        dtype_policy=dtype_policy,
         recompute=dict(result.levels),
     )
     # Re-derive PressureFit candidate diagnostics on the chosen variant so the

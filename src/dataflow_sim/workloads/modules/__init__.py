@@ -1,4 +1,6 @@
 """Composable symbolic workload modules."""
+from dataflow_sim.workloads.modules.deepseek_block import DeepSeekBlock
+from dataflow_sim.workloads.modules.deepseek_dimensions import DeepSeekDimensions
 from dataflow_sim.workloads.modules.dense_attention import DenseAttention
 from dataflow_sim.workloads.modules.dimensions import (
     TransformerDimensions,
@@ -8,9 +10,23 @@ from dataflow_sim.workloads.modules.dimensions import (
     layer_weight_matrices,
     params_per_layer,
 )
+from dataflow_sim.workloads.modules.mla_attention import MLAAttention
 from dataflow_sim.workloads.modules.mlp import SwiGLUMLP
 from dataflow_sim.workloads.modules.moe import MoE
-from dataflow_sim.workloads.modules.optimizer import OptimizerStep
+from dataflow_sim.workloads.modules.optimizer import (
+    OptimizerStep,
+    optimizer_ops_for_matrices,
+)
+from dataflow_sim.workloads.modules.qwen_hybrid_block import QwenHybridBlock
+from dataflow_sim.workloads.modules.qwen_hybrid_dimensions import (
+    QwenHybridDimensions,
+)
+from dataflow_sim.workloads.modules.qwen_hybrid_full_attention import (
+    QwenHybridFullAttention,
+)
+from dataflow_sim.workloads.modules.qwen_hybrid_linear_attention import (
+    QwenHybridLinearAttention,
+)
 from dataflow_sim.workloads.modules.recompute import zero_recompute_slot
 from dataflow_sim.workloads.modules.transformer_block import (
     TransformerBlock,
@@ -20,9 +36,17 @@ from dataflow_sim.workloads.modules.language_modeling_head import (
 )
 
 __all__ = [
+    "DeepSeekBlock",
+    "DeepSeekDimensions",
     "DenseAttention",
+    "MLAAttention",
     "MoE",
     "OptimizerStep",
+    "optimizer_ops_for_matrices",
+    "QwenHybridBlock",
+    "QwenHybridDimensions",
+    "QwenHybridFullAttention",
+    "QwenHybridLinearAttention",
     "SwiGLUMLP",
     "TransformerBlock",
     "TransformerDimensions",

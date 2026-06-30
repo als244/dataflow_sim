@@ -31,11 +31,11 @@ Runtime choices happen after export:
 
 ```bash
 python examples/model_training/builtin_arch/export_training_program.py \
-  --model llama3 \
-  --scale 8B \
+  --model qwen3_hybrid_moe \
+  --scale qwen3_5_35B-A3B \
   --n-layers 4 \
   --seqlen 512 \
-  --out /tmp/llama3_training.dataflow.json
+  --out /tmp/qwen35_moe_training.dataflow.json
 ```
 
 ## Custom Architecture

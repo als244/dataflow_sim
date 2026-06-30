@@ -1887,6 +1887,12 @@ code {
   font-weight: 600;
 }
 
+.form-note {
+  margin: -0.1rem 0 0.65rem;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
 .form-field-label {
   font-size: 0.72rem;
   color: var(--dim);
@@ -2046,7 +2052,7 @@ code {
 }
 
 .workspace-left .compute-block-summary {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 0.3rem 0.45rem;
   padding: 0.5rem 0.55rem 0.35rem;
 }
@@ -2105,7 +2111,7 @@ code {
 
 .compute-block-summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 0.45rem;
   padding: 0.55rem 0.65rem;
@@ -2117,8 +2123,32 @@ code {
   display: none;
 }
 
+.compute-block-summary::after {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 1.5px solid var(--dim);
+  border-bottom: 1.5px solid var(--dim);
+  transform: rotate(45deg);
+  transition: transform 0.16s ease, border-color 0.16s ease;
+  justify-self: end;
+}
+
+.compute-block-card[open] > .compute-block-summary::after {
+  transform: rotate(225deg);
+}
+
+.compute-block-summary:hover::after {
+  border-color: #c8d4e8;
+}
+
 .compute-block-summary-static {
+  grid-template-columns: minmax(0, 1fr) auto auto;
   cursor: default;
+}
+
+.compute-block-summary-static::after {
+  display: none;
 }
 
 .compute-block-name {

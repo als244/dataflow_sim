@@ -35,17 +35,22 @@ from dataflow_sim.workloads.dataflow import (
 )
 from dataflow_sim.workloads.dataflow_builder import (
     DTypePolicy,
+    OpDTypePolicy,
     TensorRef,
     TraceContext,
     TrainingConfig,
     dtype_nbytes,
 )
+from dataflow_sim.workloads.ops.optimizer import optimizer_state_bytes
 
 
-LayerOpsFactory = Callable[[int, int, int], list[DataflowCost]]
-HeadOpsFactory = Callable[[int, int], list[DataflowCost]]
-OptimizerOpsFactory = Callable[[str, int], list[DataflowCost]]
+LayerOpsFactory = Callable[[int, int, OpDTypePolicy], list[DataflowCost]]
+HeadOpsFactory = Callable[[int, OpDTypePolicy], list[DataflowCost]]
+OptimizerOpsFactory = Callable[[str, OpDTypePolicy], list[DataflowCost]]
 OptimizerStateFactor = Callable[[str], int]
+ParamBytesFactory = Callable[[DTypePolicy], int]
+OptimizerStateBytesFactory = Callable[[str, DTypePolicy], int]
+SavedActivationBytesFactory = Callable[[int, DTypePolicy], int]
 
 
 @runtime_checkable
@@ -159,6 +164,9 @@ class TrainingLayerSpec:
     recompute_ops: LayerOpsFactory
     optimizer_ops: OptimizerOpsFactory
     optimizer_state_factor: OptimizerStateFactor = default_optimizer_state_factor
+    parameter_bytes: ParamBytesFactory | None = None
+    optimizer_state_bytes: OptimizerStateBytesFactory | None = None
+    saved_activation_bytes: SavedActivationBytesFactory | None = None
     block_key: str = "layer"
     block_name: str = "Layer"
     optimizer_block_key: str = "optimizer_step"
@@ -178,6 +186,8 @@ class TrainingHeadSpec:
     block_name: str = "Head"
     optimizer_ops: OptimizerOpsFactory | None = None
     optimizer_state_factor: OptimizerStateFactor = default_optimizer_state_factor
+    parameter_bytes: ParamBytesFactory | None = None
+    optimizer_state_bytes: OptimizerStateBytesFactory | None = None
     optimizer_block_key: str = "optimizer_step.head"
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -217,6 +227,40 @@ class TrainingBuilder:
     def n_layers(self) -> int:
         return len(self.layers)
 
+    @staticmethod
+    def _parameter_bytes(
+        spec: TrainingLayerSpec | TrainingHeadSpec,
+        policy: DTypePolicy,
+    ) -> int:
+        if spec.parameter_bytes is not None:
+            return spec.parameter_bytes(policy)
+        return math.ceil(spec.param_count * dtype_nbytes(policy.param))
+
+    @staticmethod
+    def _optimizer_state_bytes(
+        spec: TrainingLayerSpec | TrainingHeadSpec,
+        optimizer: str,
+        policy: DTypePolicy,
+    ) -> int:
+        if spec.optimizer_state_bytes is not None:
+            return spec.optimizer_state_bytes(optimizer, policy)
+        return optimizer_state_bytes(
+            math.ceil(spec.param_count * dtype_nbytes(policy.optimizer_state)),
+            optimizer,
+        )
+
+    @staticmethod
+    def _saved_activation_bytes(
+        spec: TrainingLayerSpec,
+        tokens: int,
+        policy: DTypePolicy,
+    ) -> int:
+        if spec.saved_activation_bytes is not None:
+            return spec.saved_activation_bytes(tokens, policy)
+        return math.ceil(
+            tokens * spec.saved_activation_width * dtype_nbytes(policy.activation)
+        )
+
     def build_training_program(
         self,
         training: TrainingConfig,
@@ -242,23 +286,19 @@ class TrainingBuilder:
         policy = dtype_policy or DTypePolicy()
         param_bytes = dtype_nbytes(policy.param)
         activation_bytes = dtype_nbytes(policy.activation)
+        expert_dispatch_bytes = dtype_nbytes(policy.expert_dispatch)
         grad_bytes = dtype_nbytes(policy.gradient)
         opt_bytes = dtype_nbytes(policy.optimizer_state)
         if any(
             value <= 0
             for value in (param_bytes, activation_bytes, grad_bytes, opt_bytes)
-        ):
+        ) or expert_dispatch_bytes <= 0:
             raise ValueError("dtype byte sizes must be positive")
 
         tokens = training.tokens
         seqlen = training.seqlen
 
-        activation_bpe_for_ops = math.ceil(activation_bytes)
-        param_bpe_for_ops = math.ceil(param_bytes)
-        if activation_bpe_for_ops != param_bpe_for_ops:
-            # Current op factories take one element width per module phase.
-            # Object sizing still tracks per-role dtype precisely.
-            activation_bpe_for_ops = max(activation_bpe_for_ops, param_bpe_for_ops)
+        op_policy = OpDTypePolicy.from_dtype_policy(policy)
 
         ctx = TraceContext(
             name=name or f"{self.family_name}-{self.preset_name}-training",
@@ -276,41 +316,47 @@ class TrainingBuilder:
                     dtype=policy.activation,
                 )
         for i, layer in enumerate(self.layers):
+            layer_param_bytes = self._parameter_bytes(layer, policy)
             ctx.initial_tensor(
                 f"W_{i}",
                 (layer.param_count, 1),
                 role="parameter",
                 initial_location="backing",
                 dtype=policy.param,
+                size_bytes=layer_param_bytes,
             )
-            state_factor = layer.optimizer_state_factor(training.optimizer)
-            if state_factor > 0:
+            state_bytes = self._optimizer_state_bytes(layer, training.optimizer, policy)
+            if state_bytes > 0:
                 ctx.initial_tensor(
                     f"O_{i}",
-                    (state_factor * layer.param_count, 1),
+                    (max(1, math.ceil(state_bytes / opt_bytes)), 1),
                     role="optimizer_state",
                     initial_location="backing",
                     dtype=policy.optimizer_state,
+                    size_bytes=state_bytes,
                 )
+        head_param_bytes = self._parameter_bytes(self.head, policy)
         ctx.initial_tensor(
             "W_head",
             (self.head.param_count, 1),
             role="parameter",
             initial_location="backing",
             dtype=policy.param,
+            size_bytes=head_param_bytes,
         )
-        head_state_factor = (
-            self.head.optimizer_state_factor(training.optimizer)
+        head_state_bytes = (
+            self._optimizer_state_bytes(self.head, training.optimizer, policy)
             if self.head.optimizer_ops is not None
             else 0
         )
-        if head_state_factor > 0:
+        if head_state_bytes > 0:
             ctx.initial_tensor(
                 "O_head",
-                (head_state_factor * self.head.param_count, 1),
+                (max(1, math.ceil(head_state_bytes / opt_bytes)), 1),
                 role="optimizer_state",
                 initial_location="backing",
                 dtype=policy.optimizer_state,
+                size_bytes=head_state_bytes,
             )
 
         valid_recompute_ids = [
@@ -323,17 +369,17 @@ class TrainingBuilder:
 
         layer_phase_ops = [
             (
-                layer.forward_ops(tokens, seqlen, activation_bpe_for_ops),
-                layer.backward_ops(tokens, seqlen, activation_bpe_for_ops),
-                layer.recompute_ops(tokens, seqlen, activation_bpe_for_ops),
-                layer.optimizer_ops(training.optimizer, activation_bpe_for_ops),
+                layer.forward_ops(tokens, seqlen, op_policy),
+                layer.backward_ops(tokens, seqlen, op_policy),
+                layer.recompute_ops(tokens, seqlen, op_policy),
+                layer.optimizer_ops(training.optimizer, op_policy),
             )
             for layer in self.layers
         ]
-        head_forward_ops = self.head.forward_ops(tokens, activation_bpe_for_ops)
-        head_backward_ops = self.head.backward_ops(tokens, activation_bpe_for_ops)
+        head_forward_ops = self.head.forward_ops(tokens, op_policy)
+        head_backward_ops = self.head.backward_ops(tokens, op_policy)
         head_optimizer_ops = (
-            self.head.optimizer_ops(training.optimizer, activation_bpe_for_ops)
+            self.head.optimizer_ops(training.optimizer, op_policy)
             if self.head.optimizer_ops is not None
             else []
         )
@@ -346,8 +392,15 @@ class TrainingBuilder:
             shape: tuple[int, int],
             role: Literal["activation", "gradient", "optimizer_state", "parameter"],
             dtype: str,
+            size_bytes: int | None = None,
         ) -> TensorRef:
-            return ctx.tensor(object_id, shape, role=role, dtype=dtype)
+            return ctx.tensor(
+                object_id,
+                shape,
+                role=role,
+                dtype=dtype,
+                size_bytes=size_bytes,
+            )
 
         def input_id(k: int, j: int) -> str:
             return f"input_{k}_{j}"
@@ -388,6 +441,11 @@ class TrainingBuilder:
                                 (tokens, layer.saved_activation_width),
                                 "activation",
                                 policy.activation,
+                                size_bytes=self._saved_activation_bytes(
+                                    layer,
+                                    tokens,
+                                    policy,
+                                ),
                             ),
                         )
                     ctx.emit_task(
@@ -492,6 +550,11 @@ class TrainingBuilder:
                                     (tokens, layer.saved_activation_width),
                                     "activation",
                                     policy.activation,
+                                    size_bytes=self._saved_activation_bytes(
+                                        layer,
+                                        tokens,
+                                        policy,
+                                    ),
                                 )
                             ],
                             block_metadata=self._phase_metadata(
@@ -555,7 +618,7 @@ class TrainingBuilder:
                     _, _, _, optimizer_ops = layer_phase_ops[i]
                     inputs = [t(step_grad_id(k, i)), t(f"W_{i}")]
                     mutates = [t(f"W_{i}")]
-                    if layer.optimizer_state_factor(training.optimizer) > 0:
+                    if self._optimizer_state_bytes(layer, training.optimizer, policy) > 0:
                         inputs.append(t(f"O_{i}"))
                         mutates.append(t(f"O_{i}"))
                     ctx.emit_task(
@@ -575,7 +638,7 @@ class TrainingBuilder:
                 if self.head.optimizer_ops is not None:
                     inputs = [t(step_head_grad_id(k)), t("W_head")]
                     mutates = [t("W_head")]
-                    if head_state_factor > 0:
+                    if head_state_bytes > 0:
                         inputs.append(t("O_head"))
                         mutates.append(t("O_head"))
                     ctx.emit_task(
@@ -597,11 +660,11 @@ class TrainingBuilder:
         if training.optimizer != "none" and training.final_model_state_on_backing:
             for i, layer in enumerate(self.layers):
                 final_locations[f"W_{i}"] = "backing"
-                if layer.optimizer_state_factor(training.optimizer) > 0:
+                if self._optimizer_state_bytes(layer, training.optimizer, policy) > 0:
                     final_locations[f"O_{i}"] = "backing"
             if self.head.optimizer_ops is not None:
                 final_locations["W_head"] = "backing"
-                if head_state_factor > 0:
+                if head_state_bytes > 0:
                     final_locations["O_head"] = "backing"
 
         return ctx.program(
@@ -654,9 +717,7 @@ class TrainingBuilder:
         workload = realize_dataflow_program(program, hw)
 
         policy = dtype_policy or DTypePolicy()
-        activation_bpe = math.ceil(dtype_nbytes(policy.activation))
-        param_bpe = math.ceil(dtype_nbytes(policy.param))
-        bytes_per_element = max(activation_bpe, param_bpe)
+        op_policy = OpDTypePolicy.from_dtype_policy(policy)
 
         rewrites: list[RecomputeRewrite] = []
         levels = dict(recompute or {})
@@ -667,7 +728,7 @@ class TrainingBuilder:
                     recompute_terms = layer.recompute_ops(
                         training.tokens,
                         training.seqlen,
-                        bytes_per_element,
+                        op_policy,
                     )
                     recompute_us = 0.0
                     if recompute_terms:
@@ -683,10 +744,10 @@ class TrainingBuilder:
                     options = (
                         RecomputeOption(
                             level=0,
-                            saved_bytes=math.ceil(
-                                training.tokens
-                                * layer.saved_activation_width
-                                * dtype_nbytes(policy.activation)
+                            saved_bytes=self._saved_activation_bytes(
+                                layer,
+                                training.tokens,
+                                policy,
                             ),
                             recompute_us=0,
                             label="save-full",

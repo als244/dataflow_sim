@@ -27,6 +27,8 @@ export interface ComputeBlockSummary {
   total_effective_flops: number;
   per_instance_bytes: number;
   total_bytes: number;
+  hardware_tflops?: number | null;
+  effective_tflops?: number | null;
   bound_by: string;
   subops: SubOpTimingRow[];
   task_ids: string[];
@@ -106,16 +108,30 @@ function sectionEffectiveTflops(rows: SubOpTimingRow[]): number | null {
   return effFlops / (totalUsExact * 1e6);
 }
 
-function Section({ title, rows, total_us, compact = false }: { title: string; rows: SubOpTimingRow[]; total_us: number; compact?: boolean }) {
-  const sectionTflops = sectionEffectiveTflops(rows);
+function Section({
+  title,
+  rows,
+  total_us,
+  compact = false,
+  aggregateTflops,
+  timeLabel,
+}: {
+  title: string;
+  rows: SubOpTimingRow[];
+  total_us: number;
+  compact?: boolean;
+  aggregateTflops?: number | null;
+  timeLabel?: string;
+}) {
+  const sectionTflops = aggregateTflops ?? sectionEffectiveTflops(rows);
   return (
     <div className="breakdown-section">
       <div className="breakdown-section-header">
         <span className="breakdown-section-title">{title}</span>
         <span className="dim">
-          total {fmtUs(total_us)} µs
+          {timeLabel ?? `total ${fmtUs(total_us)} µs`}
           {sectionTflops !== null && (
-            <> · {fmtTflops(sectionTflops)} eff. TFLOPS</>
+            <> · {fmtTflops(sectionTflops)} effective TFLOP/s</>
           )}
         </span>
       </div>
@@ -185,8 +201,9 @@ function ComputeBlockBreakdown({ blocks, compact }: { blocks: ComputeBlockSummar
         </span>
       </div>
       <div className="compute-block-list">
-        {visibleBlocks.map((block) => (
-          compact ? (
+        {visibleBlocks.map((block) => {
+          const blockTflops = block.effective_tflops ?? sectionEffectiveTflops(block.subops);
+          return compact ? (
             <div key={block.key} className="compute-block-card compute-block-card-compact">
               <div className="compute-block-summary compute-block-summary-static">
                 <span className="compute-block-name">{block.name}</span>
@@ -198,7 +215,8 @@ function ComputeBlockBreakdown({ blocks, compact }: { blocks: ComputeBlockSummar
                 <span>{fmtUs(block.per_instance_runtime_us)} µs each</span>
                 <span>{fmtUs(block.total_runtime_us)} µs total</span>
                 <span>{fmtBytes(block.total_bytes)} moved/read</span>
-                <span>{fmtFlops(block.total_effective_flops)} effective FLOPs</span>
+                <span>{fmtFlops(block.total_effective_flops)} total effective FLOPs</span>
+                {blockTflops !== null && <span>{fmtTflops(blockTflops)} effective TFLOP/s</span>}
               </div>
             </div>
           ) : (
@@ -213,17 +231,20 @@ function ComputeBlockBreakdown({ blocks, compact }: { blocks: ComputeBlockSummar
                 <span>{fmtUs(block.per_instance_runtime_us)} µs each</span>
                 <span>{fmtUs(block.total_runtime_us)} µs total</span>
                 <span>{fmtBytes(block.total_bytes)} moved/read</span>
-                <span>{fmtFlops(block.total_effective_flops)} effective FLOPs</span>
+                <span>{fmtFlops(block.total_effective_flops)} total effective FLOPs</span>
+                {blockTflops !== null && <span>{fmtTflops(blockTflops)} effective TFLOP/s</span>}
               </div>
               <Section
                 title="Sub-ops"
                 rows={block.subops}
                 total_us={block.per_instance_runtime_us}
                 compact={compact}
+                aggregateTflops={blockTflops}
+                timeLabel={`per instance ${fmtUs(block.per_instance_runtime_us)} µs`}
               />
             </details>
-          )
-        ))}
+          );
+        })}
       </div>
     </>
   );

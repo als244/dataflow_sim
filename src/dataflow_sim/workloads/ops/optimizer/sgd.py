@@ -5,5 +5,11 @@ from dataflow_sim.workloads.dataflow import DataflowCost
 from dataflow_sim.workloads.ops._common import memory_op
 
 
-def sgd_step(name: str, *, weight_bytes: int) -> DataflowCost:
-    return memory_op(name, 3 * weight_bytes)
+def sgd_step(
+    name: str,
+    *,
+    weight_bytes: int,
+    gradient_bytes: int | None = None,
+) -> DataflowCost:
+    gradient = weight_bytes if gradient_bytes is None else gradient_bytes
+    return memory_op(name, 2 * weight_bytes + gradient)

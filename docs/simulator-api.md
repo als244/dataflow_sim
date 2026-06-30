@@ -112,11 +112,15 @@ The FastAPI app uses split payloads:
   },
   "hardware": {
     "preset": "custom",
-    "peak_tflops": 100,
+    "peak_tflops_bf16": 100,
+    "peak_tflops_fp8": 200,
+    "peak_tflops_fp4": 400,
     "fast_memory_bw_gbs": 1000,
     "from_slow_bw_gbs": 100,
     "to_slow_bw_gbs": 100,
-    "matmul_eff": 0.8,
+    "matmul_eff_bf16": 0.8,
+    "matmul_eff_fp8": 0.8,
+    "matmul_eff_fp4": 0.8,
     "attn_fwd_eff": 0.8,
     "attn_bwd_eff": 0.8,
     "mem_eff": 0.9
@@ -150,7 +154,13 @@ Returns:
     "olmoe_7B-1B": {"source": "model_training", "...": "..."}
   },
   "hardware": {
-    "H100": {"peak_tflops": 989, "...": "..."}
+    "H100": {
+      "peak_tflops_bf16": 989,
+      "peak_tflops_fp8": 1978,
+      "peak_tflops_fp4": null,
+      "matmul_eff_fp4": null,
+      "...": "..."
+    }
   }
 }
 ```
@@ -164,11 +174,15 @@ Request:
   "workload": {"source": "schema", "schema": {"schema_version": "dataflow/v1"}},
   "hardware": {
     "preset": "custom",
-    "peak_tflops": 100,
+    "peak_tflops_bf16": 100,
+    "peak_tflops_fp8": 200,
+    "peak_tflops_fp4": 400,
     "fast_memory_bw_gbs": 1000,
     "from_slow_bw_gbs": 100,
     "to_slow_bw_gbs": 100,
-    "matmul_eff": 0.8,
+    "matmul_eff_bf16": 0.8,
+    "matmul_eff_fp8": 0.8,
+    "matmul_eff_fp4": 0.8,
     "attn_fwd_eff": 0.8,
     "attn_bwd_eff": 0.8,
     "mem_eff": 0.9

@@ -2,15 +2,26 @@ import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from "
 
 export type Policy = "sliding_window" | "belady_reactive" | "roundtrip_planner" | "max_reduce" | "min_grow" | "pressurefit";
 export type OptimizerMode = "none" | "adamw" | "muon";
-export type ModelFamily = "llama3" | "qwen3" | "qwen3_moe" | "olmoe";
+export type ModelFamily =
+  | "llama3"
+  | "qwen3"
+  | "qwen3_moe"
+  | "olmoe"
+  | "qwen3_hybrid_dense"
+  | "qwen3_hybrid_moe"
+  | "deepseek_v3";
 
 export interface HardwareParams {
   preset: string;
-  peak_tflops: number;
+  peak_tflops_bf16: number;
+  peak_tflops_fp8: number;
+  peak_tflops_fp4: number | null;
   fast_memory_bw_gbs: number;
   from_slow_bw_gbs: number;
   to_slow_bw_gbs: number;
-  matmul_eff: number;
+  matmul_eff_bf16: number;
+  matmul_eff_fp8: number;
+  matmul_eff_fp4: number | null;
   attn_fwd_eff: number;
   attn_bwd_eff: number;
   mem_eff: number;
@@ -30,6 +41,24 @@ export interface ModelParams {
   num_routed_experts: number;
   top_k: number;
   qk_norm: boolean;
+  intermediate_size?: number;
+  full_attention_interval?: number;
+  linear_num_key_heads?: number;
+  linear_key_head_dim?: number;
+  linear_num_value_heads?: number;
+  linear_value_head_dim?: number;
+  linear_conv_kernel_dim?: number;
+  gdn_chunk_size?: number;
+  router_aux_loss_coef?: number;
+  mtp_num_hidden_layers?: number;
+  first_k_dense_replace?: number;
+  q_lora_rank?: number;
+  kv_lora_rank?: number;
+  qk_nope_head_dim?: number;
+  qk_rope_head_dim?: number;
+  v_head_dim?: number;
+  routed_scaling_factor?: number;
+  scoring_func?: string;
 }
 
 export interface TrainingParams {
@@ -41,13 +70,26 @@ export interface TrainingParams {
   final_model_state_on_backing: boolean;
 }
 
+export type DTypeName = "bf16" | "fp8" | "fp4";
+
+export interface DatatypeParams {
+  weight_dtype: DTypeName;
+  activation_dtype: DTypeName;
+  expert_dispatch_dtype: DTypeName;
+  gradient_dtype: DTypeName;
+  optimizer_dtype: DTypeName;
+  compute_precision: DTypeName;
+  expert_weight_dtype: DTypeName;
+  expert_compute_precision: DTypeName;
+}
+
 export interface DataflowCost {
   kind: "fixed" | "roofline" | "sum";
   name?: string | null;
   runtime_us?: number | null;
   flops?: number;
   memory_bytes?: number;
-  efficiency?: "matmul" | "attention" | "attention_fwd" | "attention_bwd" | "memory" | "custom";
+  efficiency?: "matmul" | "matmul_bf16" | "matmul_fp8" | "matmul_fp4" | "attention" | "attention_fwd" | "attention_bwd" | "memory" | "custom";
   count?: number;
   effective_flops?: number | null;
   compute_eff?: number | null;
@@ -113,6 +155,7 @@ export interface ModelTrainingWorkloadParams {
   preset: string;
   model: ModelParams;
   training: TrainingParams;
+  datatypes: DatatypeParams;
 }
 
 export interface SchemaWorkloadParams {
@@ -140,6 +183,7 @@ export interface ModelTrainingWorkloadPreset {
   preset: string;
   model: Omit<ModelParams, "preset">;
   training: TrainingParams;
+  datatypes: DatatypeParams;
   description: string;
 }
 
@@ -152,38 +196,76 @@ export interface SchemaWorkloadPreset {
 
 export type WorkloadPreset = ModelTrainingWorkloadPreset | SchemaWorkloadPreset;
 
+export interface ModelFieldDescriptor {
+  key: keyof ModelParams;
+  label: string;
+  kind?: "number" | "boolean" | "text";
+  min?: number;
+  step?: number;
+  advanced?: boolean;
+}
+
+export interface ModelFamilyDescriptor {
+  key: ModelFamily;
+  label: string;
+  presets: string[];
+  fields: ModelFieldDescriptor[];
+}
+
 export interface Presets {
   workloads: Record<string, WorkloadPreset>;
-  models?: Record<string, Omit<ModelParams, "preset">>;
+  model_families?: Record<string, ModelFamilyDescriptor>;
   hardware: Record<string, Omit<HardwareParams, "preset">>;
 }
 
 export const DEFAULT_HARDWARE: HardwareParams = {
   preset: "H100",
-  peak_tflops: 989,
+  peak_tflops_bf16: 989,
+  peak_tflops_fp8: 1978,
+  peak_tflops_fp4: null,
   fast_memory_bw_gbs: 3000,
   from_slow_bw_gbs: 50,
   to_slow_bw_gbs: 50,
-  matmul_eff: 0.65,
+  matmul_eff_bf16: 0.65,
+  matmul_eff_fp8: 0.65,
+  matmul_eff_fp4: null,
   attn_fwd_eff: 0.6,
   attn_bwd_eff: 0.5,
   mem_eff: 0.9,
 };
 
 export const DEFAULT_MODEL: ModelParams = {
-  preset: "llama3_8B",
-  family: "llama3",
-  vocab_size: 128256,
-  n_layers: 32,
-  d_model: 4096,
-  head_dim: 128,
-  n_heads: 32,
-  n_kv_heads: 8,
-  expert_dim: 14336,
+  preset: "qwen3_5_35B-A3B",
+  family: "qwen3_hybrid_moe",
+  vocab_size: 248320,
+  n_layers: 40,
+  d_model: 2048,
+  head_dim: 256,
+  n_heads: 16,
+  n_kv_heads: 2,
+  expert_dim: 512,
   num_shared_experts: 1,
-  num_routed_experts: 0,
-  top_k: 0,
-  qk_norm: false,
+  num_routed_experts: 256,
+  top_k: 8,
+  qk_norm: true,
+  intermediate_size: 0,
+  full_attention_interval: 4,
+  linear_num_key_heads: 16,
+  linear_key_head_dim: 128,
+  linear_num_value_heads: 32,
+  linear_value_head_dim: 128,
+  linear_conv_kernel_dim: 4,
+  gdn_chunk_size: 64,
+  router_aux_loss_coef: 0.001,
+  mtp_num_hidden_layers: 1,
+  first_k_dense_replace: 0,
+  q_lora_rank: 0,
+  kv_lora_rank: 0,
+  qk_nope_head_dim: 0,
+  qk_rope_head_dim: 0,
+  v_head_dim: 0,
+  routed_scaling_factor: 1,
+  scoring_func: "sigmoid",
 };
 
 export const DEFAULT_TRAINING: TrainingParams = {
@@ -193,6 +275,17 @@ export const DEFAULT_TRAINING: TrainingParams = {
   num_steps: 1,
   optimizer: "none",
   final_model_state_on_backing: false,
+};
+
+export const DEFAULT_DATATYPES: DatatypeParams = {
+  weight_dtype: "bf16",
+  activation_dtype: "bf16",
+  expert_dispatch_dtype: "bf16",
+  gradient_dtype: "bf16",
+  optimizer_dtype: "bf16",
+  compute_precision: "bf16",
+  expert_weight_dtype: "bf16",
+  expert_compute_precision: "bf16",
 };
 
 export const EXAMPLE_SCHEMA: DataflowProgram = {
@@ -229,9 +322,10 @@ export const EXAMPLE_SCHEMA: DataflowProgram = {
 export const DEFAULT_PARAMS: SimulationParams = {
   workload: {
     source: "model_training",
-    preset: "llama3_8B",
+    preset: "qwen3_5_35B-A3B",
     model: DEFAULT_MODEL,
     training: DEFAULT_TRAINING,
+    datatypes: DEFAULT_DATATYPES,
   },
   hardware: DEFAULT_HARDWARE,
   planner: {
@@ -257,15 +351,26 @@ const OPTIMIZER_OPTIONS: { value: OptimizerMode; label: string }[] = [
   { value: "muon", label: "Muon" },
 ];
 
+const DTYPE_OPTIONS: { value: DTypeName; label: string }[] = [
+  { value: "bf16", label: "BF16" },
+  { value: "fp8", label: "FP8" },
+  { value: "fp4", label: "FP4" },
+];
+
 const MODEL_FAMILY_OPTIONS: { value: ModelFamily; label: string }[] = [
   { value: "llama3", label: "Llama 3" },
   { value: "qwen3", label: "Qwen3 Dense" },
   { value: "qwen3_moe", label: "Qwen3 MoE" },
   { value: "olmoe", label: "OLMoE" },
+  { value: "qwen3_hybrid_dense", label: "Qwen3.5/3.6 Dense" },
+  { value: "qwen3_hybrid_moe", label: "Qwen3.5/3.6 MoE" },
+  { value: "deepseek_v3", label: "DeepSeek-V3" },
 ];
 
 const HW_ACCELERATOR_FIELDS: { key: keyof Omit<HardwareParams, "preset">; label: string; step?: number; min?: number }[] = [
-  { key: "peak_tflops", label: "Peak TFLOPS", min: 0.1, step: 1 },
+  { key: "peak_tflops_bf16", label: "Peak BF16 TFLOP/s", min: 0.1, step: 1 },
+  { key: "peak_tflops_fp8", label: "Peak FP8 TFLOP/s", min: 0.1, step: 1 },
+  { key: "peak_tflops_fp4", label: "Peak FP4 TFLOP/s", min: 0.1, step: 1 },
   { key: "fast_memory_bw_gbs", label: "Fast Memory BW (GB/s)", min: 1, step: 10 },
 ];
 
@@ -276,7 +381,9 @@ const HW_SLOW_MEMORY_FIELDS: { key: keyof Omit<HardwareParams, "preset">; label:
 
 const HW_KERNEL_FIELDS: { key: keyof Omit<HardwareParams, "preset">; label: string; step?: number; min?: number }[] = [
   { key: "mem_eff", label: "Memory Efficiency", min: 0.01, step: 0.01 },
-  { key: "matmul_eff", label: "Matmul Efficiency", min: 0.01, step: 0.01 },
+  { key: "matmul_eff_bf16", label: "BF16 Matmul Efficiency", min: 0.01, step: 0.01 },
+  { key: "matmul_eff_fp8", label: "FP8 Matmul Efficiency", min: 0.01, step: 0.01 },
+  { key: "matmul_eff_fp4", label: "FP4 Matmul Efficiency", min: 0.01, step: 0.01 },
   { key: "attn_fwd_eff", label: "Attention Forward Efficiency", min: 0.01, step: 0.01 },
   { key: "attn_bwd_eff", label: "Attention Backward Efficiency", min: 0.01, step: 0.01 },
 ];
@@ -294,7 +401,12 @@ const HW_FIELD_SECTIONS: { title: string; fields: HardwareField[] }[] = [
   { title: "Kernel Efficiency", fields: HW_KERNEL_FIELDS },
 ];
 
-const MODEL_FIELDS: { key: keyof Omit<ModelParams, "preset" | "family" | "qk_norm">; label: string }[] = [
+const NULLABLE_HW_FIELDS = new Set<keyof HardwareParams>([
+  "peak_tflops_fp4",
+  "matmul_eff_fp4",
+]);
+
+const FALLBACK_MODEL_FIELDS: ModelFieldDescriptor[] = [
   { key: "vocab_size", label: "Vocabulary Size" },
   { key: "n_layers", label: "Layers" },
   { key: "d_model", label: "Model Width" },
@@ -305,6 +417,7 @@ const MODEL_FIELDS: { key: keyof Omit<ModelParams, "preset" | "family" | "qk_nor
   { key: "num_shared_experts", label: "Shared Experts" },
   { key: "num_routed_experts", label: "Routed Experts" },
   { key: "top_k", label: "Top K" },
+  { key: "qk_norm", label: "QK Norm", kind: "boolean" },
 ];
 
 interface Props {
@@ -378,6 +491,7 @@ export function InputPanel({
         preset,
         model: { preset, ...p.model },
         training: p.training,
+        datatypes: p.datatypes,
       },
     });
   }
@@ -416,6 +530,17 @@ export function InputPanel({
     });
   }
 
+  function setDatatype<K extends keyof DatatypeParams>(key: K, value: DatatypeParams[K]) {
+    if (params.workload.source !== "model_training") return;
+    setParams({
+      ...params,
+      workload: {
+        ...params.workload,
+        datatypes: { ...params.workload.datatypes, [key]: value },
+      },
+    });
+  }
+
   function setRecompute(value: boolean) {
     setParams({
       ...params,
@@ -432,6 +557,7 @@ export function InputPanel({
         preset: DEFAULT_MODEL.preset,
         model: DEFAULT_MODEL,
         training: DEFAULT_TRAINING,
+        datatypes: DEFAULT_DATATYPES,
       },
     });
   }
@@ -485,6 +611,24 @@ export function InputPanel({
   );
   const modelTrainingWorkload =
     params.workload.source === "model_training" ? params.workload : null;
+  const modelFamilyOptions = useMemo(
+    () => {
+      const families = presets?.model_families;
+      if (!families) return MODEL_FAMILY_OPTIONS;
+      return Object.values(families).map((family) => ({
+        value: family.key,
+        label: family.label,
+      }));
+    },
+    [presets],
+  );
+  const activeModelFields = useMemo(
+    () => {
+      if (!modelTrainingWorkload) return FALLBACK_MODEL_FIELDS;
+      return presets?.model_families?.[modelTrainingWorkload.model.family]?.fields ?? FALLBACK_MODEL_FIELDS;
+    },
+    [modelTrainingWorkload, presets],
+  );
 
   return (
     <div className="panel input-panel">
@@ -544,35 +688,160 @@ export function InputPanel({
                       value={modelTrainingWorkload.model.family}
                       onChange={(e) => setModelTrainingModel("family", e.target.value as ModelFamily)}
                     >
-                      {MODEL_FAMILY_OPTIONS.map((o) => (
+                      {modelFamilyOptions.map((o) => (
                         <option key={o.value} value={o.value}>{o.label}</option>
                       ))}
                     </select>
                   </label>
                 </div>
                 <div className="form-grid">
-                  {MODEL_FIELDS.map((f) => (
-                    <label key={f.key} className="form-field">
-                      <span className="form-field-label">{f.label}</span>
-                      <input
-                        type="number"
-                        min={0}
-                        step={1}
-                        value={String(modelTrainingWorkload.model[f.key])}
-                        onChange={(e) => {
-                          const v = Number(e.target.value);
-                          if (Number.isFinite(v)) setModelTrainingModel(f.key, v);
-                        }}
-                      />
-                    </label>
-                  ))}
-                  <label className="form-field form-field-checkbox">
-                    <span className="form-field-label">QK Norm</span>
-                    <input
-                      type="checkbox"
-                      checked={modelTrainingWorkload.model.qk_norm}
-                      onChange={(e) => setModelTrainingModel("qk_norm", e.target.checked)}
-                    />
+                  {activeModelFields.map((f) => {
+                    const key = f.key;
+                    const kind = f.kind ?? "number";
+                    const value = modelTrainingWorkload.model[key];
+                    if (kind === "boolean") {
+                      return (
+                        <label key={key} className="form-field form-field-checkbox">
+                          <span className="form-field-label">{f.label}</span>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(value)}
+                            onChange={(e) => setModelTrainingModel(key, e.target.checked as ModelParams[typeof key])}
+                          />
+                        </label>
+                      );
+                    }
+                    if (kind === "text") {
+                      return (
+                        <label key={key} className="form-field">
+                          <span className="form-field-label">{f.label}</span>
+                          <input
+                            type="text"
+                            value={String(value ?? "")}
+                            onChange={(e) => setModelTrainingModel(key, e.target.value as ModelParams[typeof key])}
+                          />
+                        </label>
+                      );
+                    }
+                    return (
+                      <label key={key} className="form-field">
+                        <span className="form-field-label">{f.label}</span>
+                        <input
+                          type="number"
+                          min={f.min ?? 0}
+                          step={f.step ?? 1}
+                          value={String(value ?? 0)}
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            if (Number.isFinite(v)) setModelTrainingModel(key, v as ModelParams[typeof key]);
+                          }}
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              </FormSubsection>
+
+              <FormSubsection title="Datatypes">
+                <p className="form-note dim">
+                  See{" "}
+                  <a
+                    href="https://github.com/als244/dataflow_sim/blob/master/docs/datatypes.md"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    datatype option docs
+                  </a>
+                  {" "}for exact byte and compute-precision semantics.
+                </p>
+                <div className="form-grid">
+                  <label className="form-field">
+                    <span className="form-field-label">Weight DType</span>
+                    <select
+                      value={modelTrainingWorkload.datatypes.weight_dtype}
+                      onChange={(e) => setDatatype("weight_dtype", e.target.value as DTypeName)}
+                    >
+                      {DTYPE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="form-field">
+                    <span className="form-field-label">Activation DType</span>
+                    <select
+                      value={modelTrainingWorkload.datatypes.activation_dtype}
+                      onChange={(e) => setDatatype("activation_dtype", e.target.value as DTypeName)}
+                    >
+                      {DTYPE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="form-field">
+                    <span className="form-field-label">Gradient DType</span>
+                    <select
+                      value={modelTrainingWorkload.datatypes.gradient_dtype}
+                      onChange={(e) => setDatatype("gradient_dtype", e.target.value as DTypeName)}
+                    >
+                      {DTYPE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="form-field">
+                    <span className="form-field-label">Optimizer DType</span>
+                    <select
+                      value={modelTrainingWorkload.datatypes.optimizer_dtype}
+                      onChange={(e) => setDatatype("optimizer_dtype", e.target.value as DTypeName)}
+                    >
+                      {DTYPE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="form-field">
+                    <span className="form-field-label">Compute Precision</span>
+                    <select
+                      value={modelTrainingWorkload.datatypes.compute_precision}
+                      onChange={(e) => setDatatype("compute_precision", e.target.value as DTypeName)}
+                    >
+                      {DTYPE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="form-field">
+                    <span className="form-field-label">Expert Weight DType</span>
+                    <select
+                      value={modelTrainingWorkload.datatypes.expert_weight_dtype}
+                      onChange={(e) => setDatatype("expert_weight_dtype", e.target.value as DTypeName)}
+                    >
+                      {DTYPE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="form-field">
+                    <span className="form-field-label">Expert Compute Precision</span>
+                    <select
+                      value={modelTrainingWorkload.datatypes.expert_compute_precision}
+                      onChange={(e) => setDatatype("expert_compute_precision", e.target.value as DTypeName)}
+                    >
+                      {DTYPE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="form-field">
+                    <span className="form-field-label">Expert Dispatch DType</span>
+                    <select
+                      value={modelTrainingWorkload.datatypes.expert_dispatch_dtype}
+                      onChange={(e) => setDatatype("expert_dispatch_dtype", e.target.value as DTypeName)}
+                    >
+                      {DTYPE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
                   </label>
                 </div>
               </FormSubsection>
@@ -728,21 +997,32 @@ export function InputPanel({
           {HW_FIELD_SECTIONS.map(({ title, fields }) => (
             <FormSubsection key={title} title={title}>
               <div className="form-grid">
-                {fields.map((f) => (
-                  <label key={f.key} className="form-field">
-                    <span className="form-field-label">{f.label}</span>
-                    <input
-                      type="number"
-                      min={f.min}
-                      step={f.step ?? 1}
-                      value={String(params.hardware[f.key])}
-                      onChange={(e) => {
-                        const v = Number(e.target.value);
-                        if (Number.isFinite(v)) setHardware(f.key, v);
-                      }}
-                    />
-                  </label>
-                ))}
+                {fields.map((f) => {
+                  const value = params.hardware[f.key];
+                  const nullable = NULLABLE_HW_FIELDS.has(f.key as keyof HardwareParams);
+                  const unsupportedPresetValue = value === null && params.hardware.preset !== "custom";
+                  return (
+                    <label key={f.key} className="form-field">
+                      <span className="form-field-label">{f.label}</span>
+                      <input
+                        type={unsupportedPresetValue ? "text" : "number"}
+                        min={f.min}
+                        step={f.step ?? 1}
+                        placeholder={nullable ? "--" : undefined}
+                        disabled={unsupportedPresetValue}
+                        value={value === null ? (unsupportedPresetValue ? "--" : "") : String(value)}
+                        onChange={(e) => {
+                          if (e.target.value === "" && nullable) {
+                            setHardware(f.key, null as HardwareParams[typeof f.key]);
+                            return;
+                          }
+                          const v = Number(e.target.value);
+                          if (Number.isFinite(v)) setHardware(f.key, v as HardwareParams[typeof f.key]);
+                        }}
+                      />
+                    </label>
+                  );
+                })}
               </div>
             </FormSubsection>
           ))}

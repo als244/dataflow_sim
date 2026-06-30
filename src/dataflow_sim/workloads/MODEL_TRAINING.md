@@ -132,7 +132,7 @@ training = TrainingConfig(
 ```
 
 `DTypePolicy` controls byte sizes. The default is bf16 for parameters,
-activations, gradients, and optimizer state:
+activations, expert dispatch traffic, gradients, and optimizer state:
 
 ```python
 from dataflow_sim.workloads.dataflow_builder import DTypePolicy
@@ -140,10 +140,18 @@ from dataflow_sim.workloads.dataflow_builder import DTypePolicy
 dtype_policy = DTypePolicy(
     param="bf16",
     activation="bf16",
+    expert_dispatch="bf16",
     gradient="bf16",
     optimizer_state="bf16",
+    expert_param="bf16",
+    compute="bf16",
+    expert_compute="bf16",
 )
 ```
+
+For the exact webapp/API semantics of each datatype and compute-precision
+field, including MoE expert dispatch and expert weight overrides, see
+[docs/datatypes.md](../../../docs/datatypes.md).
 
 The builder can emit a hardware-free program:
 

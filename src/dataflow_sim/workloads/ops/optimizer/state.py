@@ -14,6 +14,7 @@ class OptimizerMatrix:
     rows: int
     cols: int
     count: int = 1
+    expert: bool = False
 
 
 def optimizer_state_bytes(weight_bytes: int, optimizer: OptimizerMode) -> int:

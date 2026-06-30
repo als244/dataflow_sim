@@ -30,6 +30,9 @@ from dataflow_sim.workloads.common.workload import Workload
 CostKind = Literal["fixed", "roofline", "sum"]
 EfficiencyName = Literal[
     "matmul",
+    "matmul_bf16",
+    "matmul_fp8",
+    "matmul_fp4",
     "attention",
     "attention_fwd",
     "attention_bwd",
@@ -313,8 +316,14 @@ def role_to_object_type(role: str) -> ObjectType:
 def _eff_value(cost: DataflowCost, hw: HardwareSpec) -> float:
     if cost.compute_eff is not None:
         return cost.compute_eff
-    if cost.efficiency == "matmul":
-        return hw.matmul_eff
+    if cost.efficiency in {"matmul", "matmul_bf16"}:
+        return hw.matmul_eff_bf16
+    if cost.efficiency == "matmul_fp8":
+        return hw.matmul_eff_fp8
+    if cost.efficiency == "matmul_fp4":
+        if hw.matmul_eff_fp4 is None:
+            raise ValueError("hardware does not define FP4 matmul efficiency")
+        return hw.matmul_eff_fp4
     if cost.efficiency in {"attention", "attention_fwd"}:
         return hw.attn_fwd_eff
     if cost.efficiency == "attention_bwd":
@@ -322,6 +331,18 @@ def _eff_value(cost: DataflowCost, hw: HardwareSpec) -> float:
     if cost.efficiency == "memory":
         return 1.0
     raise ValueError("custom roofline cost requires compute_eff")
+
+
+def _peak_tflops(cost: DataflowCost, hw: HardwareSpec) -> float:
+    if cost.efficiency == "matmul_bf16":
+        return hw.peak_tflops_bf16
+    if cost.efficiency == "matmul_fp8":
+        return hw.peak_tflops_fp8
+    if cost.efficiency == "matmul_fp4":
+        if hw.peak_tflops_fp4 is None:
+            raise ValueError("hardware does not define FP4 peak TFLOP/s")
+        return hw.peak_tflops_fp4
+    return hw.peak_tflops_bf16
 
 
 def _timing_row(
@@ -431,7 +452,7 @@ def resolve_cost(cost: DataflowCost, hw: HardwareSpec, *, default_name: str) -> 
         )
 
     eff = _eff_value(cost, hw)
-    math_seconds = cost.flops / (hw.peak_tflops * 1e12 * eff)
+    math_seconds = cost.flops / (_peak_tflops(cost, hw) * 1e12 * eff)
     math_us_exact = math_seconds * 1e6
     math_us = math_us_exact
     per_call_us = max(math_us, mem_us)
@@ -501,6 +522,12 @@ def _block_bound_by(rows: list[dict[str, Any]]) -> str:
     return "compute" if compute_us >= memory_us else "memory"
 
 
+def _tflops(flops: int, runtime_us: float) -> float | None:
+    if flops <= 0 or runtime_us <= 0:
+        return None
+    return flops / (runtime_us * 1e-6) / 1e12
+
+
 def _build_block_summaries(
     program: DataflowProgram,
     resolved_by_key: dict[str, ResolvedCost],
@@ -518,6 +545,9 @@ def _build_block_summaries(
         per_flops = _sum_row_field(rows, "flops")
         per_eff_flops = _sum_row_field(rows, "effective_flops")
         per_bytes = _sum_row_field(rows, "bytes")
+        total_runtime_us = resolved.runtime_us * instance_count
+        total_flops = per_flops * instance_count
+        total_eff_flops = per_eff_flops * instance_count
         summaries.append(
             {
                 "key": block.key,
@@ -525,13 +555,15 @@ def _build_block_summaries(
                 "category": block.category,
                 "instance_count": instance_count,
                 "per_instance_runtime_us": resolved.runtime_us,
-                "total_runtime_us": resolved.runtime_us * instance_count,
+                "total_runtime_us": total_runtime_us,
                 "per_instance_flops": per_flops,
-                "total_flops": per_flops * instance_count,
+                "total_flops": total_flops,
                 "per_instance_effective_flops": per_eff_flops,
-                "total_effective_flops": per_eff_flops * instance_count,
+                "total_effective_flops": total_eff_flops,
                 "per_instance_bytes": per_bytes,
                 "total_bytes": per_bytes * instance_count,
+                "hardware_tflops": _tflops(total_flops, total_runtime_us),
+                "effective_tflops": _tflops(total_eff_flops, total_runtime_us),
                 "bound_by": _block_bound_by(rows),
                 "subops": rows,
                 "task_ids": [task.id for task in tasks],
