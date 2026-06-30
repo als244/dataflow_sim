@@ -21,6 +21,7 @@ from dataflow_sim.workloads.ops.forward.mamba import (
 from dataflow_sim.workloads.ops.forward.mla_attention import mla_attention, mla_rope
 from dataflow_sim.workloads.ops.forward.movement import gather, memory, reduce, scatter
 from dataflow_sim.workloads.ops.forward.norm import layer_norm, qk_norm, rms_norm
+from dataflow_sim.workloads.ops.forward.sliding_attention import sliding_attention
 
 __all__ = [
     "attention",
@@ -45,5 +46,6 @@ __all__ = [
     "rope",
     "scatter",
     "silu",
+    "sliding_attention",
     "swiglu",
 ]

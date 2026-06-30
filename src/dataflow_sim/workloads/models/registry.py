@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from dataflow_sim.workloads.models.deepseek_v3 import DeepSeekV3Config, DeepSeekV3ForTraining
+from dataflow_sim.workloads.models.gpt_oss import GPTOSSConfig, GPTOSSForTraining
 from dataflow_sim.workloads.models.llama3 import Llama3Config, Llama3ForTraining
 from dataflow_sim.workloads.models.nemotron_h import NemotronHConfig, NemotronHForTraining
 from dataflow_sim.workloads.models.olmoe import OLMoEConfig, OLMoEForTraining
@@ -103,6 +104,10 @@ NEMOTRON_FIELDS = BASE_FIELDS + (
     ModelFieldDescriptor("hybrid_override_pattern", "Hybrid Pattern", kind="text", min=None, step=None, advanced=True),
 )
 
+GPT_OSS_FIELDS = BASE_FIELDS + (
+    ModelFieldDescriptor("sliding_window", "Sliding Window", min=1, advanced=True),
+)
+
 MODEL_FAMILIES: dict[str, ModelFamilyRegistryEntry] = {
     "llama3": ModelFamilyRegistryEntry(
         key="llama3",
@@ -163,6 +168,14 @@ MODEL_FAMILIES: dict[str, ModelFamilyRegistryEntry] = {
         builder_cls=DeepSeekV3ForTraining,
         presets=("deepseek_v3_671B-37B", "kimi_k2_1T-32B"),
         fields=DEEPSEEK_FIELDS,
+    ),
+    "gpt_oss": ModelFamilyRegistryEntry(
+        key="gpt_oss",
+        label="GPT-OSS",
+        config_cls=GPTOSSConfig,
+        builder_cls=GPTOSSForTraining,
+        presets=("gpt_oss_20B", "gpt_oss_120B"),
+        fields=GPT_OSS_FIELDS,
     ),
     "nemotron_h": ModelFamilyRegistryEntry(
         key="nemotron_h",

@@ -10,6 +10,9 @@ from dataflow_sim.workloads.modules.dimensions import (
     layer_weight_matrices,
     params_per_layer,
 )
+from dataflow_sim.workloads.modules.gpt_oss_attention import GPTOSSAttention
+from dataflow_sim.workloads.modules.gpt_oss_block import GPTOSSBlock
+from dataflow_sim.workloads.modules.gpt_oss_dimensions import GPTOSSDimensions
 from dataflow_sim.workloads.modules.mla_attention import MLAAttention
 from dataflow_sim.workloads.modules.mlp import SwiGLUMLP
 from dataflow_sim.workloads.modules.moe import MoE
@@ -45,6 +48,9 @@ __all__ = [
     "DeepSeekBlock",
     "DeepSeekDimensions",
     "DenseAttention",
+    "GPTOSSAttention",
+    "GPTOSSBlock",
+    "GPTOSSDimensions",
     "MLAAttention",
     "MoE",
     "NemotronAttention",

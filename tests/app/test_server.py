@@ -17,7 +17,7 @@ _MODEL_KEYS = {
     "kv_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim", "v_head_dim",
     "routed_scaling_factor", "scoring_func", "shared_expert_dim",
     "mamba_num_heads", "mamba_head_dim", "ssm_state_size", "conv_kernel",
-    "mamba_chunk_size", "n_groups", "hybrid_override_pattern",
+    "mamba_chunk_size", "n_groups", "hybrid_override_pattern", "sliding_window",
 }
 _TRAINING_KEYS = {
     "seqlen", "num_seqs", "grad_accum_rounds", "num_steps", "optimizer",
@@ -308,6 +308,8 @@ def test_presets_include_only_public_model_workloads():
         "qwen3_5_397B-A17B": "qwen3_hybrid_moe",
         "deepseek_v3_671B-37B": "deepseek_v3",
         "kimi_k2_1T-32B": "deepseek_v3",
+        "gpt_oss_20B": "gpt_oss",
+        "gpt_oss_120B": "gpt_oss",
         "nemotron3_nano_30B-A3B": "nemotron_h",
         "nemotron3_super_120B-A12B": "nemotron_h",
         "nemotron3_ultra_550B-A55B": "nemotron_h",
@@ -337,6 +339,7 @@ def test_presets_include_only_public_model_workloads():
         "qwen3_hybrid_dense",
         "qwen3_hybrid_moe",
         "deepseek_v3",
+        "gpt_oss",
         "nemotron_h",
     }
     qwen_fields = {
@@ -351,6 +354,10 @@ def test_presets_include_only_public_model_workloads():
         field["key"]
         for field in body["model_families"]["nemotron_h"]["fields"]
     }
+    gpt_oss_fields = {
+        field["key"]
+        for field in body["model_families"]["gpt_oss"]["fields"]
+    }
     assert "linear_num_value_heads" in qwen_fields
     assert "gdn_chunk_size" in qwen_fields
     assert "router_aux_loss_coef" not in qwen_fields
@@ -361,6 +368,8 @@ def test_presets_include_only_public_model_workloads():
     assert "mamba_num_heads" in nemotron_fields
     assert "shared_expert_dim" in nemotron_fields
     assert "hybrid_override_pattern" in nemotron_fields
+    assert "sliding_window" in gpt_oss_fields
+    assert "layer_types" not in gpt_oss_fields
     assert "layer_types" not in qwen_fields
 
 

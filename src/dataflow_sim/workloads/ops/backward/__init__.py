@@ -24,6 +24,7 @@ from dataflow_sim.workloads.ops.backward.mla_attention import (
 )
 from dataflow_sim.workloads.ops.backward.movement import gather_grad, reduce_grad, scatter_grad
 from dataflow_sim.workloads.ops.backward.norm import layer_norm_grad, qk_norm_grad, rms_norm_grad
+from dataflow_sim.workloads.ops.backward.sliding_attention import sliding_attention_grad
 
 __all__ = [
     "attention_grad",
@@ -48,5 +49,6 @@ __all__ = [
     "rope_grad",
     "scatter_grad",
     "silu_grad",
+    "sliding_attention_grad",
     "swiglu_grad",
 ]

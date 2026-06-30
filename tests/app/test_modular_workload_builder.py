@@ -24,10 +24,12 @@ from dataflow_sim.workloads.models.qwen3_hybrid_moe import (
 )
 from dataflow_sim.workloads.models.qwen3_moe import Qwen3MoEConfig, Qwen3MoEForTraining
 from dataflow_sim.workloads.models.deepseek_v3 import DeepSeekV3Config, DeepSeekV3ForTraining
+from dataflow_sim.workloads.models.gpt_oss import GPTOSSConfig, GPTOSSForTraining
 from dataflow_sim.workloads.models.kimi_k2 import KimiK2Config, KimiK2ForTraining
 from dataflow_sim.workloads.models.nemotron_h import NemotronHConfig, NemotronHForTraining
 from dataflow_sim.workloads.modules import (
     DenseAttention,
+    GPTOSSBlock,
     MoE,
     NemotronBlock,
     ReLU2MoE,
@@ -371,6 +373,7 @@ def test_family_presets_are_easy_to_override():
     deepseek = DeepSeekV3Config.preset("671B-37B", n_layers=4)
     kimi = KimiK2Config.preset("1T-32B", first_k_dense_replace=2)
     nemotron = NemotronHConfig.preset("nano", n_layers=4, hybrid_override_pattern="M*E-")
+    gpt_oss = GPTOSSConfig.preset("20B", n_layers=4)
 
     assert llama.preset_name == "llama3_8B"
     assert llama.n_layers == 80
@@ -405,6 +408,14 @@ def test_family_presets_are_easy_to_override():
     assert nemotron.preset_name == "nemotron3_nano_30B-A3B"
     assert nemotron.n_layers == 4
     assert nemotron.dimensions().layer_types == ("mamba", "attention", "moe", "mlp")
+    assert gpt_oss.preset_name == "gpt_oss_20B"
+    assert gpt_oss.n_layers == 4
+    assert gpt_oss.dimensions().layer_types == (
+        "sliding_attention",
+        "full_attention",
+        "sliding_attention",
+        "full_attention",
+    )
 
 
 def test_new_family_public_preset_values_match_source_configs():
@@ -417,6 +428,8 @@ def test_new_family_public_preset_values_match_source_configs():
     nemotron_nano = NemotronHConfig.preset("nano")
     nemotron_super = NemotronHConfig.preset("super")
     nemotron_ultra = NemotronHConfig.preset("ultra")
+    gpt_oss_20b = GPTOSSConfig.preset("20B")
+    gpt_oss_120b = GPTOSSConfig.preset("120B")
 
     assert qwen_dense.vocab_size == 248_320
     assert qwen_dense.n_layers == 64
@@ -460,6 +473,25 @@ def test_new_family_public_preset_values_match_source_configs():
     assert nemotron_ultra.n_layers == 108
     assert nemotron_ultra.d_model == 8192
     assert nemotron_ultra.n_heads == 64
+    assert gpt_oss_20b.vocab_size == 201_088
+    assert gpt_oss_20b.n_layers == 24
+    assert gpt_oss_20b.d_model == 2880
+    assert gpt_oss_20b.head_dim == 64
+    assert gpt_oss_20b.n_heads == 64
+    assert gpt_oss_20b.n_kv_heads == 8
+    assert gpt_oss_20b.expert_dim == 2880
+    assert gpt_oss_20b.num_routed_experts == 32
+    assert gpt_oss_20b.top_k == 4
+    assert gpt_oss_20b.sliding_window == 128
+    assert gpt_oss_120b.n_layers == 36
+    assert gpt_oss_120b.d_model == 2880
+    assert gpt_oss_120b.num_routed_experts == 128
+    assert gpt_oss_120b.top_k == 4
+    assert gpt_oss_120b.sliding_window == 128
+    assert gpt_oss_20b.dimensions().layer_types.count("sliding_attention") == 12
+    assert gpt_oss_20b.dimensions().layer_types.count("full_attention") == 12
+    assert gpt_oss_120b.dimensions().layer_types.count("sliding_attention") == 18
+    assert gpt_oss_120b.dimensions().layer_types.count("full_attention") == 18
     for config, counts in (
         (nemotron_nano, {"mamba": 23, "attention": 6, "moe": 23}),
         (nemotron_super, {"mamba": 40, "attention": 8, "moe": 40}),
@@ -524,6 +556,42 @@ def test_new_op_helper_formulas_are_hand_checkable():
         n_groups=2,
         chunk_size=2,
     )
+    sliding = fwd.sliding_attention(
+        "sliding_attn",
+        tokens=8,
+        n_heads=2,
+        n_kv_heads=1,
+        head_dim=5,
+        window_size=2,
+        seqlen=4,
+    )
+    sliding_full = fwd.sliding_attention(
+        "sliding_attn_full",
+        tokens=8,
+        n_heads=2,
+        n_kv_heads=1,
+        head_dim=5,
+        window_size=8,
+        seqlen=4,
+    )
+    sliding_varlen = fwd.sliding_attention(
+        "sliding_attn_varlen",
+        tokens=8,
+        n_heads=2,
+        n_kv_heads=1,
+        head_dim=5,
+        window_size=2,
+        sequence_lengths=[3, 5],
+    )
+    sliding_bwd = bwd.sliding_attention_grad(
+        "sliding_attn_bwd",
+        tokens=8,
+        n_heads=2,
+        n_kv_heads=1,
+        head_dim=5,
+        window_size=2,
+        seqlen=4,
+    )
 
     assert conv.flops == 2 * 5 * 7 * 3
     assert conv.memory_bytes == (5 * 7 + 7 * 3 + 5 * 7) * 2
@@ -547,9 +615,19 @@ def test_new_op_helper_formulas_are_hand_checkable():
     ) * 2
     assert mamba_bwd.flops == 2 * mamba.flops
     assert mamba_bwd.memory_bytes == 2 * mamba.memory_bytes
+    assert sliding.flops == 2 * 2 * 5 * (2 * 4 * 2)
+    assert sliding.memory_bytes == (8 * (2 + 2 * 1) * 5 + 8 * 2 * 5) * 2
+    assert sliding_full.flops == 2 * 2 * 5 * (2 * 4 * 4)
+    assert sliding_varlen.flops == 2 * 2 * 5 * (3 * 2 + 5 * 2)
+    assert sliding_bwd.flops == 5 * 2 * 5 * (2 * 4 * 2)
+    assert sliding_bwd.effective_flops == 4 * 2 * 5 * (2 * 4 * 2)
+    assert sliding_bwd.memory_bytes == (
+        (8 * (2 + 2 * 1) * 5 + 8 * 2 * 5) * 2
+        + 8 * (2 + 2 * 1) * 5 * 2
+    )
 
 
-def test_qwen_and_deepseek_reuse_existing_moe_subops_without_router_ops():
+def test_qwen_deepseek_and_gpt_oss_reuse_existing_moe_subops_without_router_ops():
     qwen = QwenHybridMoEConfig.preset(
         "35B-A3B",
         n_layers=1,
@@ -581,8 +659,22 @@ def test_qwen_and_deepseek_reuse_existing_moe_subops_without_router_ops():
         v_head_dim=32,
         head_dim=48,
     ).dimensions()
+    gpt_oss = GPTOSSConfig.preset(
+        "20B",
+        n_layers=2,
+        d_model=256,
+        n_heads=4,
+        n_kv_heads=1,
+        expert_dim=128,
+        num_routed_experts=8,
+        top_k=2,
+        vocab_size=1024,
+    ).dimensions()
 
-    expected = [op.name for op in MoE(qwen.ffn_dimensions()).forward_ops(tokens=16)]
+    qwen_expected = [op.name for op in MoE(qwen.ffn_dimensions()).forward_ops(tokens=16)]
+    gpt_oss_expected = [
+        op.name for op in MoE(gpt_oss.ffn_dimensions()).forward_ops(tokens=16)
+    ]
     qwen_ops = [
         op.name
         for op in QwenHybridMoEForTraining(
@@ -624,13 +716,102 @@ def test_qwen_and_deepseek_reuse_existing_moe_subops_without_router_ops():
             )
         ).layers[-1].forward_ops(16, 16, 2)
     ]
+    gpt_oss_ops = [
+        op.name
+        for op in GPTOSSForTraining(
+            GPTOSSConfig.preset(
+                "20B",
+                n_layers=2,
+                d_model=256,
+                n_heads=4,
+                n_kv_heads=1,
+                expert_dim=128,
+                num_routed_experts=8,
+                top_k=2,
+                vocab_size=1024,
+            )
+        ).layers[0].forward_ops(16, 16, 2)
+    ]
 
-    for name in expected:
+    for name in qwen_expected:
         assert name in qwen_ops
         assert name in deepseek_ops
+    for name in gpt_oss_expected:
+        assert name in gpt_oss_ops
     assert not any("router" in name for name in qwen_ops)
     assert not any("router" in name for name in deepseek_ops)
+    assert not any("router" in name for name in gpt_oss_ops)
     assert deepseek.ffn_dimensions(dense=False).num_routed_experts == 8
+    assert gpt_oss.ffn_dimensions().num_routed_experts == 8
+
+
+def test_gpt_oss_modules_emit_expected_subop_chains_and_block_keys():
+    config = GPTOSSConfig.preset(
+        "20B",
+        n_layers=2,
+        d_model=256,
+        n_heads=4,
+        n_kv_heads=1,
+        expert_dim=128,
+        num_routed_experts=8,
+        top_k=2,
+        vocab_size=4096,
+        sliding_window=8,
+    )
+    dims = config.dimensions()
+    sliding_ops = [
+        op.name
+        for op in GPTOSSBlock(dims, "sliding_attention").forward_ops(tokens=16, seqlen=16)
+    ]
+    full_ops = [
+        op.name
+        for op in GPTOSSBlock(dims, "full_attention").forward_ops(tokens=16, seqlen=16)
+    ]
+
+    assert sliding_ops == [
+        "attn_norm",
+        "qkv_proj",
+        "rope",
+        "sliding_attn",
+        "attn_proj",
+        "ffn_norm",
+        "x_scatter",
+        "routed_mlp_up_one_expert",
+        "swiglu",
+        "routed_mlp_down_one_expert",
+        "x_gather",
+    ]
+    assert full_ops == [
+        "attn_norm",
+        "qkv_proj",
+        "rope",
+        "attn",
+        "attn_proj",
+        "ffn_norm",
+        "x_scatter",
+        "routed_mlp_up_one_expert",
+        "swiglu",
+        "routed_mlp_down_one_expert",
+        "x_gather",
+    ]
+    program = GPTOSSForTraining(config).build_training_program(
+        TrainingConfig(seqlen=16, num_seqs=1, optimizer="adamw")
+    )
+    assert _block_keys(program) >= {
+        "gpt_oss.sliding_attention_moe_block.forward",
+        "gpt_oss.full_attention_moe_block.forward",
+        "gpt_oss.sliding_attention_moe_block.backward",
+        "gpt_oss.full_attention_moe_block.backward",
+        "gpt_oss.sliding_attention_moe_block.optimizer_step.adamw",
+        "gpt_oss.full_attention_moe_block.optimizer_step.adamw",
+    }
+    blocks = _blocks_by_key(program)
+    assert blocks["gpt_oss.sliding_attention_moe_block.forward"].name == (
+        "GPT-OSS Sliding Attention MoE Block Forward"
+    )
+    assert blocks["gpt_oss.full_attention_moe_block.forward"].name == (
+        "GPT-OSS Full Attention MoE Block Forward"
+    )
 
 
 def test_nemotron_modules_emit_expected_subop_chains_and_dtype_lanes():
@@ -1011,6 +1192,23 @@ def test_varied_family_workloads_run_and_report_kpis():
             ),
             TrainingConfig(seqlen=128, num_seqs=1, optimizer="adamw"),
         ),
+        (
+            GPTOSSForTraining(
+                GPTOSSConfig.preset(
+                    "20B",
+                    n_layers=4,
+                    d_model=512,
+                    n_heads=8,
+                    n_kv_heads=2,
+                    expert_dim=128,
+                    num_routed_experts=8,
+                    top_k=2,
+                    vocab_size=32_000,
+                    sliding_window=64,
+                )
+            ),
+            TrainingConfig(seqlen=128, num_seqs=1, optimizer="adamw"),
+        ),
     ]
 
     for model, training in cases:
@@ -1132,6 +1330,24 @@ def test_constrained_memory_recompute_planning_selects_useful_variants():
             ),
             TrainingConfig(seqlen=512, num_seqs=1, optimizer="none"),
             80 * 1024 * 1024,
+        ),
+        (
+            GPTOSSForTraining(
+                GPTOSSConfig.preset(
+                    "20B",
+                    n_layers=6,
+                    d_model=512,
+                    n_heads=8,
+                    n_kv_heads=2,
+                    expert_dim=128,
+                    num_routed_experts=8,
+                    top_k=2,
+                    vocab_size=32_000,
+                    sliding_window=128,
+                )
+            ),
+            TrainingConfig(seqlen=512, num_seqs=1, optimizer="none"),
+            96 * 1024 * 1024,
         ),
     ]
 

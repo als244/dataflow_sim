@@ -4,6 +4,7 @@ from dataflow_sim.workloads.models.deepseek_v3 import (
     DeepSeekV3ForTraining,
 )
 from dataflow_sim.workloads.models.kimi_k2 import KimiK2Config, KimiK2ForTraining
+from dataflow_sim.workloads.models.gpt_oss import GPTOSSConfig, GPTOSSForTraining
 from dataflow_sim.workloads.models.llama3 import Llama3Config, Llama3ForTraining
 from dataflow_sim.workloads.models.nemotron_h import NemotronHConfig, NemotronHForTraining
 from dataflow_sim.workloads.models.olmoe import OLMoEConfig, OLMoEForTraining
@@ -23,6 +24,8 @@ __all__ = [
     "DeepSeekV3ForTraining",
     "KimiK2Config",
     "KimiK2ForTraining",
+    "GPTOSSConfig",
+    "GPTOSSForTraining",
     "Llama3Config",
     "Llama3ForTraining",
     "NemotronHConfig",

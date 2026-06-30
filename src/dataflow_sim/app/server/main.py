@@ -64,6 +64,7 @@ ModelFamily = Literal[
     "qwen3_hybrid_dense",
     "qwen3_hybrid_moe",
     "deepseek_v3",
+    "gpt_oss",
     "nemotron_h",
 ]
 
@@ -124,6 +125,7 @@ class ModelParams(BaseModel):
     mamba_chunk_size: int = Field(128, ge=1)
     n_groups: int = Field(1, ge=1)
     hybrid_override_pattern: str = ""
+    sliding_window: int = Field(128, ge=1)
 
 
 class TrainingParams(BaseModel):

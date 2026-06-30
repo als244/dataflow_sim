@@ -284,6 +284,36 @@
         "routed_scaling_factor": 2.827,
         "scoring_func": "sigmoid"
     },
+    "gpt_oss_20B": {
+        "vocab_size": 201088,
+        "n_layers": 24,
+        "d_model": 2880,
+        "head_dim": 64,
+        "n_heads": 64,
+        "n_kv_heads": 8,
+        "expert_dim": 2880,
+        "num_shared_experts": 0,
+        "num_routed_experts": 32,
+        "top_k": 4,
+        "sliding_window": 128,
+        "is_causal": true,
+        "qk_norm": false
+    },
+    "gpt_oss_120B": {
+        "vocab_size": 201088,
+        "n_layers": 36,
+        "d_model": 2880,
+        "head_dim": 64,
+        "n_heads": 64,
+        "n_kv_heads": 8,
+        "expert_dim": 2880,
+        "num_shared_experts": 0,
+        "num_routed_experts": 128,
+        "top_k": 4,
+        "sliding_window": 128,
+        "is_causal": true,
+        "qk_norm": false
+    },
     "nemotron3_nano_30B-A3B": {
         "vocab_size": 131072,
         "n_layers": 52,
