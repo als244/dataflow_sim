@@ -180,21 +180,21 @@ def test_simulate_accepts_fractional_fast_memory_budget():
 def test_simulate_recompute_toggle_off_matches_default_and_can_change_makespan():
     # A tight cap where recompute relieves transfer pressure.
     off = simulate(SimulationParams.model_validate(_payload(
-        seqlen=4096,
+        seqlen=1024,
         num_seqs=2,
-        fast_memory_capacity_gb=0.005,
+        fast_memory_capacity_gb=0.001,
         recompute=False,
     )))
     on = simulate(SimulationParams.model_validate(_payload(
-        seqlen=4096,
+        seqlen=1024,
         num_seqs=2,
-        fast_memory_capacity_gb=0.005,
+        fast_memory_capacity_gb=0.001,
         recompute=True,
     )))
     omitted_payload = _payload(
-        seqlen=4096,
+        seqlen=1024,
         num_seqs=2,
-        fast_memory_capacity_gb=0.005,
+        fast_memory_capacity_gb=0.001,
     )
     del omitted_payload["planner"]["recompute"]
     omitted = simulate(SimulationParams.model_validate(omitted_payload))

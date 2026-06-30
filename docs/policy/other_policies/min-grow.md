@@ -15,7 +15,7 @@ Four stages:
 - **Phase A1 — Simulator-driven over-shrink**: from the static-feasible plan, iteratively try Belady-ranked further shrinks. Accept best NON-WORSE shrink per step (allows walking through plateaus where one un-pre-placement doesn't help but two-together do). Stops after `patience=6` consecutive non-improving steps. Captures the "shrinking initial objects can reduce makespan via reduced output-reservation contention" effect that analytic shrink misses.
 - **Phase A2 — Beam search**: from over-shrink's plan, beam-explore both reductions AND extensions (re-pre-place where cap allows). Refines for local makespan improvements.
 - **Phase B — Schedule derivation**: deterministic emission of `releases_after` / `offload_after` / `prefetch_after` triggers. Two key insights:
-  1. **Smart prefetch placement**: fire on the latest task whose end gives the from_slow enough lead time, walking past zero-runtime tasks (recompute slots) that would cause guaranteed stalls.
+  1. **Smart prefetch placement**: fire on the latest task whose end gives the from_slow enough lead time, avoiding zero-runtime boundaries that would cause guaranteed stalls.
   2. **Earliest-possible offload**: for an interval `[a, b)`, the exit trigger fires right after the last use within the interval (not at boundary `b`). E.g., an activation produced by `f_i` and immediately offloaded — trigger goes on `f_i`, not `f_{i+1}`, so the to_slow starts as soon as possible.
 
 `min_grow` does not model stream congestion or in-flight transit analytically. The simulator already models both correctly; `min_grow` trusts its makespan verdict. This is the central design choice that distinguishes `min_grow` from `max_reduce`.
@@ -40,7 +40,7 @@ The problem formulation, hardness analysis, and the case for "plan + schedule se
 
 ## 3. Problem recap (brief)
 
-Per [problem.md](../../problem.md): given a DAG of compute tasks on a single compute stream + two FIFO transfer streams (from-slow, to-slow) + a hard byte cap, decide what's resident when, to minimize makespan. The initial benchmark DAGs were chains such as `f_1, ..., f_L, head, b_L, ..., b_1` (`2L+1` active tasks; recompute tasks `r_i` are zero-cost and ignored).
+Per [problem.md](../../problem.md): given a DAG of compute tasks on a single compute stream + two FIFO transfer streams (from-slow, to-slow) + a hard byte cap, decide what's resident when, to minimize makespan. The initial benchmark DAGs were chains such as `f_1, ..., f_L, head, b_L, ..., b_1` (`2L+1` active tasks), with optional real recompute tasks `r_i` in variants that recreate saved activations.
 
 ### 3.1 Input format (min_grow's input)
 

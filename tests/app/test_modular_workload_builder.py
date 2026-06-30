@@ -1419,14 +1419,13 @@ def test_training_program_uses_model_order_reverse_backward_and_optimizer_tail()
         "f_0_0_1",
         "head_fwd_0_0",
         "head_bwd_0_0",
-        "r_0_0_1",
         "b_0_0_1",
-        "r_0_0_0",
         "b_0_0_0",
+        "f_0_1_0",
+        "f_0_1_1",
     ]
     assert [task.id for task in program.tasks[-2:]] == ["step_0_0", "step_0_1"]
-    assert tasks["r_0_0_1"].inputs == ["y_0_0_0", "W_1"]
-    assert tasks["r_0_0_0"].inputs == ["input_0_0", "W_0"]
+    assert not any(task.id.startswith("r_") for task in program.tasks)
     assert tasks["b_0_1_1"].inputs == ["dy_head_0_1", "A_0_1_1", "W_1", "dW_0_1"]
     assert tasks["b_0_1_1"].mutates == ["dW_0_1"]
     assert tasks["step_0_1"].inputs == ["dW_0_1", "W_1", "O_1"]
@@ -1453,11 +1452,11 @@ def test_training_program_uses_model_order_reverse_backward_and_optimizer_tail()
     assert _block_keys(program) >= {
         "transformer_block.forward",
         "transformer_block.backward",
-        "transformer_block.recompute_slot",
         "lm_head.forward",
         "lm_head.backward",
         "optimizer_step.adamw",
     }
+    assert "transformer_block.recompute_slot" not in _block_keys(program)
 
 
 def test_moe_recompute_variant_rewires_activation_producer_and_block_metadata():
@@ -1480,7 +1479,11 @@ def test_moe_recompute_variant_rewires_activation_producer_and_block_metadata():
     variant_tasks = _tasks_by_id(variant)
 
     assert any(out.id == "A_0_0_1" for out in base_tasks["f_0_0_1"].outputs)
+    assert not any(task.id.startswith("r_") for task in base.tasks)
     assert not any(out.id == "A_0_0_1" for out in variant_tasks["f_0_0_1"].outputs)
+    assert [task.id for task in variant.tasks if task.id.startswith("r_")] == [
+        "r_0_0_1"
+    ]
     assert [out.id for out in variant_tasks["r_0_0_1"].outputs] == ["A_0_0_1"]
     assert variant_tasks["r_0_0_1"].compute_block_key == "transformer_block.recompute"
 

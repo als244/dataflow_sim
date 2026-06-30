@@ -142,7 +142,7 @@ export function AnnotatedPlanPanel({
       {showModelTrainingNotation && (
         <div className="plan-notation-note">
           <strong>Model-training notation:</strong>{" "}
-          <code>f_k_j_i</code> is layer forward, <code>r_k_j_i</code> is the recompute slot, and{" "}
+          <code>f_k_j_i</code> is layer forward, <code>r_k_j_i</code> is a recompute task, and{" "}
           <code>b_k_j_i</code> is layer backward. Here <code>k</code> is the training step, <code>j</code> is the gradient accumulation round, and{" "}
           <code>i</code> is the layer index. <code>head_fwd_k_j</code> runs head/loss forward,{" "}
           <code>head_bwd_k_j</code> runs head backward, and <code>step_k_i</code> applies the optimizer update.

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from dataclasses import replace
+
 from dataflow_sim.core.schema import Object, OutputAlloc, Task, TaskChain
 from dataflow_sim.engine.simulator import run
 from dataflow_sim.engine.stall_report import build_stall_report
@@ -9,6 +12,44 @@ from dataflow_sim.workloads.common.hardware import HARDWARE_PRESETS
 from dataflow_sim.workloads.common.recompute import RecomputeOption, RecomputeRewrite
 from dataflow_sim.workloads.dataflow_builder import TrainingConfig
 from dataflow_sim.workloads.models.llama3 import Llama3Config, Llama3ForTraining
+
+
+_BWD_TASK_ID = re.compile(r"^b_(\d+)_(\d+)_(\d+)$")
+_RECOMPUTE_TASK_ID = re.compile(r"^r_(\d+)_(\d+)_(\d+)$")
+
+
+def _legacy_placeholder_recompute_chain(chain: TaskChain) -> TaskChain:
+    real_recompute = {
+        tuple(map(int, _RECOMPUTE_TASK_ID.match(task.id).groups()))
+        for task in chain.tasks
+        if _RECOMPUTE_TASK_ID.match(task.id)
+    }
+    tasks: list[Task] = []
+    for task in chain.tasks:
+        match = _BWD_TASK_ID.match(task.id)
+        if match is not None:
+            k, j, i = map(int, match.groups())
+            if (k, j, i) not in real_recompute:
+                in_act = f"input_{k}_{j}" if i == 0 else f"y_{k}_{j}_{i - 1}"
+                tasks.append(
+                    Task(
+                        id=f"r_{k}_{j}_{i}",
+                        inputs=[in_act, f"W_{i}"],
+                        outputs=[],
+                        runtime=0.0,
+                    )
+                )
+        tasks.append(task)
+    return replace(chain, tasks=tasks)
+
+
+def _makespan_us(chain: TaskChain, *, fast_memory_capacity: int | None = None) -> float:
+    annotated = apply_pressurefit_policy(
+        chain,
+        fast_memory_capacity=fast_memory_capacity,
+    )
+    log = run(annotated, snapshots=False)
+    return max(iv.end for iv in log.task_intervals)
 
 
 # ---------------------------------------------------------------- stall report
@@ -123,7 +164,11 @@ def test_recompute_variant_rewires_activation_producer():
     var_tasks = {t.id: t for t in var.chain.tasks}
 
     assert any(o.id == "A_0_0_3" for o in base_tasks["f_0_0_3"].outputs)
+    assert not any(t.id.startswith("r_") for t in base.chain.tasks)
     assert not any(o.id == "A_0_0_3" for o in var_tasks["f_0_0_3"].outputs)
+    assert [t.id for t in var.chain.tasks if t.id.startswith("r_")] == [
+        "r_0_0_3"
+    ]
     assert [o.id for o in var_tasks["r_0_0_3"].outputs] == ["A_0_0_3"]
     assert var_tasks["r_0_0_3"].runtime > 0
     assert "y_0_0_2" in var_tasks["r_0_0_3"].inputs
@@ -147,6 +192,21 @@ def test_recompute_variant_rewires_activation_producer():
 
     annotated = apply_pressurefit_policy(var.chain)
     run(annotated, snapshots=False)
+    ann_tasks = {t.id: t for t in annotated.tasks}
+    assert "y_0_0_0" in ann_tasks["f_0_0_1"].releases_after
+    assert "y_0_0_1" in ann_tasks["f_0_0_2"].releases_after
+    assert "y_0_0_2" in ann_tasks["r_0_0_3"].releases_after
+
+
+def test_removing_noop_recompute_placeholders_does_not_reduce_throughput():
+    model, hw, cfg = _small()
+    chain = model.build_training_workload(cfg, hw).chain
+    legacy = _legacy_placeholder_recompute_chain(chain)
+
+    current_makespan = _makespan_us(chain, fast_memory_capacity=96 * 1024 * 1024)
+    legacy_makespan = _makespan_us(legacy, fast_memory_capacity=96 * 1024 * 1024)
+
+    assert current_makespan <= legacy_makespan
 
 
 def test_recompute_variant_rejects_unknown_object():
@@ -201,20 +261,22 @@ def _structural_family(L, cap, *, activation_size, recompute_us, bandwidth):
             )
         )
         for i in range(L - 1, -1, -1):
-            in_act = "input_0_0" if i == 0 else f"y_0_0_{i - 1}"
-            r_outputs = (
-                [OutputAlloc(id=f"A_0_0_{i}", size=activation_size, type="activation")]
-                if i in recomputed
-                else []
-            )
-            tasks.append(
-                Task(
-                    id=f"r_0_0_{i}",
-                    inputs=[in_act, f"W_{i}"],
-                    outputs=r_outputs,
-                    runtime=recompute_us if i in recomputed else 0,
+            if i in recomputed:
+                in_act = "input_0_0" if i == 0 else f"y_0_0_{i - 1}"
+                tasks.append(
+                    Task(
+                        id=f"r_0_0_{i}",
+                        inputs=[in_act, f"W_{i}"],
+                        outputs=[
+                            OutputAlloc(
+                                id=f"A_0_0_{i}",
+                                size=activation_size,
+                                type="activation",
+                            )
+                        ],
+                        runtime=recompute_us,
+                    )
                 )
-            )
             upstream = "dy_head_0_0" if i == L - 1 else f"dy_0_0_{i + 1}"
             tasks.append(
                 Task(
@@ -264,6 +326,7 @@ def test_recompute_loop_converts_under_pressure_and_improves():
     )
     assert result.makespan_us < result.baseline_makespan_us
     assert any(lvl >= 1 for lvl in result.levels.values())
+    assert all(t.outputs for t in result.chain.tasks if t.id.startswith("r_"))
 
 
 def test_recompute_loop_keeps_everything_saved_when_memory_is_loose():
@@ -275,3 +338,4 @@ def test_recompute_loop_keeps_everything_saved_when_memory_is_loose():
     )
     assert result.makespan_us == result.baseline_makespan_us
     assert all(lvl == 0 for lvl in result.levels.values())
+    assert not any(t.id.startswith("r_") for t in result.chain.tasks)

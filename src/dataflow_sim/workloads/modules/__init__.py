@@ -37,7 +37,6 @@ from dataflow_sim.workloads.modules.qwen_hybrid_full_attention import (
 from dataflow_sim.workloads.modules.qwen_hybrid_linear_attention import (
     QwenHybridLinearAttention,
 )
-from dataflow_sim.workloads.modules.recompute import zero_recompute_slot
 from dataflow_sim.workloads.modules.relu2_mlp import ReLU2MLP
 from dataflow_sim.workloads.modules.relu2_moe import ReLU2MoE
 from dataflow_sim.workloads.modules.transformer_block import (
@@ -80,5 +79,4 @@ __all__ = [
     "layer_activation_elements_per_token",
     "layer_weight_matrices",
     "params_per_layer",
-    "zero_recompute_slot",
 ]

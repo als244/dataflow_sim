@@ -467,7 +467,7 @@ def _derive_schedule(plan: Plan, bare: TaskChain, facts: _Facts) -> TaskChain:
 
     # Tentative task start times (compute-only, no transfer stalls).
     # Used for smart prefetch placement to avoid attaching prefetches to
-    # zero-runtime tasks (e.g., r_i recompute slots) that give no lead time.
+    # zero-runtime tasks that give no lead time.
     tentative_start = [0] * n
     t_now = 0
     for i in range(n):

@@ -189,7 +189,7 @@ workload = model.build_training_workload(
 
 - initial objects for inputs, parameters, and optimizer state,
 - ordered task instances for layer forward, head/loss forward, head backward,
-  recompute slots, layer backward, and optimizer steps,
+  optional recompute, layer backward, and optimizer steps,
 - reusable `compute_blocks`,
 - metrics such as total token count,
 - optional final placement constraints.
@@ -199,7 +199,8 @@ Task ids are deterministic:
 - `f_<step>_<round>_<layer>`: layer forward.
 - `head_fwd_<step>_<round>`: head/loss forward.
 - `head_bwd_<step>_<round>`: head backward.
-- `r_<step>_<round>_<layer>`: recompute slot.
+- `r_<step>_<round>_<layer>`: recompute task, present only when that saved
+  activation is recomputed.
 - `b_<step>_<round>_<layer>`: layer backward.
 - `step_<step>_<layer>`: optimizer update.
 
@@ -215,7 +216,6 @@ builder appends the phase:
 - `layer_block.forward`
 - `layer_block.backward`
 - `layer_block.recompute`
-- `layer_block.recompute_slot`
 - `model_head.training`
 - `optimizer_step.adamw`
 
@@ -240,9 +240,10 @@ object, the workload publishes a `RecomputeRewrite` in
 
 Today the levels are binary:
 
-- level `0`: forward saves the activation object, recompute slot is zero-cost,
-- level `1`: forward does not save it, recompute slot recreates it before
-  backward.
+- level `0`: forward saves the activation object and no recompute task is
+  emitted,
+- level `1`: forward does not save it and `r_<step>_<round>_<layer>` recreates
+  it before backward.
 
 The decision is per saved activation instance because memory pressure and
 transfer blame are instance-specific. The available tradeoff is still

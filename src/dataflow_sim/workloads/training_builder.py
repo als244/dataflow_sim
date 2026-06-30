@@ -570,20 +570,6 @@ class TrainingBuilder:
                                 layer.metadata,
                             ),
                         )
-                    else:
-                        ctx.emit_task(
-                            id=layer_round_id("r", k, j, i),
-                            label=f"Step {k} Round {j} Layer {i} Recompute",
-                            group="recompute",
-                            block_key=f"{layer.block_key}.recompute_slot",
-                            block_name=f"{layer.block_name} Recompute Slot",
-                            subops=zero_recompute_slot(),
-                            inputs=[t(r_in_act), t(f"W_{i}")],
-                            block_metadata=self._phase_metadata(
-                                "recompute_slot",
-                                layer.metadata,
-                            ),
-                        )
 
                     grad_id = step_grad_id(k, i)
                     b_inputs = [t(upstream), t(saved_id), t(f"W_{i}")]
@@ -834,7 +820,3 @@ class TrainingBuilder:
 
 def layer_round_id(prefix: str, k: int, j: int, i: int) -> str:
     return f"{prefix}_{k}_{j}_{i}"
-
-
-def zero_recompute_slot() -> list[DataflowCost]:
-    return [DataflowCost(kind="fixed", name="no_recompute", runtime_us=0)]

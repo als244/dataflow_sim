@@ -12,9 +12,11 @@ A linear-ish DAG of compute tasks, all executed on a single **compute stream** (
 - `f_1, ..., f_L` (forward per layer)
 - `head` (combined head fwd+bwd)
 - `b_L, ..., b_1` (backward per layer, reverse order)
-- `r_1, ..., r_L` (recompute slots, currently zero-cost, ignored by the scheduler — future work)
+- optional `r_i` tasks that recreate saved activations when recompute is selected
 
-For an L=32 model: **2L+1 = 65 active compute tasks**, plus L recompute placeholders.
+For an L=32 model with no recompute: **2L+1 = 65 active compute tasks**.
+Selected recompute instances add real `r_i` tasks immediately before their
+matching backward task.
 
 Each task has fixed (known at planning time) attributes:
 - `runtime` (deterministic, µs)

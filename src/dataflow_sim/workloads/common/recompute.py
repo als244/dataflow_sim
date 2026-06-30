@@ -3,7 +3,7 @@
 A workload that supports activation recomputation declares, per saved
 activation object, the discrete options available. Level 0 always means
 "save the full activation, no recompute work". Higher levels save fewer
-bytes and put more runtime into the chain's recompute slot. Binary
+bytes and add runtime through a recompute task in the rebuilt chain. Binary
 recomputation is the two-option special case; partial recomputation (save
 part of the activation, recompute the rest) adds intermediate levels
 without changing this contract.
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 class RecomputeOption:
     level: int            # 0 = save full activation, no recompute work
     saved_bytes: int      # activation bytes forward still saves at this level
-    recompute_us: float   # runtime of the recompute slot at this level
+    recompute_us: float   # runtime added by recompute at this level
     label: str = ""
 
 
@@ -35,7 +35,7 @@ class RecomputeRewrite:
     """
     object_id: str                          # e.g. "A_0_0_5"
     f_task_id: str                          # producer when level == 0
-    r_task_id: str                          # recompute slot (producer when level > 0)
+    r_task_id: str                          # recompute producer when level > 0
     options: tuple[RecomputeOption, ...]    # ascending level; options[0].level == 0
     f_compute_block_key: str = ""
     r_compute_block_key: str = ""

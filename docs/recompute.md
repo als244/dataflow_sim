@@ -3,7 +3,7 @@
 Activation recomputation trades compute-stream time for memory and transfer
 relief: instead of saving a layer's activations (keeping them resident or
 round-tripping them over tier-link), the chain re-produces them in the layer's
-recompute slot right before backward. Recompute and offload are competing
+recompute task right before backward. Recompute and offload are competing
 ways to regenerate the same bytes, and which is cheaper depends
 on the whole schedule — model shape, sequence length, hardware ratios, and
 memory capacity — so the choice is made per configuration, by measurement.
@@ -17,12 +17,14 @@ Three layers, deliberately separated:
    chain for any per-activation choice through
    `model.build_training_workload(training, hw, recompute={...})`. For a
    recomputed layer instance, the forward task stops producing the saved
-   activation and the recompute slot re-produces it from the layer input:
+   activation and a recompute task re-produces it from the layer input:
 
    ```text
    f_k_j_i = (deps=[in_act, W_i], out=[y_k_j_i])
    r_k_j_i = (deps=[in_act, W_i], out=[A_k_j_i], runtime=R)
    ```
+
+   For a saved layer instance, no `r_k_j_i` task is emitted.
 
    `R` comes from the layer's `.recompute` compute block; backward tasks are
    untouched because their memory ops already assume recomputed activations are
