@@ -6,12 +6,22 @@ from dataflow_sim.workloads.dataflow_builder import DataflowModule
 from dataflow_sim.workloads.modules.dimensions import TransformerDimensions
 from dataflow_sim.workloads.ops import backward as bwd
 from dataflow_sim.workloads.ops import forward as fwd
+from dataflow_sim.workloads.ops import optimizer as opt_ops
 
 
 class DenseAttention(DataflowModule):
     def __init__(self, dims: TransformerDimensions) -> None:
         super().__init__(name="DenseAttention")
         self.dims = dims
+
+    def optimizer_matrices(self) -> list[opt_ops.OptimizerMatrix]:
+        dims = self.dims
+        return [
+            opt_ops.OptimizerMatrix("q_proj", dims.d_model, dims.n_heads * dims.head_dim),
+            opt_ops.OptimizerMatrix("k_proj", dims.d_model, dims.n_kv_heads * dims.head_dim),
+            opt_ops.OptimizerMatrix("v_proj", dims.d_model, dims.n_kv_heads * dims.head_dim),
+            opt_ops.OptimizerMatrix("attn_proj", dims.n_heads * dims.head_dim, dims.d_model),
+        ]
 
     def forward_ops(
         self,

@@ -41,11 +41,12 @@ def optimizer_ops_for_matrices(
         ]
     if optimizer == "muon":
         return [
-            opt_ops.muon_step(
-                "muon_step",
-                matrices=matrices,
+            opt_ops.muon_matrix_step(
+                f"{matrix.name}_muon_step",
+                matrix=matrix,
                 bytes_per_element=policy.optimizer_state_bpe,
             )
+            for matrix in matrices
         ]
     if optimizer == "sgd":
         return [

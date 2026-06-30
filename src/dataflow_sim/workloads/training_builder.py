@@ -41,7 +41,7 @@ from dataflow_sim.workloads.dataflow_builder import (
     TrainingConfig,
     dtype_nbytes,
 )
-from dataflow_sim.workloads.ops.optimizer import optimizer_state_bytes
+from dataflow_sim.workloads.ops.optimizer import adamw_step, optimizer_state_bytes
 
 
 LayerOpsFactory = Callable[[int, int, OpDTypePolicy], list[DataflowCost]]
@@ -193,7 +193,7 @@ class TrainingHeadSpec:
     optimizer_state_factor: OptimizerStateFactor = default_optimizer_state_factor
     parameter_bytes: ParamBytesFactory | None = None
     optimizer_state_bytes: OptimizerStateBytesFactory | None = None
-    optimizer_block_key: str = "optimizer_step.head"
+    optimizer_block_key: str = "lm_head.optimizer_step"
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -350,9 +350,11 @@ class TrainingBuilder:
             dtype=policy.param,
             size_bytes=head_param_bytes,
         )
+        head_optimizer_mode = "adamw" if training.optimizer != "none" else "none"
+        head_optimizer_enabled = head_optimizer_mode != "none"
         head_state_bytes = (
-            self._optimizer_state_bytes(self.head, training.optimizer, policy)
-            if self.head.optimizer_ops is not None
+            self._optimizer_state_bytes(self.head, head_optimizer_mode, policy)
+            if head_optimizer_enabled
             else 0
         )
         if head_state_bytes > 0:
@@ -384,11 +386,21 @@ class TrainingBuilder:
         ]
         head_forward_ops = self.head.forward_ops(tokens, op_policy)
         head_backward_ops = self.head.backward_ops(tokens, op_policy)
-        head_optimizer_ops = (
-            self.head.optimizer_ops(training.optimizer, op_policy)
-            if self.head.optimizer_ops is not None
-            else []
-        )
+        if not head_optimizer_enabled:
+            head_optimizer_ops: list[DataflowCost] = []
+        elif self.head.optimizer_ops is not None:
+            head_optimizer_ops = self.head.optimizer_ops(head_optimizer_mode, op_policy)
+        else:
+            head_optimizer_ops = [
+                adamw_step(
+                    "adamw_step",
+                    weight_bytes=head_param_bytes,
+                    gradient_bytes=math.ceil(
+                        self.head.param_count * dtype_nbytes(policy.gradient)
+                    ),
+                    optimizer_state_bytes=head_state_bytes,
+                )
+            ]
 
         def t(object_id: str) -> TensorRef:
             return ctx.tensors[object_id]
@@ -629,7 +641,7 @@ class TrainingBuilder:
                             {"optimizer": training.optimizer, **layer.metadata},
                         ),
                     )
-                if self.head.optimizer_ops is not None:
+                if head_optimizer_enabled:
                     inputs = [t(step_head_grad_id(k)), t("W_head")]
                     mutates = [t("W_head")]
                     if head_state_bytes > 0:
@@ -639,14 +651,18 @@ class TrainingBuilder:
                         id=f"step_{k}_head",
                         label=f"Step {k} Head Optimizer",
                         group="optimizer",
-                        block_key=f"{self.head.optimizer_block_key}.{training.optimizer}",
-                        block_name=f"{training.optimizer.upper()} Head Optimizer Step",
+                        block_key=f"{self.head.optimizer_block_key}.{head_optimizer_mode}",
+                        block_name=f"{head_optimizer_mode.upper()} Head Optimizer Step",
                         subops=head_optimizer_ops,
                         inputs=inputs,
                         mutates=mutates,
                         block_metadata=self._phase_metadata(
                             "optimizer",
-                            {"optimizer": training.optimizer, **self.head.metadata},
+                            {
+                                "optimizer": head_optimizer_mode,
+                                "requested_optimizer": training.optimizer,
+                                **self.head.metadata,
+                            },
                         ),
                     )
 
@@ -656,7 +672,7 @@ class TrainingBuilder:
                 final_locations[f"W_{i}"] = "backing"
                 if self._optimizer_state_bytes(layer, training.optimizer, policy) > 0:
                     final_locations[f"O_{i}"] = "backing"
-            if self.head.optimizer_ops is not None:
+            if head_optimizer_enabled:
                 final_locations["W_head"] = "backing"
                 if head_state_bytes > 0:
                     final_locations["O_head"] = "backing"

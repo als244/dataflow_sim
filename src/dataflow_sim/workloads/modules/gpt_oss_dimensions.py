@@ -58,11 +58,15 @@ class GPTOSSDimensions:
             if rows > 0 and cols > 0 and count > 0:
                 matrices.append(opt_ops.OptimizerMatrix(name, rows, cols, count, expert))
 
-        add("qkv_proj", self.d_model, self.qkv_dim)
+        add("q_proj", self.d_model, self.attn_q_dim)
+        add("k_proj", self.d_model, self.attn_kv_dim)
+        add("v_proj", self.d_model, self.attn_kv_dim)
         add("attn_proj", self.attn_q_dim, self.d_model)
-        add("shared_mlp_up", self.d_model, 2 * self.expert_dim, self.num_shared_experts, expert=is_moe)
+        add("shared_mlp_gate", self.d_model, self.expert_dim, self.num_shared_experts, expert=is_moe)
+        add("shared_mlp_up", self.d_model, self.expert_dim, self.num_shared_experts, expert=is_moe)
         add("shared_mlp_down", self.expert_dim, self.d_model, self.num_shared_experts, expert=is_moe)
-        add("routed_mlp_up", self.d_model, 2 * self.expert_dim, self.num_routed_experts, expert=is_moe)
+        add("routed_mlp_gate", self.d_model, self.expert_dim, self.num_routed_experts, expert=is_moe)
+        add("routed_mlp_up", self.d_model, self.expert_dim, self.num_routed_experts, expert=is_moe)
         add("routed_mlp_down", self.expert_dim, self.d_model, self.num_routed_experts, expert=is_moe)
         return matrices
 

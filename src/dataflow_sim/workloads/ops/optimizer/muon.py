@@ -51,6 +51,29 @@ def muon_step_flops_bytes(
     return total_flops, total_bytes
 
 
+def muon_matrix_step(
+    name: str,
+    *,
+    matrix: OptimizerMatrix,
+    bytes_per_element: int = 2,
+    ns_iters: int = 5,
+) -> DataflowCost:
+    flops, bytes_total = muon_matrix_flops_bytes(
+        matrix.rows,
+        matrix.cols,
+        ns_iters=ns_iters,
+        bytes_per_element=bytes_per_element,
+    )
+    return roofline(
+        name,
+        flops=flops,
+        effective_flops=flops,
+        memory_bytes=bytes_total,
+        efficiency="matmul",
+        count=matrix.count,
+    )
+
+
 def muon_step(
     name: str,
     *,

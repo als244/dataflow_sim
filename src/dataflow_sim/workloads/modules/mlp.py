@@ -6,6 +6,7 @@ from dataflow_sim.workloads.dataflow_builder import DataflowModule
 from dataflow_sim.workloads.modules.dimensions import TransformerDimensions
 from dataflow_sim.workloads.ops import backward as bwd
 from dataflow_sim.workloads.ops import forward as fwd
+from dataflow_sim.workloads.ops import optimizer as opt_ops
 
 
 class SwiGLUMLP(DataflowModule):
@@ -16,6 +17,16 @@ class SwiGLUMLP(DataflowModule):
     @property
     def count(self) -> int:
         return self.dims.num_shared_experts
+
+    def optimizer_matrices(self) -> list[opt_ops.OptimizerMatrix]:
+        dims = self.dims
+        if self.count <= 0:
+            return []
+        return [
+            opt_ops.OptimizerMatrix("shared_mlp_gate", dims.d_model, dims.expert_dim, self.count),
+            opt_ops.OptimizerMatrix("shared_mlp_up", dims.d_model, dims.expert_dim, self.count),
+            opt_ops.OptimizerMatrix("shared_mlp_down", dims.expert_dim, dims.d_model, self.count),
+        ]
 
     def forward_ops(
         self,

@@ -5,6 +5,7 @@ from dataflow_sim.workloads.dataflow import DataflowCost
 from dataflow_sim.workloads.dataflow_builder import DataflowModule, OpDTypePolicy
 from dataflow_sim.workloads.ops import backward as bwd
 from dataflow_sim.workloads.ops import forward as fwd
+from dataflow_sim.workloads.ops import optimizer as opt_ops
 
 
 class ReLU2MLP(DataflowModule):
@@ -12,6 +13,12 @@ class ReLU2MLP(DataflowModule):
         super().__init__(name="ReLU2MLP")
         self.d_model = d_model
         self.intermediate_size = intermediate_size
+
+    def optimizer_matrices(self) -> list[opt_ops.OptimizerMatrix]:
+        return [
+            opt_ops.OptimizerMatrix("mlp_up", self.d_model, self.intermediate_size),
+            opt_ops.OptimizerMatrix("mlp_down", self.intermediate_size, self.d_model),
+        ]
 
     @staticmethod
     def _policy(bytes_per_element: float | OpDTypePolicy) -> OpDTypePolicy:

@@ -32,11 +32,15 @@ def layer_weight_matrices(dims: TransformerDimensions) -> list[opt_ops.Optimizer
 
     d = dims.d_model
     hd = dims.head_dim
-    add("qkv_proj", d, (dims.n_heads + 2 * dims.n_kv_heads) * hd)
+    add("q_proj", d, dims.n_heads * hd)
+    add("k_proj", d, dims.n_kv_heads * hd)
+    add("v_proj", d, dims.n_kv_heads * hd)
     add("attn_proj", dims.n_heads * hd, d)
-    add("shared_mlp_up", d, 2 * dims.expert_dim, dims.num_shared_experts, expert=is_moe)
+    add("shared_mlp_gate", d, dims.expert_dim, dims.num_shared_experts, expert=is_moe)
+    add("shared_mlp_up", d, dims.expert_dim, dims.num_shared_experts, expert=is_moe)
     add("shared_mlp_down", dims.expert_dim, d, dims.num_shared_experts, expert=is_moe)
-    add("routed_mlp_up", d, 2 * dims.expert_dim, dims.num_routed_experts, expert=is_moe)
+    add("routed_mlp_gate", d, dims.expert_dim, dims.num_routed_experts, expert=is_moe)
+    add("routed_mlp_up", d, dims.expert_dim, dims.num_routed_experts, expert=is_moe)
     add("routed_mlp_down", dims.expert_dim, d, dims.num_routed_experts, expert=is_moe)
     return matrices
 

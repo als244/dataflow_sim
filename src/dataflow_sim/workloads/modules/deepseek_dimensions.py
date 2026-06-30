@@ -100,9 +100,11 @@ class DeepSeekDimensions:
                 matrices.append(opt_ops.OptimizerMatrix(name, rows, cols, count, expert))
 
         is_moe = not dense and ffn_dims.num_routed_experts > 0 and ffn_dims.top_k > 0
-        add("shared_mlp_up", ffn_dims.d_model, 2 * ffn_dims.expert_dim, ffn_dims.num_shared_experts, expert=is_moe)
+        add("shared_mlp_gate", ffn_dims.d_model, ffn_dims.expert_dim, ffn_dims.num_shared_experts, expert=is_moe)
+        add("shared_mlp_up", ffn_dims.d_model, ffn_dims.expert_dim, ffn_dims.num_shared_experts, expert=is_moe)
         add("shared_mlp_down", ffn_dims.expert_dim, ffn_dims.d_model, ffn_dims.num_shared_experts, expert=is_moe)
-        add("routed_mlp_up", ffn_dims.d_model, 2 * ffn_dims.expert_dim, ffn_dims.num_routed_experts, expert=is_moe)
+        add("routed_mlp_gate", ffn_dims.d_model, ffn_dims.expert_dim, ffn_dims.num_routed_experts, expert=is_moe)
+        add("routed_mlp_up", ffn_dims.d_model, ffn_dims.expert_dim, ffn_dims.num_routed_experts, expert=is_moe)
         add("routed_mlp_down", ffn_dims.expert_dim, ffn_dims.d_model, ffn_dims.num_routed_experts, expert=is_moe)
         return matrices
 

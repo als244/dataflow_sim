@@ -6,12 +6,12 @@ from typing import Any
 
 from dataflow_sim.workloads.models._config import TransformerFamilyConfig
 from dataflow_sim.workloads.modules import (
-    OptimizerStep,
     TransformerBlock,
     TransformerDimensions,
     LanguageModelingHead,
     head_params,
     layer_activation_elements_per_token,
+    optimizer_ops_for_matrices,
     params_per_layer,
 )
 from dataflow_sim.workloads.training_builder import (
@@ -49,6 +49,7 @@ class Llama3Config(TransformerFamilyConfig):
 
 def _layer_spec(index: int, dims: TransformerDimensions) -> TrainingLayerSpec:
     block = TransformerBlock(dims)
+    matrices = block.optimizer_matrices()
     return TrainingLayerSpec(
         name=f"layer_{index}",
         input_dim=dims.d_model,
@@ -77,10 +78,12 @@ def _layer_spec(index: int, dims: TransformerDimensions) -> TrainingLayerSpec:
             )
         ),
         optimizer_ops=(
-            lambda optimizer, bpe, dims=dims: OptimizerStep(
-                dims,
-                optimizer,
-            ).step_ops(bytes_per_element=bpe)
+            lambda optimizer, bpe, matrices=matrices: optimizer_ops_for_matrices(
+                "transformer_block_optimizer",
+                matrices=matrices,
+                optimizer=optimizer,
+                bytes_per_element=bpe,
+            )
         ),
         block_key="transformer_block",
         block_name="Transformer Block",

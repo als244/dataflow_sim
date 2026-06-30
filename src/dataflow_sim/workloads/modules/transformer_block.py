@@ -7,6 +7,7 @@ from dataflow_sim.workloads.modules.dense_attention import DenseAttention
 from dataflow_sim.workloads.modules.dimensions import TransformerDimensions
 from dataflow_sim.workloads.modules.mlp import SwiGLUMLP
 from dataflow_sim.workloads.modules.moe import MoE
+from dataflow_sim.workloads.ops import optimizer as opt_ops
 
 
 class TransformerBlock(DataflowModule):
@@ -19,6 +20,9 @@ class TransformerBlock(DataflowModule):
             self.feed_forward = MoE(dims)
         else:
             self.feed_forward = SwiGLUMLP(dims)
+
+    def optimizer_matrices(self) -> list[opt_ops.OptimizerMatrix]:
+        return self.attention.optimizer_matrices() + self.feed_forward.optimizer_matrices()
 
     def forward_ops(
         self,

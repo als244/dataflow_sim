@@ -79,13 +79,17 @@ class QwenHybridDimensions:
                 matrices.append(opt_ops.OptimizerMatrix(name, rows, cols, count, expert))
 
         if layer_type == "linear_attention":
-            add("in_proj_qkvz", self.d_model, 2 * self.linear_key_dim + 2 * self.linear_value_dim)
+            add("in_proj_q", self.d_model, self.linear_key_dim)
+            add("in_proj_k", self.d_model, self.linear_key_dim)
+            add("in_proj_v", self.d_model, self.linear_value_dim)
+            add("in_proj_z", self.d_model, self.linear_value_dim)
             add("in_proj_ba", self.d_model, 2 * self.linear_num_value_heads)
             add("causal_conv1d", self.linear_conv_dim, self.linear_conv_kernel_dim)
             add("linear_out_proj", self.linear_value_dim, self.d_model)
             return matrices
         if layer_type == "full_attention":
-            add("q_proj", self.d_model, 2 * self.full_q_dim)
+            add("q_proj", self.d_model, self.full_q_dim)
+            add("q_gate_proj", self.d_model, self.full_q_dim)
             add("k_proj", self.d_model, self.full_kv_dim)
             add("v_proj", self.d_model, self.full_kv_dim)
             add("o_proj", self.full_q_dim, self.d_model)
@@ -99,9 +103,11 @@ class QwenHybridDimensions:
             if rows > 0 and cols > 0 and count > 0:
                 matrices.append(opt_ops.OptimizerMatrix(name, rows, cols, count, expert))
 
-        add("shared_mlp_up", self.d_model, 2 * self.expert_dim, self.num_shared_experts, expert=self.is_moe)
+        add("shared_mlp_gate", self.d_model, self.expert_dim, self.num_shared_experts, expert=self.is_moe)
+        add("shared_mlp_up", self.d_model, self.expert_dim, self.num_shared_experts, expert=self.is_moe)
         add("shared_mlp_down", self.expert_dim, self.d_model, self.num_shared_experts, expert=self.is_moe)
-        add("routed_mlp_up", self.d_model, 2 * self.expert_dim, self.num_routed_experts, expert=self.is_moe)
+        add("routed_mlp_gate", self.d_model, self.expert_dim, self.num_routed_experts, expert=self.is_moe)
+        add("routed_mlp_up", self.d_model, self.expert_dim, self.num_routed_experts, expert=self.is_moe)
         add("routed_mlp_down", self.expert_dim, self.d_model, self.num_routed_experts, expert=self.is_moe)
         return matrices
 

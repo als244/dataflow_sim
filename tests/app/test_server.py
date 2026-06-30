@@ -251,6 +251,7 @@ def test_simulate_final_model_state_on_backing_is_opt_in():
     assert finalized_body["chain"]["final_locations"] == {
         "W_0": "backing", "O_0": "backing",
         "W_1": "backing", "O_1": "backing",
+        "W_head": "backing", "O_head": "backing",
     }
 
 

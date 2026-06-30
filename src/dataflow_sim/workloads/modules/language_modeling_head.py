@@ -8,12 +8,18 @@ from dataflow_sim.workloads.dataflow_builder import DataflowModule, OpDTypePolic
 from dataflow_sim.workloads.modules.dimensions import TransformerDimensions, head_params
 from dataflow_sim.workloads.ops import backward as bwd
 from dataflow_sim.workloads.ops import forward as fwd
+from dataflow_sim.workloads.ops import optimizer as opt_ops
 
 
 class LanguageModelingHead(DataflowModule):
     def __init__(self, dims: TransformerDimensions) -> None:
         super().__init__(name="LanguageModelingHead")
         self.dims = dims
+
+    def optimizer_matrices(self) -> list[opt_ops.OptimizerMatrix]:
+        return [
+            opt_ops.OptimizerMatrix("lm_head", self.dims.d_model, self.dims.vocab_size)
+        ]
 
     @staticmethod
     def _policy(bytes_per_element: float | OpDTypePolicy) -> OpDTypePolicy:

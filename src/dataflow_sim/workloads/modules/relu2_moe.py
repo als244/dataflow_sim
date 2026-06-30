@@ -6,6 +6,7 @@ from dataflow_sim.workloads.dataflow_builder import DataflowModule, OpDTypePolic
 from dataflow_sim.workloads.modules.nemotron_dimensions import NemotronDimensions
 from dataflow_sim.workloads.ops import backward as bwd
 from dataflow_sim.workloads.ops import forward as fwd
+from dataflow_sim.workloads.ops import optimizer as opt_ops
 
 
 class ReLU2MoE(DataflowModule):
@@ -18,6 +19,49 @@ class ReLU2MoE(DataflowModule):
         if dims.num_routed_experts <= 0 or dims.top_k <= 0:
             return 0
         return tokens * dims.top_k // dims.num_routed_experts
+
+    def optimizer_matrices(self) -> list[opt_ops.OptimizerMatrix]:
+        dims = self.dims
+        matrices: list[opt_ops.OptimizerMatrix] = []
+        if dims.num_shared_experts > 0:
+            matrices.extend(
+                [
+                    opt_ops.OptimizerMatrix(
+                        "shared_mlp_up",
+                        dims.d_model,
+                        dims.shared_expert_dim,
+                        dims.num_shared_experts,
+                        True,
+                    ),
+                    opt_ops.OptimizerMatrix(
+                        "shared_mlp_down",
+                        dims.shared_expert_dim,
+                        dims.d_model,
+                        dims.num_shared_experts,
+                        True,
+                    ),
+                ]
+            )
+        if dims.num_routed_experts > 0 and dims.top_k > 0:
+            matrices.extend(
+                [
+                    opt_ops.OptimizerMatrix(
+                        "routed_mlp_up",
+                        dims.d_model,
+                        dims.expert_dim,
+                        dims.num_routed_experts,
+                        True,
+                    ),
+                    opt_ops.OptimizerMatrix(
+                        "routed_mlp_down",
+                        dims.expert_dim,
+                        dims.d_model,
+                        dims.num_routed_experts,
+                        True,
+                    ),
+                ]
+            )
+        return matrices
 
     @staticmethod
     def _policy(bytes_per_element: float | OpDTypePolicy) -> OpDTypePolicy:

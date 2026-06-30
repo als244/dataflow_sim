@@ -36,14 +36,17 @@ from dataflow_sim.workloads.modules import (
     DSASparseAttention,
     GPTOSSBlock,
     MoE,
+    NemotronDimensions,
     NemotronBlock,
     ReLU2MoE,
     SwiGLUMLP,
     TransformerDimensions,
     layer_activation_elements_per_token,
+    optimizer_ops_for_matrices,
 )
 from dataflow_sim.workloads.ops import backward as bwd
 from dataflow_sim.workloads.ops import forward as fwd
+from dataflow_sim.workloads.ops import optimizer as opt_ops
 from dataflow_sim.workloads.summary import compute_workload_summary
 
 
@@ -75,6 +78,122 @@ def test_dtype_policy_defaults_and_low_precision_sizes():
     assert dtype_nbytes("fp8") == 1
     assert dtype_nbytes("fp4") == 0.5
     assert TensorRef("packed", (3, 1), dtype="fp4").size_bytes == 2
+
+
+def test_muon_uses_split_real_matrix_shapes_and_expert_counts():
+    fused = [
+        opt_ops.OptimizerMatrix("fused_gate_up", rows=16, cols=8),
+    ]
+    split = [
+        opt_ops.OptimizerMatrix("gate_proj", rows=16, cols=4),
+        opt_ops.OptimizerMatrix("up_proj", rows=16, cols=4),
+    ]
+    fused_ops = optimizer_ops_for_matrices(
+        "test",
+        matrices=fused,
+        optimizer="muon",
+    )
+    split_ops = optimizer_ops_for_matrices(
+        "test",
+        matrices=split,
+        optimizer="muon",
+    )
+
+    assert [op.name for op in split_ops] == [
+        "gate_proj_muon_step",
+        "up_proj_muon_step",
+    ]
+    assert sum(op.flops * op.count for op in split_ops) < fused_ops[0].flops
+
+    experts = [
+        opt_ops.OptimizerMatrix("routed_mlp_up", rows=16, cols=4, count=8, expert=True)
+    ]
+    expert_ops = optimizer_ops_for_matrices(
+        "test",
+        matrices=experts,
+        optimizer="muon",
+    )
+    base_flops, _ = opt_ops.muon_matrix_flops_bytes(16, 4)
+    assert expert_ops[0].name == "routed_mlp_up_muon_step"
+    assert expert_ops[0].flops == base_flops
+    assert expert_ops[0].count == 8
+
+
+def test_module_optimizer_matrices_use_real_parameter_shapes():
+    dims = TransformerDimensions(
+        vocab_size=128,
+        n_layers=1,
+        d_model=16,
+        head_dim=4,
+        n_heads=4,
+        n_kv_heads=2,
+        expert_dim=8,
+        num_shared_experts=1,
+        num_routed_experts=4,
+        top_k=2,
+    )
+
+    assert [m.name for m in DenseAttention(dims).optimizer_matrices()] == [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "attn_proj",
+    ]
+    assert [m.name for m in SwiGLUMLP(dims).optimizer_matrices()] == [
+        "shared_mlp_gate",
+        "shared_mlp_up",
+        "shared_mlp_down",
+    ]
+    moe_matrices = MoE(dims).optimizer_matrices()
+    assert [m.name for m in moe_matrices] == [
+        "shared_mlp_gate",
+        "shared_mlp_up",
+        "shared_mlp_down",
+        "routed_mlp_gate",
+        "routed_mlp_up",
+        "routed_mlp_down",
+    ]
+    assert [m.count for m in moe_matrices[-3:]] == [4, 4, 4]
+    assert all(m.expert for m in moe_matrices)
+    assert sum(m.rows * m.cols * m.count for m in DenseAttention(dims).optimizer_matrices() + moe_matrices) == (
+        16 * 16
+        + 16 * 8
+        + 16 * 8
+        + 16 * 16
+        + 3 * 16 * 8
+        + 3 * 16 * 8 * 4
+    )
+
+    nemotron_dims = NemotronDimensions(
+        vocab_size=128,
+        n_layers=1,
+        d_model=16,
+        head_dim=4,
+        n_heads=4,
+        n_kv_heads=2,
+        expert_dim=8,
+        shared_expert_dim=12,
+        num_shared_experts=1,
+        num_routed_experts=4,
+        top_k=2,
+        intermediate_size=24,
+        mamba_num_heads=4,
+        mamba_head_dim=4,
+        ssm_state_size=4,
+        conv_kernel=4,
+        mamba_chunk_size=8,
+        n_groups=2,
+        layer_types=("moe",),
+        hybrid_override_pattern="E",
+    )
+    relu2_matrices = ReLU2MoE(nemotron_dims).optimizer_matrices()
+    assert [m.name for m in relu2_matrices] == [
+        "shared_mlp_up",
+        "shared_mlp_down",
+        "routed_mlp_up",
+        "routed_mlp_down",
+    ]
+    assert [m.count for m in relu2_matrices[-2:]] == [4, 4]
 
 
 def test_matmul_accumulate_epilogue_bytes():
@@ -1424,12 +1543,18 @@ def test_training_program_uses_model_order_reverse_backward_and_optimizer_tail()
         "f_0_1_0",
         "f_0_1_1",
     ]
-    assert [task.id for task in program.tasks[-2:]] == ["step_0_0", "step_0_1"]
+    assert [task.id for task in program.tasks[-3:]] == [
+        "step_0_0",
+        "step_0_1",
+        "step_0_head",
+    ]
     assert not any(task.id.startswith("r_") for task in program.tasks)
     assert tasks["b_0_1_1"].inputs == ["dy_head_0_1", "A_0_1_1", "W_1", "dW_0_1"]
     assert tasks["b_0_1_1"].mutates == ["dW_0_1"]
     assert tasks["step_0_1"].inputs == ["dW_0_1", "W_1", "O_1"]
     assert tasks["step_0_1"].mutates == ["W_1", "O_1"]
+    assert tasks["step_0_head"].inputs == ["dW_head_0", "W_head", "O_head"]
+    assert tasks["step_0_head"].mutates == ["W_head", "O_head"]
     blocks = _blocks_by_key(program)
     assert blocks["lm_head.forward"].name == "LM Head Forward"
     assert blocks["lm_head.backward"].name == "LM Head Bwd"
@@ -1448,15 +1573,57 @@ def test_training_program_uses_model_order_reverse_backward_and_optimizer_tail()
         "O_0": "backing",
         "W_1": "backing",
         "O_1": "backing",
+        "W_head": "backing",
+        "O_head": "backing",
     }
     assert _block_keys(program) >= {
         "transformer_block.forward",
         "transformer_block.backward",
         "lm_head.forward",
         "lm_head.backward",
+        "lm_head.optimizer_step.adamw",
         "optimizer_step.adamw",
     }
     assert "transformer_block.recompute_slot" not in _block_keys(program)
+
+
+def test_lm_head_optimizer_defaults_to_adamw_for_non_none_layer_optimizer():
+    config = Llama3Config.preset(
+        "8B",
+        n_layers=1,
+        d_model=128,
+        n_heads=4,
+        n_kv_heads=2,
+        expert_dim=256,
+        vocab_size=1_024,
+    )
+    model = Llama3ForTraining(config)
+
+    none_program = model.build_training_program(
+        TrainingConfig(seqlen=16, num_seqs=1, optimizer="none")
+    )
+    assert "step_0_head" not in _tasks_by_id(none_program)
+    assert "lm_head.optimizer_step.adamw" not in _block_keys(none_program)
+    assert not any(obj.id == "O_head" for obj in none_program.objects)
+
+    muon_program = model.build_training_program(
+        TrainingConfig(seqlen=16, num_seqs=1, optimizer="muon")
+    )
+    muon_blocks = _blocks_by_key(muon_program)
+    assert "optimizer_step.muon" in muon_blocks
+    assert "lm_head.optimizer_step.adamw" in muon_blocks
+    assert [op.name for op in muon_blocks["lm_head.optimizer_step.adamw"].subops] == [
+        "adamw_step"
+    ]
+    assert _tasks_by_id(muon_program)["step_0_head"].compute_block_key == (
+        "lm_head.optimizer_step.adamw"
+    )
+
+    adamw_program = model.build_training_program(
+        TrainingConfig(seqlen=16, num_seqs=1, optimizer="adamw")
+    )
+    assert "optimizer_step.adamw" in _block_keys(adamw_program)
+    assert "lm_head.optimizer_step.adamw" in _block_keys(adamw_program)
 
 
 def test_moe_recompute_variant_rewires_activation_producer_and_block_metadata():
@@ -1505,6 +1672,25 @@ def test_moe_recompute_variant_rewires_activation_producer_and_block_metadata():
     assert recompute_blocks[0]["key"] == "transformer_block.recompute"
     assert recompute_blocks[0]["total_flops"] > 0
     assert recompute_blocks[0]["total_effective_flops"] == 0
+    optimizer_blocks = [
+        block for block in workload.metadata["compute_blocks"]
+        if block["key"] == "optimizer_step.muon"
+    ]
+    assert len(optimizer_blocks) == 1
+    opt_rows = {row["name"]: row for row in optimizer_blocks[0]["subops"]}
+    assert opt_rows["routed_mlp_gate_muon_step"]["count"] == config.num_routed_experts
+    assert opt_rows["routed_mlp_up_muon_step"]["count"] == config.num_routed_experts
+    old_fused_gate_up_flops, _ = opt_ops.muon_matrix_flops_bytes(
+        config.d_model,
+        2 * config.expert_dim,
+    )
+    split_gate_up_flops = (
+        opt_rows["routed_mlp_gate_muon_step"]["flops"]
+        * opt_rows["routed_mlp_gate_muon_step"]["count"]
+        + opt_rows["routed_mlp_up_muon_step"]["flops"]
+        * opt_rows["routed_mlp_up_muon_step"]["count"]
+    )
+    assert split_gate_up_flops < old_fused_gate_up_flops * config.num_routed_experts
 
 
 def test_varied_family_workloads_run_and_report_kpis():
