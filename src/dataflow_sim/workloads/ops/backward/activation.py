@@ -43,6 +43,16 @@ def gelu_grad(
     return memory_op(name, 5 * tokens * dim * bytes_per_element)
 
 
+def relu2_grad(
+    name: str,
+    *,
+    tokens: int,
+    dim: int,
+    bytes_per_element: float = 2,
+) -> DataflowCost:
+    return memory_op(name, 5 * tokens * dim * bytes_per_element)
+
+
 def gated_multiply_grad(
     name: str,
     *,

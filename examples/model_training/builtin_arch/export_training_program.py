@@ -58,6 +58,14 @@ DIMENSION_ARGS = {
     "v_head_dim",
     "routed_scaling_factor",
     "scoring_func",
+    "shared_expert_dim",
+    "mamba_num_heads",
+    "mamba_head_dim",
+    "ssm_state_size",
+    "conv_kernel",
+    "mamba_chunk_size",
+    "n_groups",
+    "hybrid_override_pattern",
 }
 
 
@@ -142,6 +150,14 @@ def main() -> None:
     parser.add_argument("--v-head-dim", dest="v_head_dim", type=int, default=None)
     parser.add_argument("--routed-scaling-factor", dest="routed_scaling_factor", type=float, default=None)
     parser.add_argument("--scoring-func", dest="scoring_func", default=None)
+    parser.add_argument("--shared-expert-dim", dest="shared_expert_dim", type=int, default=None)
+    parser.add_argument("--mamba-num-heads", dest="mamba_num_heads", type=int, default=None)
+    parser.add_argument("--mamba-head-dim", dest="mamba_head_dim", type=int, default=None)
+    parser.add_argument("--ssm-state-size", dest="ssm_state_size", type=int, default=None)
+    parser.add_argument("--conv-kernel", dest="conv_kernel", type=int, default=None)
+    parser.add_argument("--mamba-chunk-size", dest="mamba_chunk_size", type=int, default=None)
+    parser.add_argument("--n-groups", dest="n_groups", type=int, default=None)
+    parser.add_argument("--hybrid-override-pattern", dest="hybrid_override_pattern", default=None)
     parser.add_argument("--seqlen", type=int, default=128)
     parser.add_argument("--num-seqs", type=int, default=1)
     parser.add_argument("--grad-accum-rounds", type=int, default=1)

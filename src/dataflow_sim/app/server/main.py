@@ -64,6 +64,7 @@ ModelFamily = Literal[
     "qwen3_hybrid_dense",
     "qwen3_hybrid_moe",
     "deepseek_v3",
+    "nemotron_h",
 ]
 
 
@@ -115,6 +116,14 @@ class ModelParams(BaseModel):
     v_head_dim: int = Field(0, ge=0)
     routed_scaling_factor: float = Field(1.0, ge=0)
     scoring_func: str = "sigmoid"
+    shared_expert_dim: int = Field(0, ge=0)
+    mamba_num_heads: int = Field(1, ge=1)
+    mamba_head_dim: int = Field(1, ge=1)
+    ssm_state_size: int = Field(1, ge=1)
+    conv_kernel: int = Field(1, ge=1)
+    mamba_chunk_size: int = Field(128, ge=1)
+    n_groups: int = Field(1, ge=1)
+    hybrid_override_pattern: str = ""
 
 
 class TrainingParams(BaseModel):

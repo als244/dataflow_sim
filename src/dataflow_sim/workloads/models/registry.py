@@ -6,6 +6,7 @@ from typing import Any
 
 from dataflow_sim.workloads.models.deepseek_v3 import DeepSeekV3Config, DeepSeekV3ForTraining
 from dataflow_sim.workloads.models.llama3 import Llama3Config, Llama3ForTraining
+from dataflow_sim.workloads.models.nemotron_h import NemotronHConfig, NemotronHForTraining
 from dataflow_sim.workloads.models.olmoe import OLMoEConfig, OLMoEForTraining
 from dataflow_sim.workloads.models.qwen3 import Qwen3Config, Qwen3ForTraining
 from dataflow_sim.workloads.models.qwen3_hybrid_dense import (
@@ -90,6 +91,18 @@ DEEPSEEK_FIELDS = BASE_FIELDS + (
     ModelFieldDescriptor("v_head_dim", "Value Head Dim", min=1, advanced=True),
 )
 
+NEMOTRON_FIELDS = BASE_FIELDS + (
+    ModelFieldDescriptor("shared_expert_dim", "Shared Expert Dim", min=0),
+    ModelFieldDescriptor("intermediate_size", "Dense Intermediate", min=0, advanced=True),
+    ModelFieldDescriptor("mamba_num_heads", "Mamba Heads", min=1, advanced=True),
+    ModelFieldDescriptor("mamba_head_dim", "Mamba Head Dim", min=1, advanced=True),
+    ModelFieldDescriptor("ssm_state_size", "SSM State Size", min=1, advanced=True),
+    ModelFieldDescriptor("conv_kernel", "Conv Kernel", min=1, advanced=True),
+    ModelFieldDescriptor("mamba_chunk_size", "Mamba Chunk Size", min=1, advanced=True),
+    ModelFieldDescriptor("n_groups", "Mamba Groups", min=1, advanced=True),
+    ModelFieldDescriptor("hybrid_override_pattern", "Hybrid Pattern", kind="text", min=None, step=None, advanced=True),
+)
+
 MODEL_FAMILIES: dict[str, ModelFamilyRegistryEntry] = {
     "llama3": ModelFamilyRegistryEntry(
         key="llama3",
@@ -150,6 +163,18 @@ MODEL_FAMILIES: dict[str, ModelFamilyRegistryEntry] = {
         builder_cls=DeepSeekV3ForTraining,
         presets=("deepseek_v3_671B-37B", "kimi_k2_1T-32B"),
         fields=DEEPSEEK_FIELDS,
+    ),
+    "nemotron_h": ModelFamilyRegistryEntry(
+        key="nemotron_h",
+        label="NVIDIA Nemotron 3",
+        config_cls=NemotronHConfig,
+        builder_cls=NemotronHForTraining,
+        presets=(
+            "nemotron3_nano_30B-A3B",
+            "nemotron3_super_120B-A12B",
+            "nemotron3_ultra_550B-A55B",
+        ),
+        fields=NEMOTRON_FIELDS,
     ),
 }
 

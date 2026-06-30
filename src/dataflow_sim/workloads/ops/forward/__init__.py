@@ -2,6 +2,7 @@
 from dataflow_sim.workloads.ops.forward.activation import (
     gated_multiply,
     gelu,
+    relu2,
     silu,
     swiglu,
 )
@@ -13,6 +14,10 @@ from dataflow_sim.workloads.ops.forward.linear_attention import (
 )
 from dataflow_sim.workloads.ops.forward.loss import cross_entropy
 from dataflow_sim.workloads.ops.forward.matmul import matmul
+from dataflow_sim.workloads.ops.forward.mamba import (
+    mamba_chunk_scan,
+    mamba_gated_rms_norm,
+)
 from dataflow_sim.workloads.ops.forward.mla_attention import mla_attention, mla_rope
 from dataflow_sim.workloads.ops.forward.movement import gather, memory, reduce, scatter
 from dataflow_sim.workloads.ops.forward.norm import layer_norm, qk_norm, rms_norm
@@ -32,7 +37,10 @@ __all__ = [
     "mla_attention",
     "mla_rope",
     "qk_norm",
+    "mamba_chunk_scan",
+    "mamba_gated_rms_norm",
     "reduce",
+    "relu2",
     "rms_norm",
     "rope",
     "scatter",

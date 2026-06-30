@@ -2,7 +2,7 @@
 
 Use this example when you want a supported model family with preset-plus-
 override dimensions: Llama 3, Qwen3, Qwen3 MoE, OLMoE, Qwen3.5/3.6 hybrid,
-DeepSeek-V3, or Kimi-K2.
+DeepSeek-V3, Kimi-K2, or NVIDIA Nemotron 3.
 
 ## Contract
 
@@ -47,6 +47,19 @@ python examples/model_training/builtin_arch/export_training_program.py \
   --seqlen 1024 \
   --optimizer adamw \
   --out /tmp/deepseek_v3_training.dataflow.json
+```
+
+Nemotron 3 reduced hybrid pattern:
+
+```bash
+python examples/model_training/builtin_arch/export_training_program.py \
+  --model nemotron_h \
+  --scale nano \
+  --n-layers 3 \
+  --hybrid-override-pattern 'M*E' \
+  --seqlen 1024 \
+  --optimizer adamw \
+  --out /tmp/nemotron_h_training.dataflow.json
 ```
 
 Upload the result through the webapp's **Custom Dataflow Program** tab, or use

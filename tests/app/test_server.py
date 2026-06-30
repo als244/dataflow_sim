@@ -15,7 +15,9 @@ _MODEL_KEYS = {
     "linear_value_head_dim", "linear_conv_kernel_dim", "gdn_chunk_size",
     "router_aux_loss_coef", "mtp_num_hidden_layers", "first_k_dense_replace", "q_lora_rank",
     "kv_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim", "v_head_dim",
-    "routed_scaling_factor", "scoring_func",
+    "routed_scaling_factor", "scoring_func", "shared_expert_dim",
+    "mamba_num_heads", "mamba_head_dim", "ssm_state_size", "conv_kernel",
+    "mamba_chunk_size", "n_groups", "hybrid_override_pattern",
 }
 _TRAINING_KEYS = {
     "seqlen", "num_seqs", "grad_accum_rounds", "num_steps", "optimizer",
@@ -306,6 +308,9 @@ def test_presets_include_only_public_model_workloads():
         "qwen3_5_397B-A17B": "qwen3_hybrid_moe",
         "deepseek_v3_671B-37B": "deepseek_v3",
         "kimi_k2_1T-32B": "deepseek_v3",
+        "nemotron3_nano_30B-A3B": "nemotron_h",
+        "nemotron3_super_120B-A12B": "nemotron_h",
+        "nemotron3_ultra_550B-A55B": "nemotron_h",
     }
 
     assert set(body["workloads"]) == set(expected_models)
@@ -332,6 +337,7 @@ def test_presets_include_only_public_model_workloads():
         "qwen3_hybrid_dense",
         "qwen3_hybrid_moe",
         "deepseek_v3",
+        "nemotron_h",
     }
     qwen_fields = {
         field["key"]
@@ -341,6 +347,10 @@ def test_presets_include_only_public_model_workloads():
         field["key"]
         for field in body["model_families"]["deepseek_v3"]["fields"]
     }
+    nemotron_fields = {
+        field["key"]
+        for field in body["model_families"]["nemotron_h"]["fields"]
+    }
     assert "linear_num_value_heads" in qwen_fields
     assert "gdn_chunk_size" in qwen_fields
     assert "router_aux_loss_coef" not in qwen_fields
@@ -348,6 +358,9 @@ def test_presets_include_only_public_model_workloads():
     assert "q_lora_rank" in deepseek_fields
     assert "routed_scaling_factor" not in deepseek_fields
     assert "scoring_func" not in deepseek_fields
+    assert "mamba_num_heads" in nemotron_fields
+    assert "shared_expert_dim" in nemotron_fields
+    assert "hybrid_override_pattern" in nemotron_fields
     assert "layer_types" not in qwen_fields
 
 

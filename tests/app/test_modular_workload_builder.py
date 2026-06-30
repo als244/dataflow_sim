@@ -25,9 +25,12 @@ from dataflow_sim.workloads.models.qwen3_hybrid_moe import (
 from dataflow_sim.workloads.models.qwen3_moe import Qwen3MoEConfig, Qwen3MoEForTraining
 from dataflow_sim.workloads.models.deepseek_v3 import DeepSeekV3Config, DeepSeekV3ForTraining
 from dataflow_sim.workloads.models.kimi_k2 import KimiK2Config, KimiK2ForTraining
+from dataflow_sim.workloads.models.nemotron_h import NemotronHConfig, NemotronHForTraining
 from dataflow_sim.workloads.modules import (
     DenseAttention,
     MoE,
+    NemotronBlock,
+    ReLU2MoE,
     SwiGLUMLP,
     TransformerDimensions,
     layer_activation_elements_per_token,
@@ -367,6 +370,7 @@ def test_family_presets_are_easy_to_override():
     qwen_hybrid_moe = QwenHybridMoEConfig.preset("397B-A17B", top_k=8)
     deepseek = DeepSeekV3Config.preset("671B-37B", n_layers=4)
     kimi = KimiK2Config.preset("1T-32B", first_k_dense_replace=2)
+    nemotron = NemotronHConfig.preset("nano", n_layers=4, hybrid_override_pattern="M*E-")
 
     assert llama.preset_name == "llama3_8B"
     assert llama.n_layers == 80
@@ -398,6 +402,9 @@ def test_family_presets_are_easy_to_override():
     assert kimi.preset_name == "kimi_k2_1T-32B"
     assert kimi.first_k_dense_replace == 2
     assert KimiK2ForTraining(kimi).family_name == "deepseek_v3"
+    assert nemotron.preset_name == "nemotron3_nano_30B-A3B"
+    assert nemotron.n_layers == 4
+    assert nemotron.dimensions().layer_types == ("mamba", "attention", "moe", "mlp")
 
 
 def test_new_family_public_preset_values_match_source_configs():
@@ -407,6 +414,9 @@ def test_new_family_public_preset_values_match_source_configs():
     qwen_large_moe = QwenHybridMoEConfig.preset("qwen3_5_397B-A17B")
     deepseek = DeepSeekV3Config.preset("671B-37B")
     kimi = KimiK2Config.preset("1T-32B")
+    nemotron_nano = NemotronHConfig.preset("nano")
+    nemotron_super = NemotronHConfig.preset("super")
+    nemotron_ultra = NemotronHConfig.preset("ultra")
 
     assert qwen_dense.vocab_size == 248_320
     assert qwen_dense.n_layers == 64
@@ -437,6 +447,27 @@ def test_new_family_public_preset_values_match_source_configs():
     assert kimi.n_heads == 64
     assert kimi.num_routed_experts == 384
     assert kimi.routed_scaling_factor == 2.827
+    assert nemotron_nano.vocab_size == 131_072
+    assert nemotron_nano.n_layers == 52
+    assert nemotron_nano.d_model == 2688
+    assert nemotron_nano.expert_dim == 1856
+    assert nemotron_nano.shared_expert_dim == 3712
+    assert nemotron_nano.mamba_num_heads == 64
+    assert nemotron_nano.mamba_chunk_size == 128
+    assert nemotron_super.n_layers == 88
+    assert nemotron_super.d_model == 4096
+    assert nemotron_super.num_routed_experts == 512
+    assert nemotron_ultra.n_layers == 108
+    assert nemotron_ultra.d_model == 8192
+    assert nemotron_ultra.n_heads == 64
+    for config, counts in (
+        (nemotron_nano, {"mamba": 23, "attention": 6, "moe": 23}),
+        (nemotron_super, {"mamba": 40, "attention": 8, "moe": 40}),
+        (nemotron_ultra, {"mamba": 48, "attention": 12, "moe": 48}),
+    ):
+        layer_types = config.dimensions().layer_types
+        assert len(layer_types) == config.n_layers
+        assert {name: layer_types.count(name) for name in counts} == counts
 
 
 def test_new_op_helper_formulas_are_hand_checkable():
@@ -471,6 +502,28 @@ def test_new_op_helper_formulas_are_hand_checkable():
         value_head_dim=3,
         seqlen=4,
     )
+    relu2 = fwd.relu2("relu2", tokens=5, dim=7)
+    relu2_bwd = bwd.relu2_grad("relu2_bwd", tokens=5, dim=7)
+    mamba = fwd.mamba_chunk_scan(
+        "mamba_scan",
+        tokens=8,
+        seqlen=4,
+        num_heads=3,
+        head_dim=5,
+        state_dim=7,
+        n_groups=2,
+        chunk_size=2,
+    )
+    mamba_bwd = bwd.mamba_chunk_scan_grad(
+        "mamba_scan_bwd",
+        tokens=8,
+        seqlen=4,
+        num_heads=3,
+        head_dim=5,
+        state_dim=7,
+        n_groups=2,
+        chunk_size=2,
+    )
 
     assert conv.flops == 2 * 5 * 7 * 3
     assert conv.memory_bytes == (5 * 7 + 7 * 3 + 5 * 7) * 2
@@ -479,6 +532,21 @@ def test_new_op_helper_formulas_are_hand_checkable():
     assert mla.flops == 2 * (5 + 3) * (2 * 4 * 4)
     assert mla_bwd.flops == 2 * (2 * 5 + 3 * 3) * (2 * 4 * 4)
     assert mla_bwd.effective_flops == 2 * (2 * 5 + 2 * 3) * (2 * 4 * 4)
+    assert relu2.memory_bytes == 3 * 5 * 7 * 2
+    assert relu2_bwd.memory_bytes == 5 * 5 * 7 * 2
+    assert mamba.flops == (
+        2 * 2 * 2 * 2 * 2 * 3 * (7 + 5)
+        + 4 * 8 * 3 * 5 * 7
+        + 2 * 2 * 2 * 3 * 5 * 7
+        + 2 * 8 * 15
+    )
+    assert mamba.memory_bytes == (
+        8 * (15 + 2 * 2 * 7 + 3 + 15)
+        + 2 * 2 * 2 * 2 * 3
+        + 2 * 2 * 3 * 5 * 7
+    ) * 2
+    assert mamba_bwd.flops == 2 * mamba.flops
+    assert mamba_bwd.memory_bytes == 2 * mamba.memory_bytes
 
 
 def test_qwen_and_deepseek_reuse_existing_moe_subops_without_router_ops():
@@ -563,6 +631,103 @@ def test_qwen_and_deepseek_reuse_existing_moe_subops_without_router_ops():
     assert not any("router" in name for name in qwen_ops)
     assert not any("router" in name for name in deepseek_ops)
     assert deepseek.ffn_dimensions(dense=False).num_routed_experts == 8
+
+
+def test_nemotron_modules_emit_expected_subop_chains_and_dtype_lanes():
+    config = NemotronHConfig.preset(
+        "nano",
+        n_layers=3,
+        d_model=256,
+        n_heads=4,
+        n_kv_heads=1,
+        expert_dim=64,
+        shared_expert_dim=128,
+        num_routed_experts=8,
+        top_k=2,
+        vocab_size=4096,
+        mamba_num_heads=4,
+        mamba_head_dim=16,
+        ssm_state_size=8,
+        n_groups=2,
+        intermediate_size=128,
+        hybrid_override_pattern="M*E",
+    )
+    dims = config.dimensions()
+    mamba_ops = [
+        op.name
+        for op in NemotronBlock(dims, "mamba").forward_ops(tokens=16, seqlen=16)
+    ]
+    attention_ops = [
+        op.name
+        for op in NemotronBlock(dims, "attention").forward_ops(tokens=16, seqlen=16)
+    ]
+    moe_ops = [
+        op.name
+        for op in NemotronBlock(dims, "moe").forward_ops(tokens=16, seqlen=16)
+    ]
+
+    assert mamba_ops == [
+        "block_norm",
+        "mamba_in_proj",
+        "mamba_depthwise_conv1d",
+        "mamba_silu",
+        "mamba_chunk_scan",
+        "mamba_gated_rms_norm",
+        "mamba_out_proj",
+    ]
+    assert attention_ops == [
+        "block_norm",
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "attn",
+        "o_proj",
+    ]
+    assert moe_ops == [
+        "block_norm",
+        "shared_mlp_up",
+        "x_scatter",
+        "routed_mlp_up_one_expert",
+        "shared_relu2",
+        "routed_relu2",
+        "shared_mlp_down",
+        "routed_mlp_down_one_expert",
+        "x_gather",
+        "moe_combine_residual",
+    ]
+    assert not any("router" in name for name in moe_ops)
+    program = NemotronHForTraining(config).build_training_program(
+        TrainingConfig(seqlen=16, num_seqs=1, optimizer="adamw")
+    )
+    assert _block_keys(program) >= {
+        "nemotron_h.mamba_block.forward",
+        "nemotron_h.attention_block.forward",
+        "nemotron_h.moe_block.forward",
+        "nemotron_h.mamba_block.backward",
+        "nemotron_h.attention_block.backward",
+        "nemotron_h.moe_block.backward",
+        "nemotron_h.mamba_block.optimizer_step.adamw",
+        "nemotron_h.attention_block.optimizer_step.adamw",
+        "nemotron_h.moe_block.optimizer_step.adamw",
+    }
+
+    bf16_ops = {
+        op.name: op
+        for op in ReLU2MoE(dims).forward_ops(tokens=16, bytes_per_element=2)
+    }
+    dispatch_ops = {
+        op.name: op
+        for op in ReLU2MoE(dims).forward_ops(
+            tokens=16,
+            bytes_per_element=OpDTypePolicy.from_dtype_policy(
+                DTypePolicy(expert_dispatch="fp8")
+            ),
+        )
+    }
+    for name in ("x_scatter", "shared_mlp_up", "routed_mlp_up_one_expert"):
+        assert dispatch_ops[name].memory_bytes < bf16_ops[name].memory_bytes
+    for name in ("shared_relu2", "routed_relu2", "shared_mlp_down", "x_gather"):
+        assert dispatch_ops[name].memory_bytes == bf16_ops[name].memory_bytes
 
 
 def test_training_program_uses_model_order_reverse_backward_and_optimizer_tail():
@@ -822,6 +987,30 @@ def test_varied_family_workloads_run_and_report_kpis():
             ),
             TrainingConfig(seqlen=128, num_seqs=1, optimizer="none"),
         ),
+        (
+            NemotronHForTraining(
+                NemotronHConfig.preset(
+                    "nano",
+                    n_layers=3,
+                    d_model=512,
+                    head_dim=64,
+                    n_heads=8,
+                    n_kv_heads=2,
+                    expert_dim=128,
+                    shared_expert_dim=256,
+                    num_routed_experts=8,
+                    top_k=2,
+                    vocab_size=32_000,
+                    mamba_num_heads=8,
+                    mamba_head_dim=32,
+                    ssm_state_size=16,
+                    n_groups=2,
+                    intermediate_size=256,
+                    hybrid_override_pattern="M*E",
+                )
+            ),
+            TrainingConfig(seqlen=128, num_seqs=1, optimizer="adamw"),
+        ),
     ]
 
     for model, training in cases:
@@ -914,6 +1103,31 @@ def test_constrained_memory_recompute_planning_selects_useful_variants():
                     qk_rope_head_dim=16,
                     v_head_dim=32,
                     head_dim=48,
+                )
+            ),
+            TrainingConfig(seqlen=512, num_seqs=1, optimizer="none"),
+            80 * 1024 * 1024,
+        ),
+        (
+            NemotronHForTraining(
+                NemotronHConfig.preset(
+                    "nano",
+                    n_layers=6,
+                    d_model=512,
+                    head_dim=64,
+                    n_heads=8,
+                    n_kv_heads=2,
+                    expert_dim=128,
+                    shared_expert_dim=256,
+                    num_routed_experts=8,
+                    top_k=2,
+                    vocab_size=32_000,
+                    mamba_num_heads=8,
+                    mamba_head_dim=32,
+                    ssm_state_size=16,
+                    n_groups=2,
+                    intermediate_size=256,
+                    hybrid_override_pattern="M*EM*E",
                 )
             ),
             TrainingConfig(seqlen=512, num_seqs=1, optimizer="none"),

@@ -9,7 +9,8 @@ export type ModelFamily =
   | "olmoe"
   | "qwen3_hybrid_dense"
   | "qwen3_hybrid_moe"
-  | "deepseek_v3";
+  | "deepseek_v3"
+  | "nemotron_h";
 
 export interface HardwareParams {
   preset: string;
@@ -59,6 +60,14 @@ export interface ModelParams {
   v_head_dim?: number;
   routed_scaling_factor?: number;
   scoring_func?: string;
+  shared_expert_dim?: number;
+  mamba_num_heads?: number;
+  mamba_head_dim?: number;
+  ssm_state_size?: number;
+  conv_kernel?: number;
+  mamba_chunk_size?: number;
+  n_groups?: number;
+  hybrid_override_pattern?: string;
 }
 
 export interface TrainingParams {
@@ -365,6 +374,7 @@ const MODEL_FAMILY_OPTIONS: { value: ModelFamily; label: string }[] = [
   { value: "qwen3_hybrid_dense", label: "Qwen3.5/3.6 Dense" },
   { value: "qwen3_hybrid_moe", label: "Qwen3.5/3.6 MoE" },
   { value: "deepseek_v3", label: "DeepSeek-V3" },
+  { value: "nemotron_h", label: "NVIDIA Nemotron 3" },
 ];
 
 const HW_ACCELERATOR_FIELDS: { key: keyof Omit<HardwareParams, "preset">; label: string; step?: number; min?: number }[] = [

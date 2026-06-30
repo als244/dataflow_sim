@@ -36,6 +36,16 @@ def gelu(
     return memory_op(name, 3 * tokens * dim * bytes_per_element)
 
 
+def relu2(
+    name: str,
+    *,
+    tokens: int,
+    dim: int,
+    bytes_per_element: float = 2,
+) -> DataflowCost:
+    return memory_op(name, 3 * tokens * dim * bytes_per_element)
+
+
 def gated_multiply(
     name: str,
     *,

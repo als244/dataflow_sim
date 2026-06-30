@@ -13,6 +13,10 @@ from dataflow_sim.workloads.modules.dimensions import (
 from dataflow_sim.workloads.modules.mla_attention import MLAAttention
 from dataflow_sim.workloads.modules.mlp import SwiGLUMLP
 from dataflow_sim.workloads.modules.moe import MoE
+from dataflow_sim.workloads.modules.nemotron_attention import NemotronAttention
+from dataflow_sim.workloads.modules.nemotron_block import NemotronBlock
+from dataflow_sim.workloads.modules.nemotron_dimensions import NemotronDimensions
+from dataflow_sim.workloads.modules.nemotron_mamba import NemotronMamba
 from dataflow_sim.workloads.modules.optimizer import (
     OptimizerStep,
     optimizer_ops_for_matrices,
@@ -28,6 +32,8 @@ from dataflow_sim.workloads.modules.qwen_hybrid_linear_attention import (
     QwenHybridLinearAttention,
 )
 from dataflow_sim.workloads.modules.recompute import zero_recompute_slot
+from dataflow_sim.workloads.modules.relu2_mlp import ReLU2MLP
+from dataflow_sim.workloads.modules.relu2_moe import ReLU2MoE
 from dataflow_sim.workloads.modules.transformer_block import (
     TransformerBlock,
 )
@@ -41,12 +47,18 @@ __all__ = [
     "DenseAttention",
     "MLAAttention",
     "MoE",
+    "NemotronAttention",
+    "NemotronBlock",
+    "NemotronDimensions",
+    "NemotronMamba",
     "OptimizerStep",
     "optimizer_ops_for_matrices",
     "QwenHybridBlock",
     "QwenHybridDimensions",
     "QwenHybridFullAttention",
     "QwenHybridLinearAttention",
+    "ReLU2MLP",
+    "ReLU2MoE",
     "SwiGLUMLP",
     "TransformerBlock",
     "TransformerDimensions",

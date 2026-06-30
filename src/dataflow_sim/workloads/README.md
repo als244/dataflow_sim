@@ -40,8 +40,10 @@ The modular path is dependency-free:
 - `workloads.modules` composes ops into reusable modules such as attention,
   SwiGLU MLP, MoE, stacked blocks, head/loss, optimizer, and recompute phases.
 - `workloads.models.llama3`, `workloads.models.qwen3`,
-  `workloads.models.qwen3_moe`, and `workloads.models.olmoe` define real
-  model families with preset-plus-overrides config APIs. Each model file
+  `workloads.models.qwen3_moe`, `workloads.models.olmoe`,
+  `workloads.models.qwen3_hybrid_dense`, `workloads.models.qwen3_hybrid_moe`,
+  `workloads.models.deepseek_v3`, and `workloads.models.nemotron_h` define
+  real model families with preset-plus-overrides config APIs. Each model file
   constructs its ordered module list explicitly.
 - `workloads.training_builder` schedules a model-authored module list into
   forward, head/loss, recompute, backward, and optimizer tasks. It does not

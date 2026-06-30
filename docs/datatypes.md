@@ -102,8 +102,8 @@ It does not affect:
 ## Expert Weights
 
 Expert Weight DType applies to MoE expert matrices, both shared and routed. For
-example, in Qwen3.5 MoE and DeepSeek/Kimi MoE blocks, these matrices are expert
-weights:
+example, in Qwen3.5 MoE, DeepSeek/Kimi MoE, and Nemotron-H ReLU2 MoE blocks,
+these matrices are expert weights:
 
 - `shared_mlp_up`
 - `shared_mlp_down`
@@ -113,7 +113,7 @@ weights:
 If a preset has `num_shared_experts = 0`, changing Expert Weight DType will
 only visibly affect routed expert matrices because no shared expert matrices
 exist. Current Qwen3-MoE and OLMoE presets have no shared experts; Qwen3.5 MoE,
-DeepSeek, and Kimi presets do have shared experts.
+DeepSeek, Kimi, and Nemotron-H presets do have shared experts.
 
 Expert Weight DType affects:
 

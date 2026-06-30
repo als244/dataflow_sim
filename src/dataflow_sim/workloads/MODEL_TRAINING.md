@@ -81,6 +81,10 @@ examples are:
 - `qwen3.py`
 - `qwen3_moe.py`
 - `olmoe.py`
+- `qwen3_hybrid_dense.py`
+- `qwen3_hybrid_moe.py`
+- `deepseek_v3.py`
+- `nemotron_h.py`
 
 Model families own architecture. They choose how many modules exist, which
 modules appear, what order they run in, and how preset dimensions map into
