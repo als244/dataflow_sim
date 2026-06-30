@@ -464,6 +464,26 @@ def test_presets_include_sram_accelerator_hardware():
     }
 
 
+def test_presets_include_gb300_hardware():
+    body = presets()
+    hw = body["hardware"]["GB300"]
+
+    assert hw == {
+        "peak_tflops_bf16": 2500.0,
+        "peak_tflops_fp8": 5000.0,
+        "peak_tflops_fp4": 15000.0,
+        "fast_memory_bw_gbs": 8000.0,
+        "from_slow_bw_gbs": 400.0,
+        "to_slow_bw_gbs": 400.0,
+        "matmul_eff_bf16": 0.65,
+        "matmul_eff_fp8": 0.65,
+        "matmul_eff_fp4": 0.65,
+        "attn_fwd_eff": 0.6,
+        "attn_bwd_eff": 0.5,
+        "mem_eff": 0.9,
+    }
+
+
 def test_h100_marks_fp4_matmul_as_unsupported():
     body = presets()
     hw = body["hardware"]["H100"]

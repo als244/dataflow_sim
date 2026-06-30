@@ -876,6 +876,19 @@ export function InputPanel({
                       </select>
                     </label>
                   )}
+                  {showExpertDatatypeControls && (
+                    <label className="form-field">
+                      <span className="form-field-label">Expert Dispatch DType</span>
+                      <select
+                        value={modelTrainingWorkload.datatypes.expert_dispatch_dtype}
+                        onChange={(e) => setDatatype("expert_dispatch_dtype", e.target.value as DTypeName)}
+                      >
+                        {DTYPE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                   {showIndexerDatatypeControls && (
                     <label className="form-field">
                       <span className="form-field-label">Indexer Activation DType</span>
@@ -895,19 +908,6 @@ export function InputPanel({
                       <select
                         value={modelTrainingWorkload.datatypes.indexer_compute_precision}
                         onChange={(e) => setDatatype("indexer_compute_precision", e.target.value as DTypeName)}
-                      >
-                        {DTYPE_OPTIONS.map((o) => (
-                          <option key={o.value} value={o.value}>{o.label}</option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                  {showExpertDatatypeControls && (
-                    <label className="form-field">
-                      <span className="form-field-label">Expert Dispatch DType</span>
-                      <select
-                        value={modelTrainingWorkload.datatypes.expert_dispatch_dtype}
-                        onChange={(e) => setDatatype("expert_dispatch_dtype", e.target.value as DTypeName)}
                       >
                         {DTYPE_OPTIONS.map((o) => (
                           <option key={o.value} value={o.value}>{o.label}</option>

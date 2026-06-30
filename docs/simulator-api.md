@@ -160,6 +160,15 @@ Returns:
       "peak_tflops_fp4": null,
       "matmul_eff_fp4": null,
       "...": "..."
+    },
+    "GB300": {
+      "peak_tflops_bf16": 2500,
+      "peak_tflops_fp8": 5000,
+      "peak_tflops_fp4": 15000,
+      "fast_memory_bw_gbs": 8000,
+      "from_slow_bw_gbs": 400,
+      "to_slow_bw_gbs": 400,
+      "...": "..."
     }
   }
 }
